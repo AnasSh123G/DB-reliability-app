@@ -1,0 +1,22 @@
+[project]
+name = "dbrel"
+version = "0.1.0"
+description = "Local database of German train schedules and actual arrival/departure times"
+readme = "README.md"
+authors = [
+    { name = "Anas", email = "anasah123@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "gtfs-realtime-bindings>=2.2.0",
+    "httpx>=0.28.1",
+    "sqlalchemy>=2.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+dbrel = "dbrel.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
