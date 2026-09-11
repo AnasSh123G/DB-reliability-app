@@ -77,9 +77,9 @@ class TripServiceDate(Base):
     train_id: Mapped[int] = mapped_column(ForeignKey("train.id"), primary_key=True)
     service_date: Mapped[str] = mapped_column(String(10), primary_key=True)
     feed_version_id: Mapped[int] = mapped_column(ForeignKey("feed_version.id"))
-    gtfs_trip_id: Mapped[str] = mapped_column(String(64))
+    source_run_key: Mapped[str] = mapped_column(String(64))
 
     __table_args__ = (
         Index("ix_tsd_date", "service_date"),
-        Index("ix_tsd_date_gtfs_trip", "service_date", "gtfs_trip_id"),
+        Index("ix_tsd_date_run_key", "service_date", "source_run_key"),
     )

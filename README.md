@@ -41,6 +41,26 @@ costs roughly 13 GB/day. Choose the interval accordingly.
 | `stats` | Row counts, poll history, quality breakdown, punctuality |
 | `unmatched` | Realtime trips that resolved to no known train |
 
+### DB Timetables (IRIS-TTS) — the second source
+
+Needs `DB_CLIENT_ID` and `TIMETABLES_API_KEY` in `.env`. Both headers are required;
+either alone returns 401. Free tier is 60 requests/minute, shared across processes by
+a lock-file token bucket.
+
+| Command | Does |
+|---|---|
+| `tt-check [--pattern X] [--burst N]` | Verify credentials, report the rate limit; says *which* header is wrong |
+| `tt-rank-stations [--near X --km N] [--limit N]` | Rank stations by traffic they would bring in; pure SQL, no API calls |
+| `tt-map-stations --station-ids 1,2 [--manual id=eva]` | Resolve stations to EVA numbers and start tracking them |
+| `tt-verify-stations [--min-overlap 0.6]` | Behavioural check: do IRIS's neighbours match GTFS's? |
+| `tt-import-plan [--date D --hours 5-22] [--force]` | Import planned timetables; rolls forward hourly by default |
+| `tt-poll [--interval S --minutes M]` | Poll `/fchg`; appends only values that changed |
+| `tt-finalize [--date D] [--force]` | Derive actual times for Timetables runs (rule_version 2) |
+| `search "ICE 599"` | Find a train by number, or a line by label (`S1`, `RE4`) |
+
+Trains from the two sources coexist and are told apart by `train.source`. Only
+Timetables supplies a real `train_number`.
+
 ## The data model
 
 Five core tables, six supporting.
@@ -132,9 +152,19 @@ changing the ingest, and worth re-running if the feeds change shape.
   ~1 hour, not a whole day. A single poll can never cover a full service day.
 - **Coverage is ~86%** of in-progress rail trips (fv 66%, rv 89%). Long-distance scores
   lower because overnight services carry no realtime data.
-- **There is no train number** in these feeds — `trips.txt` carries only `route_id`,
-  `service_id`, `trip_id`. "ICE 78" in `train_name` is built from the product plus
-  origin and destination, not from an official number.
-- **Trip-level cancellations are not signalled.** Every descriptor arrives as
-  `SCHEDULED`; cancellation is only visible per-stop via `SKIPPED`.
-- Static feeds cover the next 30 days and are rebuilt roughly weekly.
+- **There is no train number in the gtfs.de feeds** — `trips.txt` carries only
+  `route_id`, `service_id`, `trip_id`. `long_name` is built from the product plus origin
+  and destination, not from an official number. This is why the Timetables source exists;
+  it supplies `tl@n` natively, on 100% of stops.
+- **Trip-level cancellations are not signalled by GTFS-RT.** Every descriptor arrives as
+  `SCHEDULED`; cancellation is only visible per-stop via `SKIPPED`. Timetables states
+  them outright (`cs='c'` plus a cancellation timestamp).
+- Static feeds cover the next 30 days and are rebuilt roughly weekly. **Timetables
+  `/plan` covers only today and tomorrow**, so a bucket not captured inside that window
+  is lost for good — which is why the GTFS skeleton stays the source of "what should run".
+- **Station names do not match between the two sources.** Only 72% of IRIS `ppth` names
+  resolve to a gtfs.de station even with punctuation-insensitive matching, so the join
+  between sources goes through EVA numbers, never names. See `docs/probe-findings.md` §13.
+- **Timetables cannot cover Germany at 60 rpm** (~5,400 stations would need ~518k
+  requests/day against an 86k budget). It upgrades a tracked subset; GTFS-RT remains the
+  nationwide layer.

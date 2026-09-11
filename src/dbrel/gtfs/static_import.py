@@ -30,6 +30,13 @@ from sqlalchemy.orm import Session
 
 from dbrel.config import RAIL_ROUTE_TYPES
 from dbrel.gtfs.timeutil import date_range, gtfs_sec_to_epoch, parse_gtfs_time, parse_service_date
+from dbrel.identity import (
+    IDENTITY_PATTERN,
+    SOURCE_GTFS,
+    search_norm,
+    segment_of,
+    train_identity_key,
+)
 from dbrel.models import FeedVersion, Route, Station, StationStop, Train, Trip, TripServiceDate
 
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -295,7 +302,7 @@ def import_feed(
 
     # --- trains -----------------------------------------------------------
     progress("  building trains ...")
-    train_id_by_key = dict(session.execute(select(Train.natural_key, Train.id)).all())
+    train_id_by_key = dict(session.execute(select(Train.identity_key, Train.id)).all())
     new_trains: dict[str, dict] = {}
     pattern_by_key: dict[str, list[_StopTime]] = {}
     train_key_by_trip: dict[str, str] = {}
@@ -307,20 +314,32 @@ def import_feed(
         route = route_meta[route_gtfs_id]
         station_keys = [key_for_stop(s.stop_id, station_id_by_stop) for s in stops]
         first_dep = next((s.dep for s in stops if s.dep is not None), None)
-        key = train_natural_key(
-            route.get("route_short_name"), route.get("agency_id"), first_dep, station_keys
+        # The legacy pattern key is kept verbatim, only source-prefixed, so GTFS
+        # and Timetables identities can never collide while both sources run.
+        key = train_identity_key(
+            SOURCE_GTFS,
+            None,
+            None,
+            legacy_key=train_natural_key(
+                route.get("route_short_name"), route.get("agency_id"), first_dep, station_keys
+            ),
         )
         train_key_by_trip[trip_id] = key
         if key in train_id_by_key or key in new_trains:
             continue
         pattern_by_key[key] = stops
         last_arr = next((s.arr for s in reversed(stops) if s.arr is not None), None)
+        long_name = _train_name(route.get("route_short_name"), stops, children, parents)
         new_trains[key] = {
-            "natural_key": key,
-            "train_number": None,  # not present in gtfs.de feeds
-            "train_name": _train_name(route.get("route_short_name"), stops, children, parents),
+            "source": SOURCE_GTFS,
+            "identity_kind": IDENTITY_PATTERN,
+            "identity_key": key,
+            "train_number": None,  # genuinely absent from gtfs.de feeds
+            "long_name": long_name,
+            "display_name": long_name,
+            "search_name": search_norm(long_name)[:64],
             "route_id": route_pk_by_gtfs.get(route_gtfs_id),
-            "route_type": int(route.get("route_type") or 0),
+            "segment": segment_of(route.get("route_short_name"), None),
             "origin_station_id": station_id_by_stop.get(stops[0].stop_id),
             "dest_station_id": station_id_by_stop.get(stops[-1].stop_id),
             "first_departure_sec": first_dep,
@@ -334,7 +353,7 @@ def import_feed(
         session.execute(insert(Train), list(new_trains.values()))
         session.flush()
     stats.trains = len(new_trains)
-    train_id_by_key = dict(session.execute(select(Train.natural_key, Train.id)).all())
+    train_id_by_key = dict(session.execute(select(Train.identity_key, Train.id)).all())
 
     # --- station_stops (the planned pattern, once per train per feed version) ---
     progress("  writing station stops ...")
@@ -360,7 +379,7 @@ def import_feed(
                     # stop_time_updates are keyed by it.
                     "stop_sequence": stop.seq,
                     "station_id": station_id,
-                    "gtfs_stop_id": stop.stop_id,
+                    "source_stop_id": stop.stop_id,
                     "platform_code": platform_by_stop.get(stop.stop_id),
                     "planned_arrival_sec": stop.arr,
                     "planned_departure_sec": stop.dep,
@@ -399,7 +418,7 @@ def import_feed(
                     "train_id": train_id,
                     "service_date": iso,
                     "feed_version_id": fv_id,
-                    "gtfs_trip_id": trip_id,
+                    "source_run_key": trip_id,
                 }
             )
             if (train_id, iso) in claimed:
@@ -413,9 +432,12 @@ def import_feed(
                 {
                     "train_id": train_id,
                     "service_date": iso,
+                    "source": SOURCE_GTFS,
                     "feed_version_id": fv_id,
-                    "gtfs_trip_id": trip_id,
+                    "source_run_key": trip_id,
                     "status": "SCHEDULED",
+                    "schedule_relationship": "PLANNED",
+                    "endpoints_tracked": 1,  # GTFS gives the whole journey
                     "supposed_departure_utc": gtfs_sec_to_epoch(day, first_dep) if first_dep is not None else None,
                     "supposed_arrival_utc": gtfs_sec_to_epoch(day, last_arr) if last_arr is not None else None,
                     "n_stops": len(stops),

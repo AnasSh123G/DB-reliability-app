@@ -24,7 +24,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from dbrel.config import GRACE_S, RULE_VERSION, SETTLE_S
@@ -395,13 +395,20 @@ def _grade_stop(
     polls: list[int],
     trip_seen_after_passage: bool,
     last_seen: int | None,
+    settle_s: int = SETTLE_S,
 ) -> tuple[str, int | None]:
-    """Confidence in a single derived value."""
+    """Confidence in a single derived value.
+
+    settle_s defaults to the global constant, which is right for GTFS-RT where one
+    fetch covers the whole country at a fixed cadence. Timetables passes a
+    per-station value instead: a station polled every 12 minutes cannot honestly
+    call anything settled after 5.
+    """
     if predicted is None:
         return QUALITY_PREDICTION_ONLY, None
 
     passage = predicted + GRACE_S
-    settled_by = passage + SETTLE_S
+    settled_by = passage + settle_s
 
     # We were still polling after the value should have settled.
     if _polled_at_or_after(polls, settled_by):

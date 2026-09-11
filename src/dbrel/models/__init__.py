@@ -1,6 +1,7 @@
 """All ORM models. Importing this module registers every mapper."""
 
 from dbrel.models.core import (
+    QUALITY_CANCELLED,
     QUALITY_INFERRED_DOWNSTREAM,
     QUALITY_LAST_SEEN,
     QUALITY_MISSING,
@@ -9,6 +10,8 @@ from dbrel.models.core import (
     QUALITY_PREDICTION_ONLY,
     QUALITY_SKIPPED,
     TRUSTED_QUALITIES,
+    SearchAlias,
+    ServiceLine,
     Station,
     StationStop,
     Train,
@@ -17,8 +20,21 @@ from dbrel.models.core import (
 )
 from dbrel.models.meta import FeedVersion, Route, TripServiceDate
 from dbrel.models.realtime import RtObservation, RtPoll, RtUnmatched
+from dbrel.models.timetables import (
+    TrackedStation,
+    TrainConflict,
+    TrainMerge,
+    TrainXref,
+    TripLink,
+    TtMessage,
+    TtObservation,
+    TtPlanFetch,
+    TtPoll,
+    TtUnmatched,
+)
 
 __all__ = [
+    "QUALITY_CANCELLED",
     "QUALITY_INFERRED_DOWNSTREAM",
     "QUALITY_LAST_SEEN",
     "QUALITY_MISSING",
@@ -32,10 +48,22 @@ __all__ = [
     "RtObservation",
     "RtPoll",
     "RtUnmatched",
+    "SearchAlias",
+    "ServiceLine",
     "Station",
     "StationStop",
+    "TrackedStation",
     "Train",
+    "TrainConflict",
+    "TrainMerge",
+    "TrainXref",
     "Trip",
+    "TripLink",
     "TripServiceDate",
     "TripStop",
+    "TtMessage",
+    "TtObservation",
+    "TtPlanFetch",
+    "TtPoll",
+    "TtUnmatched",
 ]

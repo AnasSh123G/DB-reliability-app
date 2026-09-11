@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from dbrel.config import HTTP_TIMEOUT_S, REALTIME_URL
 from dbrel.db import Base
 from dbrel.gtfs.timeutil import local_date, parse_service_date
-from dbrel.models import RtObservation, RtPoll, RtUnmatched, Trip
+from dbrel.models import RtObservation, RtPoll, Trip
 from dbrel.realtime.parser import ParsedFeed, parse_feed
 
 
@@ -80,9 +80,9 @@ def _candidate_service_dates(feed_timestamp: int) -> list[str]:
 
 
 def _load_trip_index(session: Session, service_dates: list[str]) -> dict[tuple[str, str], int]:
-    """(gtfs_trip_id, service_date) -> trip.id for the live service dates."""
+    """(source_run_key, service_date) -> trip.id for the live service dates."""
     rows = session.execute(
-        select(Trip.gtfs_trip_id, Trip.service_date, Trip.id).where(
+        select(Trip.source_run_key, Trip.service_date, Trip.id).where(
             Trip.service_date.in_(service_dates)
         )
     ).all()
