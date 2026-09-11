@@ -1,30 +1,29 @@
 """Derive actual times for Timetables runs.
 
-The rule is unchanged from v1 — *the last published estimate for an event,
-observed after the event should have happened, that then stopped changing* — and
-if anything it fits IRIS better: `ct` is unlabelled, an estimate before passage
-and DB's recorded actual afterwards, with the API never saying which. So the
-same conservative framing, and the same audit trail, are still required.
+v1 had to infer an actual, because GTFS-RT publishes forecasts and a value that
+stops changing leaves no trace: "settled" was reconstructed from silence plus
+evidence that we were still listening. The archival reader removes that problem
+at the source. changes_poller only records an event once it has already happened,
+so a stored value is DB's recorded time rather than an estimate, and the grade is
+QUALITY_RECORDED — asserted directly, with read_lag_s saying how long after the
+event we read it.
 
-Three things genuinely differ, and each has a comment where it happens:
+What still needs care is the *absence* of an observation, and here the per-station
+listening record earns its keep. A Timetables fetch is evidence about one station
+only, so grading a Bochum stop on the strength of a Dortmund poll would quietly
+corrupt everything downstream. With it we can separate:
 
-1. **The listening record is per station.** Under GTFS-RT one fetch covered all
-   of Germany, so one global list of poll times was sound. Here one fetch covers
-   one station, and grading a Bochum stop on the strength of a Dortmund poll
-   would quietly corrupt everything downstream.
+* NO_DATA — we were polling this station across the window and nothing appeared.
+  A fact about the railway. Never means "on time": punctual running is published
+  explicitly as ct == pt (findings §18).
+* PREDICTION_ONLY — no poll covered the window at all. A blind spot in our own
+  coverage, with poll_gap_s recording how wide it was.
 
-2. **Cancellations are stated, not inferred.** cs='c' and clt are authoritative,
-   so trip_stop.cancelled finally carries real values.
+Cancellations are stated rather than inferred (cs='c' plus clt), so they bypass
+grading entirely.
 
-A third change was designed and then deleted: a PLAN_HELD grade for punctual
-trains, on the assumption that /fchg published only changes and so never
-mentioned them. It does mention them — 100% of planned events appear, punctual
-ones as ct == pt (findings §18) — so on-time running arrives as an ordinary
-observation and absence still means absence.
-
-The GTFS path in finalize.py is deliberately untouched, so `finalize --source
-gtfs` still reproduces rule v1 exactly. The grading primitives are imported from
-there rather than copied.
+The GTFS path in finalize.py is deliberately untouched, so rule v1 still
+reproduces exactly. Its primitives are imported rather than copied.
 """
 
 from __future__ import annotations
@@ -33,22 +32,23 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from dbrel.config import GRACE_S, SETTLE_S
+from dbrel.config import GRACE_S, SERVICE_DATE_CLOSE_S, SETTLE_S, TT_LINGER_S
 from dbrel.derive.finalize import (
     _dominant_quality,
-    _grade_stop,
-    _predicted,
+    _polled_between,
     _resolve,
 )
 from dbrel.gtfs.timeutil import local_hour
 from dbrel.models import (
     QUALITY_CANCELLED,
     QUALITY_NO_DATA,
+    QUALITY_PREDICTION_ONLY,
+    QUALITY_RECORDED,
     StationStop,
-    TrackedStation,
     Trip,
     TripStop,
     TtObservation,
@@ -76,6 +76,9 @@ class _Event:
     station_stop_id: int
     supposed_arr: int | None
     supposed_dep: int | None
+    # pp, from the schedule. Observations carry only cp, so the planned platform
+    # has to come from here — coalescing the two upstream made them indistinguishable.
+    planned_platform: str | None = None
 
 
 def _poll_times_by_station(session: Session) -> dict[int, list[int]]:
@@ -96,17 +99,6 @@ def _poll_times_by_station(session: Session) -> dict[int, list[int]]:
     return out
 
 
-def _settle_for(station_id: int, gaps: dict[int, int | None]) -> int:
-    """A value must outlast two poll intervals to count as settled.
-
-    At the pilot's 30 s cadence SETTLE_S dominates; at a 12-minute cadence it
-    would not, and grading anything OBSERVED against a global 300 s would be
-    wishful. Hence per-station rather than a constant.
-    """
-    gap = gaps.get(station_id)
-    return max(SETTLE_S, 2 * gap) if gap else SETTLE_S
-
-
 def run_finalize_tt(
     session: Session,
     *,
@@ -120,20 +112,16 @@ def run_finalize_tt(
     result = FinalizeTtResult()
 
     polls_by_station = _poll_times_by_station(session)
-    gaps = {
-        row[0]: row[1]
-        for row in session.execute(
-            select(TrackedStation.station_id, TrackedStation.median_poll_gap_s)
-        ).all()
-    }
 
-    query = select(Trip).where(Trip.source == "tts", Trip.supposed_arrival_utc.isnot(None))
+    # A run whose only tracked stop is its origin has no tracked arrival, and
+    # requiring one excluded 22% of runs from finalization permanently.
+    last_event = func.coalesce(Trip.supposed_arrival_utc, Trip.supposed_departure_utc)
+
+    query = select(Trip).where(Trip.source == "tts", last_event.isnot(None))
     if service_date:
         query = query.where(Trip.service_date == service_date)
     else:
-        # Closed once our last TRACKED stop has passed by enough to settle —
-        # which is correct, since nothing more can be learned about the run.
-        query = query.where(Trip.supposed_arrival_utc < now - (GRACE_S + SETTLE_S))
+        query = query.where(last_event < now - (GRACE_S + SETTLE_S))
     if not force:
         query = query.where(Trip.finalized_at.is_(None))
 
@@ -159,6 +147,7 @@ def run_finalize_tt(
             station_stop_id=ss.id,
             supposed_arr=None,
             supposed_dep=None,
+            planned_platform=ss.platform_code,
         )
 
     # Supposed instants come from the trip's own service date, so a pattern
@@ -188,28 +177,51 @@ def run_finalize_tt(
                 station_stop_id=ev.station_stop_id,
                 supposed_arr=supposed_by_trip.get((trip.id, seq), (None, None))[0],
                 supposed_dep=supposed_by_trip.get((trip.id, seq), (None, None))[1],
+                planned_platform=ev.planned_platform,
             )
             for seq, ev in sorted(pattern.get(trip.train_id, {}).items())
         ]
         if not events:
             continue
         rows, rollup = _grade_trip_tt(
-            trip, events, observations.get(trip.id, {}), polls_by_station, gaps, now
+            trip, events, observations.get(trip.id, {}), polls_by_station, now
         )
         all_rows.extend(rows)
         for key, value in rollup.items():
             setattr(trip, key, value)
         trip.rule_version = RULE_VERSION_TT
-        trip.finalized_at = now
+        # Stamp finalized_at only once no later poll could change the answer.
+        # A passed event lingers in the /fchg horizon for at least 75 minutes
+        # (findings §18 — a floor bounded by the pilot's watch, not the API), so a
+        # run graded minutes after its last stop may still be waiting for values a
+        # later read would supply. Stamping now would freeze those NO_DATA rows in
+        # place until someone thought to pass --force.
+        if (trip.supposed_arrival_utc or trip.supposed_departure_utc or 0) < (
+            now - SERVICE_DATE_CLOSE_S
+        ):
+            trip.finalized_at = now
         result.trips_finalized += 1
         for row in rows:
             result.by_quality[row["quality"]] += 1
             result.cancelled_stops += row["cancelled"]
 
+    if force:
+        # Outside the all_rows guard on purpose: a forced re-run that now yields
+        # nothing must still clear what the previous rule wrote.
+        session.execute(delete(TripStop).where(TripStop.trip_id.in_(trip_ids)))
     if all_rows:
-        if force:
-            session.execute(delete(TripStop).where(TripStop.trip_id.in_(trip_ids)))
-        session.execute(insert(TripStop), all_rows)
+        # Upsert, because a run is re-graded on every pass until it is closed —
+        # each read can add stops the previous one had no value for.
+        stmt = sqlite_insert(TripStop)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["trip_id", "stop_sequence"],
+            set_={
+                column: getattr(stmt.excluded, column)
+                for column in all_rows[0]
+                if column not in ("trip_id", "stop_sequence")
+            },
+        )
+        session.execute(stmt, all_rows)
         result.stops_written = len(all_rows)
 
     session.flush()
@@ -248,72 +260,64 @@ def _supposed_times(session, trips, pattern) -> dict[tuple[int, int], tuple[int 
     return out
 
 
-def _grade_trip_tt(trip, events, trip_obs, polls_by_station, gaps, now):
+def _grade_trip_tt(trip, events, trip_obs, polls_by_station, now):
     rows: list[dict] = []
     delays: list[int] = []
     n_observed = 0
     n_cancelled = 0
 
-    trip_seen_after_passage = False
-    for event in events:
-        obs = trip_obs.get(event.stop_sequence, [])
-        reference = event.supposed_dep or event.supposed_arr
-        if not obs or reference is None:
-            continue
-        predicted = _predicted(obs[-1], event) or reference
-        if obs[-1].observed_at >= predicted + GRACE_S:
-            trip_seen_after_passage = True
-            break
-
     for event in events:
         obs = trip_obs.get(event.stop_sequence, [])
         station_polls = polls_by_station.get(event.station_id, [])
-        settle = _settle_for(event.station_id, gaps)
         supposed_arr, supposed_dep = event.supposed_arr, event.supposed_dep
         reference = supposed_dep or supposed_arr
 
-        actual_arr = actual_dep = arr_delay = dep_delay = poll_gap = None
+        actual_arr = actual_dep = arr_delay = dep_delay = None
+        poll_gap = read_lag = None
         cancelled = arr_cancelled = dep_cancelled = 0
         cancelled_at = None
-        platform_planned = platform_changed = None
+        platform_changed = None
+        last = obs[-1] if obs else None
 
-        if obs:
-            last = obs[-1]
-            platform_planned = last.arr_platform or last.dep_platform
+        if last is not None:
+            # cp only. pp comes from the schedule via event.planned_platform.
             platform_changed = last.dep_platform or last.arr_platform
 
-        if obs and (obs[-1].arr_status == "c" or obs[-1].dep_status == "c"):
-            # (3) Stated outright by IRIS, so no inference and no delay contribution.
-            last = obs[-1]
+        if last is not None and (last.arr_status == "c" or last.dep_status == "c"):
+            # Stated outright by IRIS, so no inference and no delay contribution.
             quality = QUALITY_CANCELLED
             cancelled = 1
             arr_cancelled = int(last.arr_status == "c")
             dep_cancelled = int(last.dep_status == "c")
             cancelled_at = last.cancelled_at_utc
             n_cancelled += 1
-        elif not obs:
-            # Silence means out of horizon or unobserved, never "on time":
-            # punctual trains are published explicitly (findings §18).
-            quality = QUALITY_NO_DATA
-        else:
-            last = obs[-1]
+        elif last is not None:
             actual_arr, arr_delay = _resolve(last.arr_time_utc, last.arr_delay_s, supposed_arr)
             actual_dep, dep_delay = _resolve(last.dep_time_utc, last.dep_delay_s, supposed_dep)
-            predicted = _predicted(last, event) or reference
-            # (1) station_polls, not a global list.
-            quality, poll_gap = _grade_stop(
-                last_observed_at=last.observed_at,
-                predicted=predicted,
-                polls=station_polls,
-                trip_seen_after_passage=trip_seen_after_passage,
-                last_seen=None,
-                settle_s=settle,
-            )
+            # The poller stores an event only once it has already happened, so a
+            # stored value is a recorded time, not a forecast. Nothing to infer.
+            quality = QUALITY_RECORDED
+            happened = actual_dep or actual_arr
+            if happened is not None:
+                read_lag = last.observed_at - happened
             n_observed += 1
             if dep_delay is not None:
                 delays.append(dep_delay)
             elif arr_delay is not None:
                 delays.append(arr_delay)
+        elif reference is not None and _polled_between(
+            station_polls, reference + GRACE_S, reference + TT_LINGER_S
+        ):
+            # We were reading this station while the value would still have been in
+            # its horizon, and nothing came. A fact about the railway — and never
+            # "on time", since punctual running is published explicitly (§18).
+            quality = QUALITY_NO_DATA
+        else:
+            # Our own blind spot, not the railway's silence.
+            quality = QUALITY_PREDICTION_ONLY
+            if reference is not None:
+                latest = station_polls[-1] if station_polls else None
+                poll_gap = max(0, reference + TT_LINGER_S - latest) if latest else TT_LINGER_S
 
         rows.append(
             {
@@ -330,15 +334,16 @@ def _grade_trip_tt(trip, events, trip_obs, polls_by_station, gaps, now):
                 "quality": quality,
                 "rule_version": RULE_VERSION_TT,
                 "n_observations": len(obs),
-                "last_observed_at": obs[-1].observed_at if obs else None,
+                "last_observed_at": last.observed_at if last is not None else None,
                 "poll_gap_s": poll_gap,
+                "read_lag_s": read_lag,
                 "cancelled": cancelled,
                 "skipped": 0,
                 "arr_cancelled": arr_cancelled,
                 "dep_cancelled": dep_cancelled,
                 "cancelled_at_utc": cancelled_at,
                 "added": 0,
-                "planned_platform": platform_planned,
+                "planned_platform": event.planned_platform,
                 "changed_platform": platform_changed,
                 "is_handover": 0,
                 "supposed_departure_hour": local_hour(supposed_dep) if supposed_dep else None,

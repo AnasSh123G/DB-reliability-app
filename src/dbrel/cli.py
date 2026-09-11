@@ -38,6 +38,20 @@ from dbrel.models import (
 app = typer.Typer(add_completion=False, help="Local database of German train punctuality.")
 
 
+def _require_schema(session) -> None:
+    """Fail readably when there is no database yet.
+
+    Read commands must not create the schema — pointing DBREL_DB at a typo should
+    not leave 24 empty tables behind — so they check instead.
+    """
+    present = session.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trip_stop'")
+    ).first()
+    if present is None:
+        typer.echo(f"no schema at {DB_PATH} — run 'dbrel init-db' first")
+        raise typer.Exit(1)
+
+
 @app.command("init-db")
 def init_db() -> None:
     """Create the schema."""
@@ -118,8 +132,8 @@ def finalize(
 @app.command("stats")
 def stats() -> None:
     """Show what the database currently holds."""
-    create_all()
     with session_scope() as session:
+        _require_schema(session)
         typer.echo("tables")
         for label, model in [
             ("feed_version", FeedVersion),
@@ -244,10 +258,28 @@ def stats() -> None:
 
 @app.command("unmatched")
 def unmatched(limit: int = typer.Option(20, help="rows to show")) -> None:
-    """Show realtime trips that resolved to no known train."""
+    """Show feed entries that resolved to no known run.
+
+    The Timetables half is the one that matters operationally: a rising count
+    means the /plan roller has fallen behind, and because /plan serves only today
+    and tomorrow, that planned data is gone for good.
+    """
     with session_scope() as session:
-        total = session.scalar(select(func.count()).select_from(RtUnmatched))
-        typer.echo(f"{total:,} unmatched realtime trips")
+        _require_schema(session)
+        tt_total = session.scalar(select(func.count()).select_from(TtUnmatched))
+        typer.echo(f"{tt_total:,} unmatched Timetables stop events")
+        rows = session.execute(
+            select(TtUnmatched).order_by(TtUnmatched.n_polls.desc()).limit(limit)
+        ).scalars().all()
+        for r in rows:
+            label = f"{r.category or '?'} {r.number or '?'}"
+            typer.echo(
+                f"  {r.service_date}  {label:<12} eva={r.eva}  stop={r.stop_index:>3}"
+                f"  seen in {r.n_polls} polls"
+            )
+
+        rt_total = session.scalar(select(func.count()).select_from(RtUnmatched))
+        typer.echo(f"\n{rt_total:,} unmatched realtime trips")
         rows = session.execute(
             select(RtUnmatched).order_by(RtUnmatched.n_polls.desc()).limit(limit)
         ).scalars().all()
@@ -483,7 +515,7 @@ def tt_poll(
     minutes: int = typer.Option(0, help="stop after this long (with --interval)"),
     dry_run: bool = typer.Option(False),
 ) -> None:
-    """Poll /fchg for the tracked stations, recording only values that changed."""
+    """Poll /fchg for the tracked stations, recording events that have happened."""
     import time as _time
 
     from dbrel.timetables.changes_poller import run_tt_poll
@@ -502,8 +534,9 @@ def tt_poll(
             typer.echo(
                 f"  sweep {sweep}: {result.stations_polled} stations, "
                 f"{result.stops_seen} stops, {result.matched} matched, "
-                f"{result.changed} changed, {result.cancellations} cancellations, "
-                f"{result.elapsed_s:.1f}s"
+                f"{result.created} runs created, {result.unmatched} unmatched, "
+                f"{result.pending} not yet due, {result.stored} stored, "
+                f"{result.cancellations} cancellations, {result.elapsed_s:.1f}s"
             )
             for err in result.errors[:3]:
                 typer.echo(f"  ! {err}")
@@ -546,6 +579,7 @@ def search(term: str = typer.Argument(...), limit: int = typer.Option(10)) -> No
     normalised = search_norm(term)
     lo, hi = prefix_range(normalised)
     with session_scope() as session:
+        _require_schema(session)
         rows = session.execute(
             select(
                 SearchAlias.alias_display,
@@ -578,3 +612,232 @@ def search(term: str = typer.Argument(...), limit: int = typer.Option(10)) -> No
                     select(func.count()).select_from(Train).where(Train.line_id == line_id)
                 ).scalar_one()
                 typer.echo(f"  LINE   {display:<14} {line.category}  {n} numbered trains (id={line.id})")
+
+
+# --- reading the log ------------------------------------------------------
+# TSV columns are the same on both commands and carry raw epochs alongside the
+# formatted times, so a training script never has to parse the display output.
+_TSV_STOP_COLUMNS = (
+    "stop_sequence",
+    "station_id",
+    "station_name",
+    "supposed_arrival_utc",
+    "actual_arrival_utc",
+    "arr_delay_s",
+    "supposed_departure_utc",
+    "actual_departure_utc",
+    "dep_delay_s",
+    "quality",
+    "cancelled",
+    "read_lag_s",
+    "planned_platform",
+    "changed_platform",
+)
+
+
+# One arrival or departure block: two clocks and a signed delay, 19 columns wide.
+# Kept next to the row format below so the two cannot drift apart.
+_TIME_BLOCK = f"{'sched':<5} {'act':<5} {'+/-':>5}  "
+
+
+def _day_window(service_date: str) -> tuple[int, int]:
+    """UTC bounds of one local calendar day.
+
+    Converting the date to instants is what lets a station query seek
+    ix_ts_station_dep. Filtering on trip.service_date instead reads every stop
+    ever recorded at the station and discards almost all of it.
+    """
+    from datetime import date as date_cls
+    from datetime import timedelta
+
+    from dbrel.config import TZ
+
+    day = date_cls.fromisoformat(service_date)
+    start = datetime(day.year, day.month, day.day, tzinfo=TZ)
+    return int(start.timestamp()), int((start + timedelta(days=1)).timestamp())
+
+
+def _clock(epoch: int | None) -> str:
+    if epoch is None:
+        return "--:--"
+    from dbrel.config import TZ
+
+    return datetime.fromtimestamp(epoch, TZ).strftime("%H:%M")
+
+
+def _signed_minutes(seconds: int | None) -> str:
+    if seconds is None:
+        return "     "
+    return f"{seconds / 60:+5.0f}"
+
+
+def _resolve_train(session, term: str) -> int | None:
+    from dbrel.identity import search_norm
+
+    hit = session.execute(
+        select(SearchAlias.train_id)
+        .where(SearchAlias.alias_norm == search_norm(term), SearchAlias.train_id.isnot(None))
+        .order_by(SearchAlias.weight.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if hit is not None:
+        return hit
+    if term.isdigit():
+        return session.execute(
+            select(Train.id).where(Train.train_number == int(term)).limit(1)
+        ).scalar_one_or_none()
+    return None
+
+
+def _resolve_station(session, term: str) -> int | None:
+    if term.isdigit():
+        hit = session.execute(
+            select(Station.id).where(Station.eva == int(term)).limit(1)
+        ).scalar_one_or_none()
+        if hit is not None:
+            return hit
+    # Anchored, so ix_station_name is usable. A leading wildcard would not be.
+    return session.execute(
+        select(Station.id).where(Station.name.like(f"{term}%")).order_by(Station.name).limit(1)
+    ).scalar_one_or_none()
+
+
+@app.command("show-train")
+def show_train(
+    train: str = typer.Argument(..., help="train number or name: 599, 'ICE 599'"),
+    date: str = typer.Option(..., "--date", help="service date, YYYY-MM-DD"),
+    fmt: str = typer.Option("table", "--format", help="table | tsv"),
+) -> None:
+    """Every stop of one run, scheduled against actual."""
+    with session_scope() as session:
+        _require_schema(session)
+        train_id = _resolve_train(session, train)
+        if train_id is None:
+            typer.echo(f"no train matching {train!r}")
+            raise typer.Exit(1)
+        row = session.execute(
+            select(Trip, Train)
+            .join(Train, Train.id == Trip.train_id)
+            .where(Trip.train_id == train_id, Trip.service_date == date)
+        ).first()
+        if row is None:
+            typer.echo(f"no run of train id {train_id} on {date}")
+            raise typer.Exit(1)
+        trip, train_row = row
+        stops = session.execute(
+            select(TripStop, Station.name)
+            .join(Station, Station.id == TripStop.station_id)
+            .where(TripStop.trip_id == trip.id)
+            .order_by(TripStop.stop_sequence)
+        ).all()
+
+        if fmt == "tsv":
+            typer.echo("\t".join(_TSV_STOP_COLUMNS))
+            for stop, station_name in stops:
+                typer.echo(_stop_tsv(stop, station_name))
+            return
+
+        typer.echo(
+            f"\n{train_row.display_name or train_row.long_name}  ·  {date}  ·  {trip.status}"
+            f"  ·  {trip.n_stops_tracked or 0} of {trip.n_stops or 0} stops tracked"
+        )
+        if trip.final_delay_s is not None:
+            typer.echo(f"final delay {trip.final_delay_s / 60:+.0f} min")
+        typer.echo(f"route: {train_row.route_path or '—'}")
+        typer.echo(f"\n seq  {'station':<27} {'arrival':<19}{'departure':<19}quality")
+        typer.echo(f"      {'':<27} {_TIME_BLOCK}{_TIME_BLOCK}")
+        for stop, station_name in stops:
+            typer.echo(
+                f" {stop.stop_sequence:>3}  {station_name[:27]:<27} "
+                f"{_clock(stop.supposed_arrival_utc)} {_clock(stop.actual_arrival_utc)} "
+                f"{_signed_minutes(stop.arr_delay_s)}  "
+                f"{_clock(stop.supposed_departure_utc)} {_clock(stop.actual_departure_utc)} "
+                f"{_signed_minutes(stop.dep_delay_s)}  {stop.quality}"
+            )
+        typer.echo("")
+
+
+@app.command("show-station")
+def show_station(
+    station: str = typer.Argument(..., help="station name prefix or eva number"),
+    date: str = typer.Option(..., "--date", help="local calendar date, YYYY-MM-DD"),
+    fmt: str = typer.Option("table", "--format", help="table | tsv"),
+    limit: int = typer.Option(200),
+) -> None:
+    """Everything that called at one station on one day."""
+    from sqlalchemy import and_, or_
+
+    with session_scope() as session:
+        _require_schema(session)
+        station_id = _resolve_station(session, station)
+        if station_id is None:
+            typer.echo(f"no station matching {station!r}")
+            raise typer.Exit(1)
+        station_row = session.get(Station, station_id)
+        lo, hi = _day_window(date)
+        ordering = func.coalesce(TripStop.supposed_departure_utc, TripStop.supposed_arrival_utc)
+        rows = session.execute(
+            select(TripStop, Train)
+            .join(Trip, Trip.id == TripStop.trip_id)
+            .join(Train, Train.id == Trip.train_id)
+            .where(
+                TripStop.station_id == station_id,
+                or_(
+                    and_(
+                        TripStop.supposed_departure_utc >= lo,
+                        TripStop.supposed_departure_utc < hi,
+                    ),
+                    and_(
+                        TripStop.supposed_arrival_utc >= lo,
+                        TripStop.supposed_arrival_utc < hi,
+                    ),
+                ),
+            )
+            .order_by(ordering)
+            .limit(limit)
+        ).all()
+
+        if fmt == "tsv":
+            typer.echo("train\ttrain_number\t" + "\t".join(_TSV_STOP_COLUMNS))
+            for stop, train_row in rows:
+                label = train_row.display_name or ""
+                typer.echo(
+                    f"{label}\t{train_row.train_number or ''}\t"
+                    + _stop_tsv(stop, station_row.name)
+                )
+            return
+
+        typer.echo(f"\n{station_row.name}  ·  {date}  ·  {len(rows)} calls")
+        typer.echo(f"\n {'train':<15}  {'arrival':<19}{'departure':<19}quality")
+        typer.echo(f" {'':<15}  {_TIME_BLOCK}{_TIME_BLOCK}")
+        for stop, train_row in rows:
+            typer.echo(
+                f" {(train_row.display_name or '?')[:15]:<15}  "
+                f"{_clock(stop.supposed_arrival_utc)} {_clock(stop.actual_arrival_utc)} "
+                f"{_signed_minutes(stop.arr_delay_s)}  "
+                f"{_clock(stop.supposed_departure_utc)} {_clock(stop.actual_departure_utc)} "
+                f"{_signed_minutes(stop.dep_delay_s)}  {stop.quality}"
+            )
+        typer.echo("")
+
+
+def _stop_tsv(stop, station_name: str) -> str:
+    return "\t".join(
+        "" if value is None else str(value)
+        for value in (
+            stop.stop_sequence,
+            stop.station_id,
+            station_name,
+            stop.supposed_arrival_utc,
+            stop.actual_arrival_utc,
+            stop.arr_delay_s,
+            stop.supposed_departure_utc,
+            stop.actual_departure_utc,
+            stop.dep_delay_s,
+            stop.quality,
+            stop.cancelled,
+            stop.read_lag_s,
+            stop.planned_platform,
+            stop.changed_platform,
+        )
+    )

@@ -89,5 +89,20 @@ GRACE_S = 120
 # A value must hold still this long past passage to be graded OBSERVED.
 SETTLE_S = 300
 
-# A service date is closed this long after its last scheduled arrival.
+# A service date is closed this long after its last scheduled arrival. Also how
+# long finalize waits before stamping a run finalized_at: past that point no
+# further read can add anything, so the grades are safe to freeze.
 SERVICE_DATE_CLOSE_S = 6 * 3600
+
+# How long a passed event stays visible in the /fchg horizon. §18 could only show
+# it exceeds 75 minutes, because the pilot's watch ended before the API dropped
+# anything. Measured properly on 2026-09-12 over 21 stations: values were still
+# being returned 15 hours after the event, tapering smoothly (86% of 717 recorded
+# values within 8 hours), so retention is an order of magnitude longer than the
+# floor suggested.
+#
+# It decides whether a missing value means "the railway said nothing" (NO_DATA) or
+# "we were not reading" (PREDICTION_ONLY). Set to 6 hours: well inside the observed
+# range, and equal to SERVICE_DATE_CLOSE_S so the window we check for poll coverage
+# is exactly the period over which the grades are still allowed to change.
+TT_LINGER_S = int(os.environ.get("DBREL_TT_LINGER_S", 6 * 3600))

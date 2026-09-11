@@ -52,7 +52,9 @@ class TrackedStation(Base):
     # 'YYYY-MM-DD:HH' high-water mark for the rolling /plan importer.
     last_plan_hour: Mapped[str | None] = mapped_column(String(13))
     last_fchg_at: Mapped[int | None] = mapped_column(Integer)
-    # Measured median seconds between polls; SETTLE_S is derived from it per station.
+    # Measured median seconds between polls. Diagnostic only: it used to scale a
+    # per-station settle window, which the archival reader no longer needs — a
+    # value read after passage is already final, so there is nothing to wait out.
     median_poll_gap_s: Mapped[int | None] = mapped_column(Integer)
 
     n_fchg_polls: Mapped[int] = mapped_column(Integer, default=0)
@@ -124,6 +126,12 @@ class TtObservation(Base):
 
     /fchg returns every known change over a many-hour horizon on every poll, so
     storing unchanged repeats would grow the table by the whole horizon each sweep.
+
+    Dedup is enforced by the database on value_sha rather than by comparing tuples
+    in Python. The tuple approach shipped three different column orders — the row
+    written, the row read back, and the value compared — and leaked 34% duplicates,
+    which also corrupted observed_at into "when we last rewrote an unchanged value",
+    the exact quantity the grading rule reads as "when it was last revised".
     """
 
     __tablename__ = "tt_observation"
@@ -133,6 +141,11 @@ class TtObservation(Base):
     trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id"))
     stop_sequence: Mapped[int] = mapped_column(Integer)
     observed_at: Mapped[int] = mapped_column(Integer)
+
+    # Digest of the published value below. A plain UniqueConstraint over those
+    # columns would not dedupe anything: SQLite treats NULLs as distinct, and most
+    # of them are legitimately NULL (an origin stop has no arrival).
+    value_sha: Mapped[str] = mapped_column(String(40))
 
     # Same names as rt_observation: finalize prefers *_time_utc and computes
     # nothing differently for a Timetables row.
@@ -144,12 +157,20 @@ class TtObservation(Base):
     # IRIS specifics that have no GTFS-RT equivalent.
     arr_status: Mapped[str | None] = mapped_column(String(1))  # p | a | c
     dep_status: Mapped[str | None] = mapped_column(String(1))
+    # cp only, never coalesced with pp. The planned platform belongs to the
+    # schedule (station_stop.platform_code); folding it in here made "changed"
+    # and "planned" indistinguishable downstream.
     arr_platform: Mapped[str | None] = mapped_column(String(16))
     dep_platform: Mapped[str | None] = mapped_column(String(16))
+    # clt. One column: a one-sided cancellation still publishes one timestamp, and
+    # which side it applies to is recoverable from arr_status / dep_status.
     cancelled_at_utc: Mapped[int | None] = mapped_column(Integer)
     changed_path: Mapped[str | None] = mapped_column(Text)
 
-    __table_args__ = (Index("ix_ttobs_trip_seq_time", "trip_id", "stop_sequence", "observed_at"),)
+    __table_args__ = (
+        UniqueConstraint("trip_id", "stop_sequence", "value_sha", name="uq_ttobs_trip_seq_value"),
+        Index("ix_ttobs_trip_seq_time", "trip_id", "stop_sequence", "observed_at"),
+    )
 
 
 class TtUnmatched(Base):

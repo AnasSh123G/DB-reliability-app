@@ -36,12 +36,24 @@ QUALITY_MISSING = "MISSING"
 # GTFS-RT inference and has different provenance.
 QUALITY_CANCELLED = "CANCELLED"
 
+# Timetables-only, and the archival path's normal outcome. Read when the event
+# was already in the past, so ct is DB's recorded actual rather than a forecast.
+# Distinct from OBSERVED, which asserts something stronger and different — that a
+# value was seen being revised after passage and then holding while we kept
+# polling. A single late read cannot witness that, and must not claim it.
+QUALITY_RECORDED = "RECORDED"
+
 # A PLAN_HELD grade was designed for the case where /fchg published only changes,
 # so that a punctual train never appeared and its silence had to be read as "ran
 # to plan". Measurement killed it: 100% of planned events do appear, 97% carrying
 # a ct, and punctual running is published explicitly as ct == pt
 # (docs/probe-findings.md §18). Absence therefore still means absence.
-TRUSTED_QUALITIES = (QUALITY_OBSERVED, QUALITY_INFERRED_DOWNSTREAM, QUALITY_LAST_SEEN)
+TRUSTED_QUALITIES = (
+    QUALITY_RECORDED,
+    QUALITY_OBSERVED,
+    QUALITY_INFERRED_DOWNSTREAM,
+    QUALITY_LAST_SEEN,
+)
 
 
 class Station(Base):
@@ -264,7 +276,10 @@ class StationStop(Base):
 
     __table_args__ = (
         UniqueConstraint("feed_version_id", "train_id", "stop_sequence", name="uq_ss_fv_train_seq"),
-        Index("ix_ss_station", "station_id"),
+        # station_id stays leading so a bare station lookup still seeks, but carrying
+        # feed_version_id means a caller can scope to one feed rather than summing
+        # every rebuild's copy of the same pattern.
+        Index("ix_ss_station", "station_id", "feed_version_id", "planned_departure_sec"),
         Index("ix_ss_train", "train_id"),
     )
 
@@ -368,6 +383,10 @@ class TripStop(Base):
     n_observations: Mapped[int] = mapped_column(Integer, default=0)
     last_observed_at: Mapped[int | None] = mapped_column(Integer)
     poll_gap_s: Mapped[int | None] = mapped_column(Integer)
+    # Seconds between the event happening and us reading its value. The confidence
+    # measure for QUALITY_RECORDED, where poll_gap_s has nothing to say: a value
+    # read long after passage had longer to stop moving.
+    read_lag_s: Mapped[int | None] = mapped_column(Integer)
     cancelled: Mapped[int] = mapped_column(Integer, default=0)
     skipped: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -392,10 +411,28 @@ class TripStop(Base):
 
     __table_args__ = (
         UniqueConstraint("trip_id", "stop_sequence", name="uq_tripstop_trip_seq"),
-        # Each index ends in the measure so aggregations are answered from the index.
-        Index("ix_ts_station_time_delay", "station_id", "supposed_departure_utc", "dep_delay_s"),
-        Index("ix_ts_hour_delay", "supposed_departure_hour", "dep_delay_s"),
-        Index("ix_ts_quality", "quality"),
+        # Each index ends in the measure so aggregations are answered from the index,
+        # and carries is_handover before it: a station-level average must exclude
+        # handover stops, and reading that flag from the table would defeat the point.
+        Index(
+            "ix_ts_station_dep",
+            "station_id",
+            "supposed_departure_utc",
+            "is_handover",
+            "dep_delay_s",
+        ),
+        Index(
+            "ix_ts_station_arr",
+            "station_id",
+            "supposed_arrival_utc",
+            "is_handover",
+            "arr_delay_s",
+        ),
+        Index("ix_ts_hour_delay", "supposed_departure_hour", "is_handover", "dep_delay_s"),
+        Index("ix_ts_quality_delay", "quality", "dep_delay_s"),
+        # Pattern row -> its dated instances. A nullable FK, so unindexed it forced
+        # a full scan of the fact table.
+        Index("ix_ts_station_stop", "station_stop_id"),
     )
 
     def __repr__(self) -> str:

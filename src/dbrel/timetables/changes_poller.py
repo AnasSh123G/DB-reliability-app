@@ -1,10 +1,15 @@
-"""Poll /fchg for the tracked stations and record what changed.
+"""Poll /fchg for the tracked stations and record what has already happened.
 
-Follows realtime/poller.py step for step. The change-detection filter is not an
-optimisation here but a necessity: /fchg returns *every* known change over a
-many-hour horizon on every poll — in the pilot, ~2,400 stop events per sweep
-against ~930 planned events in the next three hours — so storing unchanged
-repeats would grow the table by the whole horizon every 30 seconds.
+This is an archival reader, not a live monitor. /fchg returns its whole horizon on
+every poll — forecasts for trains still to come, alongside recorded values for
+trains already gone — and only the second kind is wanted here. IRIS never labels
+which is which (`ct` is an estimate before passage and DB's recorded actual
+afterwards), so the distinction is drawn from the clock: an event whose current
+time is far enough in the past has happened, and its `ct` is therefore a fact.
+
+That filter is judged on `ct`, never `pt`. A train booked for 10:00 and running
+30 minutes late has not departed at 10:15, and grading it against its planned
+time would invent a departure that never occurred.
 
 One tt_poll row is written per station per sweep, including failures. A station
 timing out is data about our own coverage, and must not abort the sweep.
@@ -17,13 +22,33 @@ import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from sqlalchemy import case, func, insert, select, text, update
+from sqlalchemy import case, select, text, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from dbrel.identity import SOURCE_TT
+from dbrel.config import GRACE_S
 from dbrel.gtfs.timeutil import local_date
-from dbrel.models import Station, TrackedStation, Trip, TtObservation, TtPoll
+from dbrel.models import (
+    Station,
+    TrackedStation,
+    Train,
+    Trip,
+    TtObservation,
+    TtPoll,
+    TtUnmatched,
+)
 from dbrel.timetables.client import TimetablesClient
-from dbrel.timetables.parser import TtStop, parse_timetable
+from dbrel.timetables.parser import TtEvent, TtStop, parse_timetable
+from dbrel.timetables.runs import (
+    RunContext,
+    RunCounters,
+    tt_feed_version,
+    upsert_run,
+)
+
+# IRIS returns DELFI bus and tram halts alongside rail. This project is rail only.
+NON_RAIL_CATEGORIES = frozenset({"Bus", "STR", "STB", "U"})
 
 
 @dataclass(slots=True)
@@ -34,7 +59,9 @@ class PollResult:
     stops_seen: int = 0
     matched: int = 0
     unmatched: int = 0
-    changed: int = 0
+    created: int = 0
+    pending: int = 0
+    stored: int = 0
     messages: int = 0
     cancellations: int = 0
     elapsed_s: float = 0.0
@@ -57,51 +84,79 @@ def _load_trip_index(session: Session, service_dates: list[str]) -> dict[str, in
     return {run_key: trip_id for run_key, trip_id in rows}
 
 
-def _load_last_observations(session: Session, trip_ids: list[int]) -> dict[tuple[int, int], tuple]:
-    """Latest stored value per (trip, stop). MAX(id) works: rows are append-only."""
-    latest: dict[tuple[int, int], tuple] = {}
-    if not trip_ids:
-        return latest
-    chunk_size = 900
+def _is_full_record(stop: TtStop) -> bool:
+    """Whether /fchg sent this stop complete enough to build a run from.
+
+    For an ordinary planned run /fchg is a pure delta — ct with no pt — and the
+    planned side has to come from /plan. But additions and replacements, which
+    /plan structurally never contains, arrive with <tl> and pt together (they
+    co-occur exactly in the samples). Those are the runs worth creating here,
+    and the only ones that can be.
+    """
+    if not stop.category or not stop.number:
+        return False
+    if stop.category in NON_RAIL_CATEGORIES:
+        return False
+    return any(
+        side is not None and side.planned_ts is not None
+        for side in (stop.arrival, stop.departure)
+    )
+
+
+def _has_happened(event: TtEvent | None, now: int) -> bool:
+    """Whether this arrival or departure is already in the past.
+
+    The reference is the current published time, falling back to the planned one
+    when IRIS has said nothing — never the other way round.
+    """
+    if event is None:
+        return False
+    reference = event.changed_ts or event.planned_ts
+    if reference is None:
+        return False
+    return reference + GRACE_S < now
+
+
+def _existing_value_shas(session: Session, trip_ids: list[int]) -> set[tuple[int, int, str]]:
+    """Values already recorded for these runs, as (trip, stop, digest).
+
+    Answered from the uniqueness index alone, so it stays cheap as history grows.
+    """
+    known: set[tuple[int, int, str]] = set()
+    chunk_size = 900  # SQLite's default parameter ceiling is 999
     for start in range(0, len(trip_ids), chunk_size):
-        chunk = trip_ids[start : start + chunk_size]
         rows = session.execute(
             select(
                 TtObservation.trip_id,
                 TtObservation.stop_sequence,
-                TtObservation.arr_time_utc,
-                TtObservation.arr_platform,
-                TtObservation.arr_status,
-                TtObservation.dep_time_utc,
-                TtObservation.dep_platform,
-                TtObservation.dep_status,
-                TtObservation.cancelled_at_utc,
-            ).where(
-                TtObservation.id.in_(
-                    select(func.max(TtObservation.id))
-                    .where(TtObservation.trip_id.in_(chunk))
-                    .group_by(TtObservation.trip_id, TtObservation.stop_sequence)
-                )
-            )
+                TtObservation.value_sha,
+            ).where(TtObservation.trip_id.in_(trip_ids[start : start + chunk_size]))
         ).all()
-        for trip_id, seq, a_t, a_p, a_s, d_t, d_p, d_s, clt in rows:
-            latest[(trip_id, seq)] = (a_t, a_p, a_s, clt, d_t, d_p, d_s, clt)
-    return latest
+        known.update(rows)
+    return known
 
 
-def _observation_value(stop: TtStop) -> tuple:
-    """Must line up with the column order loaded above."""
-    ar, dp = stop.arrival, stop.departure
-    return (
-        ar.changed_ts if ar else None,
-        ar.changed_platform if ar else None,
-        ar.changed_status if ar else None,
-        ar.cancelled_at if ar else None,
-        dp.changed_ts if dp else None,
-        dp.changed_platform if dp else None,
-        dp.changed_status if dp else None,
-        dp.cancelled_at if dp else None,
-    )
+def _value_sha(ar: TtEvent | None, dp: TtEvent | None) -> str:
+    """Digest of the published value, for database-level dedup.
+
+    Comparing tuples in Python is what this replaces: the written row, the row read
+    back and the value compared had drifted into three different column orders,
+    which leaked 34% duplicates and corrupted observed_at into "when we last
+    rewrote an unchanged value" — the field grading reads as "when last revised".
+    """
+    parts = []
+    for event in (ar, dp):
+        parts.extend(
+            ("", "", "", "")
+            if event is None
+            else (
+                event.changed_ts,
+                event.changed_platform,
+                event.changed_status,
+                event.cancelled_at,
+            )
+        )
+    return hashlib.sha1("|".join("" if p is None else str(p) for p in parts).encode()).hexdigest()
 
 
 def run_tt_poll(
@@ -136,7 +191,21 @@ def run_tt_poll(
 
     service_dates = _candidate_service_dates(now)
     trip_by_run = _load_trip_index(session, service_dates)
-    last_values = _load_last_observations(session, list(trip_by_run.values()))
+
+    # Shared with the /plan importer so both mint identities the same way.
+    run_ctx = RunContext(
+        fv_id=tt_feed_version(session),
+        station_id_by_eva={ts.eva: st.id for ts, st in tracked},
+        station_name_by_eva={ts.eva: st.name for ts, st in tracked},
+        train_by_key=dict(
+            session.execute(
+                # Only tts: keys can match; the 87k GTFS trains never will.
+                select(Train.identity_key, Train.id).where(Train.source == SOURCE_TT)
+            ).all()
+        ),
+        now=now,
+    )
+    run_counters = RunCounters()
 
     for tracked_station, station in tracked:
         fetch_started = time.monotonic()
@@ -159,7 +228,10 @@ def run_tt_poll(
             continue
 
         try:
-            parsed = parse_timetable(resp.body, keep=trip_by_run.__contains__)
+            # No keep= predicate: filtering by known run key used to drop unmatched
+            # runs inside the parser, before an object existed to count. That hid
+            # 80% of returned events behind a counter that could never fire.
+            parsed = parse_timetable(resp.body)
         except Exception as exc:
             poll.error = f"parse: {exc}"
             session.add(poll)
@@ -177,51 +249,79 @@ def run_tt_poll(
         observed_at = int(time.time())
         obs_rows: list[dict] = []
         msg_rows: list[dict] = []
+        unmatched_rows: list[dict] = []
         seen_trip_ids: set[int] = set()
         # Per-station, not cumulative: these land on this station's poll row.
-        station_matched = station_unmatched = 0
+        station_matched = station_unmatched = station_created = 0
 
         for stop in parsed.stops:
             trip_id = trip_by_run.get(stop.run_key)
+            if trip_id is None and _is_full_record(stop):
+                # An addition or replacement. /plan will never carry it, so this is
+                # the only chance to record it at all.
+                if stop.eva is None:
+                    stop.eva = tracked_station.eva
+                trip_id = upsert_run(
+                    session, run_ctx, run_counters, stop.run_key, [stop]
+                )
+                trip_by_run[stop.run_key] = trip_id
+                station_created += 1
             if trip_id is None:
-                # keep= already filtered these, so reaching here means the run key
-                # changed shape; count it rather than dropping it silently.
-                result.unmatched += 1
+                # A delta for a run we have no /plan row for. Recorded rather than
+                # dropped: a rising count is the alarm that the roller has fallen
+                # behind, and because /plan serves only today and tomorrow that
+                # planned data is being lost permanently.
                 station_unmatched += 1
+                unmatched_rows.append(
+                    {
+                        "service_date": stop.service_date,
+                        "daily_trip_id": stop.daily_trip_id,
+                        "stop_index": stop.stop_index,
+                        "eva": stop.eva or tracked_station.eva,
+                        "category": stop.category,
+                        "number": stop.number,
+                        "first_poll_id": poll.id,
+                        "last_poll_id": poll.id,
+                    }
+                )
                 continue
-            result.matched += 1
             station_matched += 1
             seen_trip_ids.add(trip_id)
 
-            value = _observation_value(stop)
-            if all(v is None for v in value):
-                continue  # a stop present in fchg but carrying no change yet
-            if last_values.get((trip_id, stop.stop_index)) == value:
+            # Only the side that has actually happened contributes. A stop whose
+            # arrival is past but whose departure is still ahead yields its arrival
+            # now and its departure on a later poll.
+            ar = stop.arrival if _has_happened(stop.arrival, now) else None
+            dp = stop.departure if _has_happened(stop.departure, now) else None
+            if ar is None and dp is None:
+                result.pending += 1
+                continue
+            if (ar is None or ar.changed_ts is None) and (dp is None or dp.changed_ts is None):
+                # Past, but IRIS published no time for it — nothing to record.
                 continue
 
-            last_values[(trip_id, stop.stop_index)] = value
-            ar, dp = stop.arrival, stop.departure
             obs_rows.append(
                 {
                     "poll_id": poll.id,
                     "trip_id": trip_id,
                     "stop_sequence": stop.stop_index,
                     "observed_at": observed_at,
+                    "value_sha": _value_sha(ar, dp),
                     "arr_delay_s": ar.delay_s if ar else None,
                     "dep_delay_s": dp.delay_s if dp else None,
                     "arr_time_utc": ar.changed_ts if ar else None,
                     "dep_time_utc": dp.changed_ts if dp else None,
                     "arr_status": ar.changed_status if ar else None,
                     "dep_status": dp.changed_status if dp else None,
-                    "arr_platform": (ar.changed_platform or ar.planned_platform) if ar else None,
-                    "dep_platform": (dp.changed_platform or dp.planned_platform) if dp else None,
+                    # cp verbatim. The planned platform lives on station_stop.
+                    "arr_platform": ar.changed_platform if ar else None,
+                    "dep_platform": dp.changed_platform if dp else None,
                     "cancelled_at_utc": (ar.cancelled_at if ar else None)
                     or (dp.cancelled_at if dp else None),
                     "changed_path": (ar.changed_path if ar else None)
                     or (dp.changed_path if dp else None),
                 }
             )
-            result.changed += 1
             if (ar and ar.is_cancelled) or (dp and dp.is_cancelled):
                 result.cancellations += 1
 
@@ -242,8 +342,24 @@ def run_tt_poll(
                     }
                 )
 
+        # An already-recorded value reappears on every poll for as long as it
+        # lingers in the horizon, so most of obs_rows is usually already stored.
+        # Filtering against what exists gives an honest stored count; the conflict
+        # clause below is then only a guard against a concurrent sweep.
+        known = _existing_value_shas(session, sorted({r["trip_id"] for r in obs_rows}))
+        obs_rows = [
+            r
+            for r in obs_rows
+            if (r["trip_id"], r["stop_sequence"], r["value_sha"]) not in known
+        ]
+        stored = len(obs_rows)
         if obs_rows and not dry_run:
-            session.execute(insert(TtObservation), obs_rows)
+            session.execute(
+                sqlite_insert(TtObservation).on_conflict_do_nothing(
+                    index_elements=["trip_id", "stop_sequence", "value_sha"]
+                ),
+                obs_rows,
+            )
         if msg_rows and not dry_run:
             # A message repeats on every poll while it is valid.
             session.execute(
@@ -257,6 +373,18 @@ def run_tt_poll(
                 msg_rows,
             )
             result.messages += len(msg_rows)
+        if unmatched_rows and not dry_run:
+            session.execute(
+                sqlite_insert(TtUnmatched)
+                .on_conflict_do_update(
+                    index_elements=["service_date", "daily_trip_id", "stop_index"],
+                    set_={
+                        "last_poll_id": poll.id,
+                        "n_polls": TtUnmatched.__table__.c.n_polls + 1,
+                    },
+                )
+                .values(unmatched_rows)
+            )
 
         if seen_trip_ids and not dry_run:
             session.execute(
@@ -268,9 +396,13 @@ def run_tt_poll(
                 )
             )
 
+        result.matched += station_matched
+        result.unmatched += station_unmatched
+        result.created += station_created
+        result.stored += stored
         poll.n_matched = station_matched
         poll.n_unmatched = station_unmatched
-        poll.n_changed = len(obs_rows)
+        poll.n_changed = stored
         poll.store_ms = int((time.monotonic() - store_started) * 1000)
 
         tracked_station.last_fchg_at = observed_at
@@ -279,7 +411,8 @@ def run_tt_poll(
         result.stops_seen += parsed.n_raw_stops
         progress(
             f"    {station.name:<26} {parsed.n_raw_stops:>5} stops "
-            f"{len(obs_rows):>4} changed  {int((time.monotonic() - fetch_started) * 1000)}ms"
+            f"{station_matched:>5} matched {stored:>4} stored  "
+            f"{int((time.monotonic() - fetch_started) * 1000)}ms"
         )
 
     session.flush()

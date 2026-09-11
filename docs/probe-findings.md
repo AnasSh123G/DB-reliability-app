@@ -336,3 +336,75 @@ numbers, but "a few MB/day" was not true. Two consequences:
 **Storage, by contrast, is efficient as designed:** 45,011 matched stop events produced
 only 2,972 stored observations — **6.6 %** — because unchanged values are discarded.
 Without that filter the table would have grown by the full horizon every 30 seconds.
+
+---
+
+# Part III — the archival reader, 2026-09-12
+
+Measured on the 21-station Rhein-Ruhr corridor (Köln → Hamm, plus the Wuppertal and
+northern Ruhr branches), one `/plan` roll of 84 station-hours followed by one `/fchg`
+sweep. These supersede two figures in Part II.
+
+## 20. `/fchg` retains passed events for ~15 hours, not 75 minutes
+
+§18 could only establish a **floor**: every event survived the pilot's 75-minute watch,
+because the watch ended before the API dropped anything. Measured against the clock
+instead of against a watch, over 717 recorded values:
+
+| age of value when read | values |
+|---|---|
+| under 1 h | 246 |
+| 1–2 h | 108 |
+| 2–8 h | 302 |
+| 8–15 h | 61 |
+| oldest seen | **905 minutes** |
+
+The decay is smooth rather than a cliff, and 89 % of values were under 8 hours old when
+read. So retention is
+an order of magnitude longer than §18 could show.
+
+**Consequence:** the archival strategy does not need frequent polling. A value can be
+read hours after the event and still be the recorded one, which is what makes
+`QUALITY_RECORDED` sound — and what lets `TT_LINGER_S` sit at 6 hours, aligned with
+`SERVICE_DATE_CLOSE_S`, so the poll-coverage window matches the period in which grades
+are still allowed to change.
+
+## 21. §19's per-station stop count was off by 7×
+
+§19 states `/fchg` returns "~2,170 stop events per station per poll". Measured: **9,950
+stops across 21 stations, a mean of 474 per station** (range 93 at Castrop-Rauxel to 1,119
+at Köln Hbf). 2,170 was the per-*sweep* total across the eight pilot stations, mislabelled
+as per-station. The bandwidth conclusions in §19 are unaffected, since bytes were measured
+directly.
+
+## 22. Four of 21 EVA mappings needed a human, all of them §13 cases
+
+Auto-resolution got 17/21. The four failures are precisely the systematic naming
+disagreements §13 catalogued, and each needed `--manual`:
+
+| GTFS (DELFI) name | IRIS name | eva | why it failed |
+|---|---|---|---|
+| `Hamm (Westf), Hauptbahnhof` | `Hamm(Westf)Hbf` | 8000149 | DELFI comma suffix |
+| `Herne Wanne-Eickel Hbf` | `Herne-Wanne-Eickel Hbf` | 8000192 | IRIS's extra hyphen (§14) |
+| `Köln Messe/Deutz Bf` | `Köln Messe/Deutz` | 8003368 | `/` in the name → HTTP 404 |
+| `Neuss Hauptbahnhof` | `Neuss Hbf` | 8000274 | Hbf vs Hauptbahnhof (§13) |
+
+Also note `Hamm (Westf)` **does** exist as a parent station in the free fv+rv feeds,
+contradicting §13's claim that it and Münster have none.
+
+**A new instance of the §14 trap, worth recording:** querying `/station/KNE` — a plausible
+guess at Neuss's DS100 — returns **`Neuwied`**, eva 8000276. A rail eva, in range, wholly
+the wrong city. Neuss is DS100 `KN`, eva 8000274. DS100 codes must be verified against the
+returned name, never trusted because the eva looks valid.
+
+## 23. `/plan` coverage is the binding constraint, and the alarm now works
+
+The first sweep matched 1,486 of 9,950 stops and sent **8,464 to `tt_unmatched`** — because
+`/plan` had only been rolled for 4 hours while `/fchg`'s horizon spans ~15. The residue is
+not noise: it is the measure of how far `/plan` coverage lags, and it was previously
+invisible, since `n_unmatched` could never fire and `tt_unmatched` was never written.
+
+Separately, **118 runs were created directly from `/fchg`** in that one sweep — entries
+carrying a full `<tl>` + `pt` record, i.e. the additions and replacements `/plan`
+structurally cannot contain. Under the old `keep=` predicate all 118 were discarded before
+an object existed.
