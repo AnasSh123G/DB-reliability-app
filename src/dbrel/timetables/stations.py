@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from dbrel.config import RAIL_EVA_RANGE
 from dbrel.identity import normalize_name
-from dbrel.models import Station, StationStop, TrackedStation
+from dbrel.models import Station, StationStop
 from dbrel.timetables.client import TimetablesClient
 from dbrel.timetables.parser import parse_stations, parse_timetable
 
@@ -162,7 +162,6 @@ def map_stations(
         station.eva = cand.eva
         station.ds100 = cand.ds100
         station.eva_source = "iris"
-        station.eva_confidence = 0.0 if cand.query == cand.ds100 else 1.0
         accepted[station.id] = cand
         progress(f"  {station.name}: eva={cand.eva} ds100={cand.ds100} via {cand.query!r}")
     session.flush()
@@ -172,18 +171,13 @@ def map_stations(
 def track_stations(session: Session, station_ids: list[int], *, priority: int = 1) -> int:
     """Add stations with a resolved eva to the tracked set."""
     now = int(time.time())
-    existing = {
-        row[0] for row in session.execute(select(TrackedStation.station_id)).all()
-    }
     added = 0
     for station in session.execute(select(Station).where(Station.id.in_(station_ids))).scalars():
-        if station.eva is None or station.id in existing:
+        if station.eva is None or station.tracked:
             continue
-        session.add(
-            TrackedStation(
-                station_id=station.id, eva=station.eva, poll_priority=priority, added_at=now
-            )
-        )
+        station.tracked = 1
+        station.poll_priority = priority
+        station.tracked_at = now
         added += 1
     session.flush()
     return added

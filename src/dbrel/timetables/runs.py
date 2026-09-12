@@ -42,7 +42,6 @@ from dbrel.models import (
     ServiceLine,
     StationStop,
     Train,
-    TrainConflict,
     Trip,
 )
 from dbrel.timetables.parser import TtStop
@@ -131,6 +130,15 @@ def sec_of_day(epoch: int | None, service_date: str) -> int | None:
     return int(epoch - anchor)
 
 
+def epoch_of_sec(sec: int | None, service_date: str) -> int | None:
+    """Inverse of sec_of_day: an absolute instant from a schedule offset."""
+    if sec is None:
+        return None
+    day = date_cls.fromisoformat(service_date)
+    anchor = datetime(day.year, day.month, day.day, 12, tzinfo=TZ).timestamp() - 12 * 3600
+    return int(anchor + sec)
+
+
 def upsert_line(
     session: Session,
     cache: dict[str, int],
@@ -212,21 +220,12 @@ def upsert_run(
             and train.operator
             and train.operator != head.owner
         ):
-            session.add(
-                TrainConflict(
-                    train_id=train_id,
-                    service_date=head.service_date,
-                    field="path_sha1+operator",
-                    expected=f"{train.path_sha1[:12]} / {train.operator}",
-                    observed=f"{digest[:12]} / {head.owner}",
-                    run_key=run_key,
-                    first_seen=ctx.now,
-                )
-            )
             counters.conflicts += 1
             # Park it on a variant identity rather than dropping it. Abandoning the
             # run here used to mean no trip existed, so /fchg could never match it
             # and the whole day's actuals for that service were lost silently.
+            # The variant key is itself the record of the disagreement, which is why
+            # the separate train_conflict audit table earned nothing and is gone.
             identity = f"{identity}#{digest[:8]}"
             train_id = ctx.train_by_key.get(identity)
 

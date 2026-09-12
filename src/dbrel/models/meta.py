@@ -63,23 +63,3 @@ class Route(Base):
 
     def __repr__(self) -> str:
         return f"<Route {self.short_name!r} type={self.route_type}>"
-
-
-class TripServiceDate(Base):
-    """Which dates a train runs, expanded from calendar.txt + calendar_dates.txt.
-
-    Materialised at import so "is this train running today" is an indexed lookup,
-    and so a train's *absence* from the realtime feed is detectable.
-    """
-
-    __tablename__ = "trip_service_date"
-
-    train_id: Mapped[int] = mapped_column(ForeignKey("train.id"), primary_key=True)
-    service_date: Mapped[str] = mapped_column(String(10), primary_key=True)
-    feed_version_id: Mapped[int] = mapped_column(ForeignKey("feed_version.id"))
-    source_run_key: Mapped[str] = mapped_column(String(64))
-
-    __table_args__ = (
-        Index("ix_tsd_date", "service_date"),
-        Index("ix_tsd_date_run_key", "service_date", "source_run_key"),
-    )

@@ -22,38 +22,35 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dbrel.db import Base
 
-# Quality grades for a derived actual time. See derive/finalize.py.
-QUALITY_OBSERVED = "OBSERVED"
-QUALITY_INFERRED_DOWNSTREAM = "INFERRED_DOWNSTREAM"
-QUALITY_LAST_SEEN = "LAST_SEEN"
-QUALITY_PREDICTION_ONLY = "PREDICTION_ONLY"
-QUALITY_SKIPPED = "SKIPPED"
-QUALITY_NO_DATA = "NO_DATA"
-QUALITY_MISSING = "MISSING"
+# How a trip_stop's actual time came to be. Four grades, and only one of them
+# carries a time. See derive/finalize_tt.py.
+#
+# The GTFS-RT vocabulary that used to live here (OBSERVED, INFERRED_DOWNSTREAM,
+# LAST_SEEN, SKIPPED, MISSING) existed because that feed publishes forecasts, so an
+# actual had to be *inferred* from a value that stopped changing. The archival
+# reader removes the problem at the source rather than grading around it.
 
-# Timetables-only grade. IRIS states a cancellation outright via cs='c' + clt,
-# so this is measured rather than inferred — unlike SKIPPED, which is the
-# GTFS-RT inference and has different provenance.
-QUALITY_CANCELLED = "CANCELLED"
-
-# Timetables-only, and the archival path's normal outcome. Read when the event
-# was already in the past, so ct is DB's recorded actual rather than a forecast.
-# Distinct from OBSERVED, which asserts something stronger and different — that a
-# value was seen being revised after passage and then holding while we kept
-# polling. A single late read cannot witness that, and must not claim it.
+# The normal outcome. The event was already in the past when we read it, so ct is
+# DB's recorded actual — the time DB Navigator shows after the train has gone —
+# rather than a forecast. read_lag_s says how long after the event we read it.
 QUALITY_RECORDED = "RECORDED"
 
-# A PLAN_HELD grade was designed for the case where /fchg published only changes,
-# so that a punctual train never appeared and its silence had to be read as "ran
-# to plan". Measurement killed it: 100% of planned events do appear, 97% carrying
-# a ct, and punctual running is published explicitly as ct == pt
-# (docs/probe-findings.md §18). Absence therefore still means absence.
-TRUSTED_QUALITIES = (
-    QUALITY_RECORDED,
-    QUALITY_OBSERVED,
-    QUALITY_INFERRED_DOWNSTREAM,
-    QUALITY_LAST_SEEN,
-)
+# IRIS states a cancellation outright via cs='c' plus a clt timestamp, so this is
+# measured, never inferred, and contributes no delay.
+QUALITY_CANCELLED = "CANCELLED"
+
+# We were polling this station across the window in which the value would still
+# have been in /fchg's horizon, and nothing appeared. A fact about the railway.
+# Never means "on time": punctual running is published explicitly as ct == pt
+# (docs/probe-findings.md §18), so absence really is absence.
+QUALITY_NO_DATA = "NO_DATA"
+
+# No poll covered the window at all — our own blind spot, not the railway's
+# silence. poll_gap_s records how wide it was.
+QUALITY_PREDICTION_ONLY = "PREDICTION_ONLY"
+
+# The grades an aggregate may compute a delay from.
+TRUSTED_QUALITIES = (QUALITY_RECORDED,)
 
 
 class Station(Base):
@@ -84,14 +81,32 @@ class Station(Base):
     eva: Mapped[int | None] = mapped_column(Integer)
     ds100: Mapped[str | None] = mapped_column(String(16))
     eva_source: Mapped[str | None] = mapped_column(String(16))  # iris | stada | manual
-    eva_confidence: Mapped[float | None] = mapped_column(Float)  # km between coordinates
-    eva_verified_at: Mapped[int | None] = mapped_column(Integer)
+
+    # --- polling state ----------------------------------------------------
+    # Formerly a separate tracked_station table. Folded in because it was 21 rows
+    # joined on every poll, and the reason it was split — "static_import would
+    # clobber operational columns" — is not true of the importer, which only ever
+    # INSERTs stations whose natural_key is new and never updates an existing row.
+    tracked: Mapped[int] = mapped_column(Integer, default=0)
+    # 1 = every sweep, 2 = every other, 3 = every third. Lets a large set keep
+    # high resolution where it matters without exceeding 60 rpm.
+    poll_priority: Mapped[int] = mapped_column(Integer, default=1)
+    tracked_at: Mapped[int | None] = mapped_column(Integer)
+    # 'YYYY-MM-DD:HH' high-water mark for the rolling /plan importer.
+    last_plan_hour: Mapped[str | None] = mapped_column(String(13))
+    last_fchg_at: Mapped[int | None] = mapped_column(Integer)
+    n_fchg_polls: Mapped[int] = mapped_column(Integer, default=0)
+    n_fchg_errors: Mapped[int] = mapped_column(Integer, default=0)
+    # Share of ppth neighbours that matched the GTFS pattern at verification time.
+    verify_overlap: Mapped[float | None] = mapped_column(Float)
+    verified_at: Mapped[int | None] = mapped_column(Integer)
 
     station_stops: Mapped[list["StationStop"]] = relationship(back_populates="station")
 
     __table_args__ = (
         Index("ix_station_name", "name"),
         Index("ix_station_eva", "eva"),
+        Index("ix_station_tracked", "tracked", "poll_priority"),
     )
 
     def __repr__(self) -> str:
@@ -182,7 +197,6 @@ class Train(Base):
     first_seen_date: Mapped[str | None] = mapped_column(String(10))
     last_seen_date: Mapped[str | None] = mapped_column(String(10))
     n_runs_seen: Mapped[int] = mapped_column(Integer, default=0)
-    merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("train.id"))
 
     # --- GTFS provenance, unchanged ---------------------------------------
     route_id: Mapped[int | None] = mapped_column(ForeignKey("route.id"), index=True)
@@ -204,7 +218,6 @@ class Train(Base):
         Index("ix_train_line", "line_id", "train_number"),
         Index("ix_train_search_name", "search_name"),
         Index("ix_train_source_kind", "source", "identity_kind"),
-        Index("ix_train_merged", "merged_into_id"),
     )
 
     def __repr__(self) -> str:
@@ -358,6 +371,14 @@ class Trip(Base):
 class TripStop(Base):
     """Supposed vs actual, for one run at one station. The fact table.
 
+    Written by two paths that must not fight over a row:
+
+    * `timetables/changes_poller.py` owns every stop it has a recorded value for,
+      and upserts it (ON CONFLICT DO UPDATE). Re-reading the same event on a later
+      poll is a no-op because the value is already final.
+    * `derive/finalize_tt.py` fills the gaps — stops with no value — and never
+      overwrites (ON CONFLICT DO NOTHING), so it cannot downgrade a RECORDED row.
+
     Supposed times are copied here rather than joined from StationStop: the planned
     time of a run that already happened is a historical fact, and must not change
     when next week's feed rebuild alters the pattern.
@@ -380,15 +401,16 @@ class TripStop(Base):
 
     quality: Mapped[str] = mapped_column(String(24))
     rule_version: Mapped[int] = mapped_column(Integer)
-    n_observations: Mapped[int] = mapped_column(Integer, default=0)
+    # When we read this value out of /fchg.
     last_observed_at: Mapped[int | None] = mapped_column(Integer)
+    # How far the nearest poll fell outside the window in which the value would
+    # still have been readable. Only meaningful for PREDICTION_ONLY.
     poll_gap_s: Mapped[int | None] = mapped_column(Integer)
     # Seconds between the event happening and us reading its value. The confidence
     # measure for QUALITY_RECORDED, where poll_gap_s has nothing to say: a value
     # read long after passage had longer to stop moving.
     read_lag_s: Mapped[int | None] = mapped_column(Integer)
     cancelled: Mapped[int] = mapped_column(Integer, default=0)
-    skipped: Mapped[int] = mapped_column(Integer, default=0)
 
     # --- Timetables specifics --------------------------------------------
     # A stop can be cancelled on one side only, which an int enum could not say.

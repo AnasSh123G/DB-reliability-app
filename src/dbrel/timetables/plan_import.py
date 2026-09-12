@@ -28,7 +28,6 @@ from dbrel.identity import SOURCE_TT
 from dbrel.config import TT_PLAN_LEAD_HOURS, TZ
 from dbrel.models import (
     Station,
-    TrackedStation,
     Train,
     TtPlanFetch,
 )
@@ -91,17 +90,19 @@ def import_plan(
     result = PlanImportResult()
     fv_id = tt_feed_version(session)
 
-    tracked = session.execute(
-        select(TrackedStation, Station)
-        .join(Station, Station.id == TrackedStation.station_id)
-        .where(TrackedStation.removed_at.is_(None))
-    ).all()
+    tracked = (
+        session.execute(
+            select(Station).where(Station.tracked == 1, Station.eva.isnot(None))
+        )
+        .scalars()
+        .all()
+    )
     if not tracked:
         result.errors.append("no tracked stations; run tt-map-stations first")
         return result
 
-    station_name_by_eva = {ts.eva: st.name for ts, st in tracked}
-    station_id_by_eva = {ts.eva: st.id for ts, st in tracked}
+    station_name_by_eva = {st.eva: st.name for st in tracked}
+    station_id_by_eva = {st.eva: st.id for st in tracked}
 
     # Collect every stop first, then resolve identities once across the batch:
     # a run seen at several tracked stations must produce ONE trip row.
@@ -111,17 +112,17 @@ def import_plan(
     # the two copies are the same stop.
     by_run: dict[str, dict[int, TtStop]] = defaultdict(dict)
 
-    for tracked_station, station in tracked:
+    for station in tracked:
         if date is not None:
             buckets = [(date, h) for h in (hours or range(24))]
         else:
-            buckets = _pending_hours(tracked_station.last_plan_hour, lead_hours)
+            buckets = _pending_hours(station.last_plan_hour, lead_hours)
 
         for day, hour in buckets:
             if not force:
                 already = session.execute(
                     select(TtPlanFetch.id).where(
-                        TtPlanFetch.eva == tracked_station.eva,
+                        TtPlanFetch.eva == station.eva,
                         TtPlanFetch.plan_date == day,
                         TtPlanFetch.plan_hour == hour,
                         TtPlanFetch.http_status == 200,
@@ -132,9 +133,9 @@ def import_plan(
                     continue
 
             yymmdd = date_cls.fromisoformat(day).strftime("%y%m%d")
-            resp = client.plan(tracked_station.eva, yymmdd, hour)
+            resp = client.plan(station.eva, yymmdd, hour)
             fetch = TtPlanFetch(
-                eva=tracked_station.eva,
+                eva=station.eva,
                 plan_date=day,
                 plan_hour=hour,
                 fetched_at=int(time.time()),
@@ -162,10 +163,10 @@ def import_plan(
             result.stops_seen += len(parsed.stops)
             for stop in parsed.stops:
                 if stop.eva is None:
-                    stop.eva = tracked_station.eva
+                    stop.eva = station.eva
                 by_run[stop.run_key][stop.stop_index] = stop
 
-            tracked_station.last_plan_hour = f"{day}:{hour:02d}"
+            station.last_plan_hour = f"{day}:{hour:02d}"
         session.flush()
 
     progress(f"  {result.buckets_fetched} buckets, {result.stops_seen} stops, {len(by_run)} runs")

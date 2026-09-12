@@ -10,6 +10,14 @@ Shape of the gtfs.de feeds (verified — see docs/probe-findings.md):
 There is no train number anywhere in these feeds, so a train is identified by what
 it does: product, operator, departure time, and the ordered list of stations it
 calls at. See train_natural_key.
+
+What this import is *for* has narrowed. GTFS is the reference skeleton — station
+names and coordinates, and the route patterns tt-rank-stations and
+tt-verify-stations need — not a join target. A GTFS train and its IRIS counterpart
+share no identifier (GTFS carries no train numbers at all), so nothing here ever
+joins to a recorded actual. Expanding the calendar into 1.27M dated `trip` rows
+therefore materialised a third of the database to answer a question nothing asked;
+the calendar is still read, to date-stamp the feed version, but not written out.
 """
 
 from __future__ import annotations
@@ -23,13 +31,12 @@ import zipfile
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import date
 
 from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from dbrel.config import RAIL_ROUTE_TYPES
-from dbrel.gtfs.timeutil import date_range, gtfs_sec_to_epoch, parse_gtfs_time, parse_service_date
+from dbrel.gtfs.timeutil import date_range, parse_gtfs_time, parse_service_date
 from dbrel.identity import (
     IDENTITY_PATTERN,
     SOURCE_GTFS,
@@ -37,7 +44,7 @@ from dbrel.identity import (
     segment_of,
     train_identity_key,
 )
-from dbrel.models import FeedVersion, Route, Station, StationStop, Train, Trip, TripServiceDate
+from dbrel.models import FeedVersion, Route, Station, StationStop, Train
 
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
@@ -50,11 +57,8 @@ class ImportStats:
     routes: int = 0
     trains: int = 0
     station_stops: int = 0
-    trips: int = 0
-    service_dates: int = 0
     gtfs_trips_read: int = 0
     non_rail_trips: int = 0
-    duplicate_runs: int = 0
     elapsed_s: float = 0.0
     counts: dict[str, int] = field(default_factory=dict)
 
@@ -139,7 +143,6 @@ def import_feed(
     etag: str | None = None,
     last_modified: str | None = None,
     force: bool = False,
-    max_days: int | None = None,
     progress=lambda msg: None,
 ) -> ImportStats:
     """Import one static GTFS archive. Idempotent on content hash."""
@@ -270,7 +273,6 @@ def import_feed(
     # --- trips + stop_times ----------------------------------------------
     progress("  reading trips ...")
     trip_route: dict[str, str] = {}
-    trip_service: dict[str, str] = {}
     for row in _rows(zf, "trips.txt"):
         stats.gtfs_trips_read += 1
         route = route_meta.get(row["route_id"])
@@ -278,7 +280,6 @@ def import_feed(
             stats.non_rail_trips += 1
             continue
         trip_route[row["trip_id"]] = row["route_id"]
-        trip_service[row["trip_id"]] = row["service_id"]
 
     progress(f"  reading stop_times for {len(trip_route):,} rail trips ...")
     by_trip: dict[str, list[_StopTime]] = defaultdict(list)
@@ -390,76 +391,14 @@ def import_feed(
     _bulk(session, StationStop, ss_rows)
     stats.station_stops = len(ss_rows)
 
-    # --- service dates + dated runs --------------------------------------
-    progress("  expanding calendar ...")
+    # --- calendar ---------------------------------------------------------
+    # Read for its date range only. The dated-run expansion that used to live here
+    # wrote 1.27M `trip` rows plus an identical `trip_service_date` copy — 408 MB,
+    # a third of it byte-for-byte duplication — for a source that never joins to a
+    # recorded actual. `trip` now holds IRIS runs only.
+    progress("  reading calendar ...")
     dates_by_service = service_dates(zf)
     all_dates = {d for dates in dates_by_service.values() for d in dates}
-    window_end: str | None = None
-    if max_days is not None and all_dates:
-        first_day = date.fromisoformat(min(all_dates))
-        window_end = date.fromordinal(first_day.toordinal() + max_days).isoformat()
-
-    tsd_rows = []
-    trip_rows = []
-    claimed: set[tuple[int, str]] = set()
-    for trip_id, stops in by_trip.items():
-        key = train_key_by_trip.get(trip_id)
-        if key is None or not stops:
-            continue
-        train_id = train_id_by_key[key]
-        service_id = trip_service[trip_id]
-        first_dep = next((s.dep for s in stops if s.dep is not None), None)
-        last_arr = next((s.arr for s in reversed(stops) if s.arr is not None), None)
-        for iso in sorted(dates_by_service.get(service_id, ())):
-            if window_end is not None and iso > window_end:
-                continue
-            tsd_rows.append(
-                {
-                    "train_id": train_id,
-                    "service_date": iso,
-                    "feed_version_id": fv_id,
-                    "source_run_key": trip_id,
-                }
-            )
-            if (train_id, iso) in claimed:
-                # Two GTFS trips resolved to the same train on the same date. Keeping
-                # the first is right: they are the same service, duplicated upstream.
-                stats.duplicate_runs += 1
-                continue
-            claimed.add((train_id, iso))
-            day = date.fromisoformat(iso)
-            trip_rows.append(
-                {
-                    "train_id": train_id,
-                    "service_date": iso,
-                    "source": SOURCE_GTFS,
-                    "feed_version_id": fv_id,
-                    "source_run_key": trip_id,
-                    "status": "SCHEDULED",
-                    "schedule_relationship": "PLANNED",
-                    "endpoints_tracked": 1,  # GTFS gives the whole journey
-                    "supposed_departure_utc": gtfs_sec_to_epoch(day, first_dep) if first_dep is not None else None,
-                    "supposed_arrival_utc": gtfs_sec_to_epoch(day, last_arr) if last_arr is not None else None,
-                    "n_stops": len(stops),
-                    "n_polls_seen": 0,
-                }
-            )
-
-    # trip_service_date is keyed (train_id, service_date); duplicates collapse.
-    seen_tsd: set[tuple[int, str]] = set()
-    deduped_tsd = []
-    for row in tsd_rows:
-        pair = (row["train_id"], row["service_date"])
-        if pair in seen_tsd:
-            continue
-        seen_tsd.add(pair)
-        deduped_tsd.append(row)
-
-    progress(f"  writing {len(trip_rows):,} dated runs ...")
-    _bulk(session, TripServiceDate, deduped_tsd)
-    _bulk(session, Trip, trip_rows)
-    stats.service_dates = len(deduped_tsd)
-    stats.trips = len(trip_rows)
 
     if seen_train_ids:
         ids = list(seen_train_ids)
@@ -472,7 +411,7 @@ def import_feed(
 
     feed_version.status = "active"
     feed_version.imported_at = int(time.time())
-    feed_version.n_trips = stats.trips
+    feed_version.n_trips = stats.trains
     feed_version.n_stops = stats.stations
     feed_version.n_station_stops = stats.station_stops
     feed_version.feed_start_date = min(all_dates) if all_dates else None
@@ -520,17 +459,11 @@ def _bulk(session: Session, model, rows: list[dict], chunk: int = 5000) -> None:
 
 
 def _purge_feed_version(session: Session, fv_id: int) -> None:
-    """Remove rows produced by a feed version, newest dependency first."""
-    from dbrel.models import RtObservation, TripStop
+    """Remove rows produced by a GTFS feed version, newest dependency first.
 
-    trip_ids = [r[0] for r in session.execute(select(Trip.id).where(Trip.feed_version_id == fv_id))]
-    if trip_ids:
-        for start in range(0, len(trip_ids), 500):
-            chunk = trip_ids[start : start + 500]
-            session.execute(delete(RtObservation).where(RtObservation.trip_id.in_(chunk)))
-            session.execute(delete(TripStop).where(TripStop.trip_id.in_(chunk)))
-    session.execute(delete(Trip).where(Trip.feed_version_id == fv_id))
-    session.execute(delete(TripServiceDate).where(TripServiceDate.feed_version_id == fv_id))
+    Only ever a GTFS version: the Timetables feed_version row is synthetic and is
+    never imported through here, so no recorded actual is reachable from this.
+    """
     session.execute(delete(StationStop).where(StationStop.feed_version_id == fv_id))
     session.execute(delete(Route).where(Route.feed_version_id == fv_id))
     session.flush()

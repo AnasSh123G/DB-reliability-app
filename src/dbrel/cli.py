@@ -14,25 +14,18 @@ from dbrel.timetables.parser import parse_stations
 from dbrel.gtfs.static_import import import_feed
 from dbrel.models import (
     TRUSTED_QUALITIES,
-    SearchAlias,
-    ServiceLine,
-    TrackedStation,
-    TrainConflict,
-    TtMessage,
-    TtObservation,
-    TtPoll,
-    TtUnmatched,
     FeedVersion,
     Route,
-    RtObservation,
-    RtPoll,
-    RtUnmatched,
+    SearchAlias,
+    ServiceLine,
     Station,
     StationStop,
     Train,
     Trip,
-    TripServiceDate,
     TripStop,
+    TtMessage,
+    TtPoll,
+    TtUnmatched,
 )
 
 app = typer.Typer(add_completion=False, help="Local database of German train punctuality.")
@@ -63,9 +56,13 @@ def init_db() -> None:
 def import_static(
     feed: str = typer.Option("fv,rv", help="comma-separated feeds: fv, rv"),
     force: bool = typer.Option(False, help="re-import even if the content hash is known"),
-    max_days: int | None = typer.Option(None, help="limit dated runs to N days from feed start"),
 ) -> None:
-    """Download and import the scheduled timetable."""
+    """Import the GTFS reference skeleton: stations, trains and route patterns.
+
+    Not a source of actual times — GTFS carries no train numbers, so nothing here
+    joins to a recorded arrival. It supplies the human-readable names and the
+    patterns tt-rank-stations and tt-verify-stations work from.
+    """
     create_all()
     kinds = [k.strip() for k in feed.split(",") if k.strip()]
     for kind in kinds:
@@ -89,7 +86,6 @@ def import_static(
                 etag=download.etag,
                 last_modified=download.last_modified,
                 force=force,
-                max_days=max_days,
                 progress=typer.echo,
             )
         if stats.skipped_reason:
@@ -98,35 +94,10 @@ def import_static(
         typer.echo(
             f"  imported feed_version={stats.feed_version_id} in {stats.elapsed_s:.1f}s\n"
             f"    stations +{stats.stations:,}   routes {stats.routes:,}   trains +{stats.trains:,}\n"
-            f"    station_stops {stats.station_stops:,}   service_dates {stats.service_dates:,}\n"
-            f"    dated runs {stats.trips:,}   (gtfs trips read {stats.gtfs_trips_read:,},"
-            f" non-rail skipped {stats.non_rail_trips:,}, duplicate runs {stats.duplicate_runs:,})"
+            f"    station_stops {stats.station_stops:,}"
+            f"   (gtfs trips read {stats.gtfs_trips_read:,},"
+            f" non-rail skipped {stats.non_rail_trips:,})"
         )
-
-
-@app.command("poll")
-def poll(
-    dry_run: bool = typer.Option(False, help="report match rates without writing"),
-) -> None:
-    """Fetch the realtime feed once and record what changed."""
-    from dbrel.realtime.poller import run_poll
-
-    with session_scope() as session:
-        result = run_poll(session, dry_run=dry_run, progress=typer.echo)
-    typer.echo(result.summary())
-
-
-@app.command("finalize")
-def finalize(
-    date: str | None = typer.Option(None, help="service date YYYY-MM-DD (default: all closed)"),
-    force: bool = typer.Option(False, help="re-derive trips that were already finalized"),
-) -> None:
-    """Derive actual times from the recorded observations."""
-    from dbrel.derive.finalize import run_finalize
-
-    with session_scope() as session:
-        result = run_finalize(session, service_date=date, force=force, progress=typer.echo)
-    typer.echo(result.summary())
 
 
 @app.command("stats")
@@ -136,25 +107,18 @@ def stats() -> None:
         _require_schema(session)
         typer.echo("tables")
         for label, model in [
-            ("feed_version", FeedVersion),
-            ("route", Route),
             ("station", Station),
             ("train", Train),
             ("station_stop", StationStop),
-            ("trip_service_date", TripServiceDate),
             ("trip", Trip),
             ("trip_stop", TripStop),
-            ("rt_poll", RtPoll),
-            ("rt_observation", RtObservation),
-            ("rt_unmatched", RtUnmatched),
             ("service_line", ServiceLine),
-            ("search_alias", SearchAlias),
-            ("tracked_station", TrackedStation),
-            ("tt_poll", TtPoll),
-            ("tt_observation", TtObservation),
             ("tt_message", TtMessage),
             ("tt_unmatched", TtUnmatched),
-            ("train_conflict", TrainConflict),
+            ("tt_poll", TtPoll),
+            ("search_alias", SearchAlias),
+            ("route", Route),
+            ("feed_version", FeedVersion),
         ]:
             count = session.scalar(select(func.count()).select_from(model))
             typer.echo(f"  {label:20s} {count:>12,}")
@@ -191,25 +155,24 @@ def stats() -> None:
                 )
 
         polls = session.execute(
-            select(RtPoll).order_by(RtPoll.id.desc()).limit(8)
+            select(TtPoll).order_by(TtPoll.id.desc()).limit(8)
         ).scalars().all()
         if polls:
             typer.echo("\nrecent polls (newest first)")
             for p in polls:
                 when = datetime.fromtimestamp(p.fetched_at).strftime("%Y-%m-%d %H:%M:%S")
                 if p.error:
-                    typer.echo(f"  {when}  ERROR {p.error[:60]}")
-                else:
-                    matched = p.n_matched or 0
-                    total = (p.n_matched or 0) + (p.n_unmatched or 0)
-                    rate = matched / total if total else 0.0
-                    typer.echo(
-                        f"  {when}  updates={p.n_trip_updates or 0:>6,}"
-                        f"  matched={matched:>5,} ({rate:.0%})"
-                        f"  changed={p.n_changed or 0:>6,}"
-                        f"  {(p.bytes or 0) / 1e6:.0f}MB"
-                        f"  fetch={p.fetch_ms or 0}ms parse={p.parse_ms or 0}ms store={p.store_ms or 0}ms"
-                    )
+                    typer.echo(f"  {when}  eva={p.eva}  ERROR {p.error[:50]}")
+                    continue
+                total = (p.n_matched or 0) + (p.n_unmatched or 0)
+                rate = (p.n_matched or 0) / total if total else 0.0
+                typer.echo(
+                    f"  {when}  eva={p.eva}  stops={p.n_stops or 0:>5,}"
+                    f"  matched={p.n_matched or 0:>5,} ({rate:.0%})"
+                    f"  stored={p.n_changed or 0:>4,}"
+                    f"  {(p.bytes or 0) / 1e3:.0f}KB"
+                    f"  fetch={p.fetch_ms or 0}ms store={p.store_ms or 0}ms"
+                )
 
         quality = session.execute(
             select(TripStop.quality, func.count())
@@ -258,11 +221,10 @@ def stats() -> None:
 
 @app.command("unmatched")
 def unmatched(limit: int = typer.Option(20, help="rows to show")) -> None:
-    """Show feed entries that resolved to no known run.
+    """Show /fchg events that resolved to no known run.
 
-    The Timetables half is the one that matters operationally: a rising count
-    means the /plan roller has fallen behind, and because /plan serves only today
-    and tomorrow, that planned data is gone for good.
+    A rising count means the /plan roller has fallen behind, and because /plan
+    serves only today and tomorrow, that planned data is gone for good.
     """
     with session_scope() as session:
         _require_schema(session)
@@ -275,17 +237,6 @@ def unmatched(limit: int = typer.Option(20, help="rows to show")) -> None:
             label = f"{r.category or '?'} {r.number or '?'}"
             typer.echo(
                 f"  {r.service_date}  {label:<12} eva={r.eva}  stop={r.stop_index:>3}"
-                f"  seen in {r.n_polls} polls"
-            )
-
-        rt_total = session.scalar(select(func.count()).select_from(RtUnmatched))
-        typer.echo(f"\n{rt_total:,} unmatched realtime trips")
-        rows = session.execute(
-            select(RtUnmatched).order_by(RtUnmatched.n_polls.desc()).limit(limit)
-        ).scalars().all()
-        for r in rows:
-            typer.echo(
-                f"  {r.service_date}  trip={r.gtfs_trip_id:>10}  stops={r.n_stop_updates or 0:>3}"
                 f"  seen in {r.n_polls} polls"
             )
 
@@ -426,7 +377,6 @@ def tt_map_stations(
             station.eva = eva
             station.ds100 = names[0]["ds100"] if names else None
             station.eva_source = "manual"
-            station.eva_confidence = 0.0
             typer.echo(
                 f"  {station.name}: eva={eva} ds100={station.ds100} "
                 f"(manual; IRIS calls it {names[0]['name']!r})"
@@ -446,16 +396,16 @@ def tt_verify_stations(min_overlap: float = typer.Option(0.6)) -> None:
 
     with TimetablesClient() as client, session_scope() as session:
         client.require_credentials()
-        rows = session.execute(
-            select(TrackedStation, Station).join(Station, Station.id == TrackedStation.station_id)
-        ).all()
-        for tracked, station in rows:
+        stations = (
+            session.execute(select(Station).where(Station.tracked == 1)).scalars().all()
+        )
+        for station in stations:
             overlap, note = verify_station(session, client, station)
             if overlap is None:
                 typer.echo(f"  {station.name:<26} SKIPPED  {note}")
                 continue
-            tracked.verify_overlap = overlap
-            tracked.verified_at = int(datetime.now().timestamp())
+            station.verify_overlap = overlap
+            station.verified_at = int(datetime.now().timestamp())
             verdict = "ok" if overlap >= min_overlap else "LOW"
             typer.echo(f"  {station.name:<26} {overlap:6.1%} {verdict:<4} {note}")
 
@@ -555,7 +505,11 @@ def tt_finalize(
     service_date: str = typer.Option(None),
     force: bool = typer.Option(False),
 ) -> None:
-    """Derive actual times for Timetables runs (rule_version 2)."""
+    """Account for stops with no recorded value, and roll each run up.
+
+    The actual times themselves are written by tt-poll; this fills the gaps and
+    computes the journey-level summary.
+    """
     from dbrel.derive.finalize_tt import run_finalize_tt
 
     with session_scope() as session:
@@ -564,7 +518,7 @@ def tt_finalize(
         )
     typer.echo(
         f"  {result.trips_finalized}/{result.trips_considered} trips, "
-        f"{result.stops_written} stops, {result.cancelled_stops} cancelled, "
+        f"{result.gaps_written} gaps filled, {result.cancelled_stops} cancelled, "
         f"{result.elapsed_s:.1f}s"
     )
     for quality, count in sorted(result.by_quality.items(), key=lambda kv: -kv[1]):
