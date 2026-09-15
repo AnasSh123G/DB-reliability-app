@@ -22,6 +22,10 @@ import unicodedata
 
 SOURCE_TT = "tts"
 SOURCE_GTFS = "gtfs"
+# Seeded demonstration runs. A trip.source value, not a boolean on the row: the
+# column already discriminates sources, and one more string keeps every query
+# that filters by provenance working unchanged.
+SOURCE_SYNTH = "synth"
 
 IDENTITY_NUMBERED = "NUMBERED"
 IDENTITY_PATTERN = "PATTERN"
@@ -134,6 +138,19 @@ ALIAS_NUMBER = ("NUMBER", 50)
 ALIAS_NAME = ("NAME", 40)
 ALIAS_LEGACY = ("LEGACY", 10)
 
+ALIAS_STATION_NAME = ("STATION_NAME", 100)
+ALIAS_STATION_SHORT = ("STATION_SHORT", 95)
+ALIAS_STATION_TOKEN = ("STATION_TOKEN", 60)
+ALIAS_STATION_DS100 = ("STATION_DS100", 50)
+ALIAS_STATION_EVA = ("STATION_EVA", 40)
+
+# Qualifiers a passenger drops when typing. "Bochum Hbf" is searched as "bochum".
+_STATION_QUALIFIERS = ("hauptbahnhof", "hbf", "bahnhof", "bf")
+
+# Suffix aliases are capped: without a limit, a long name emits a tail for every
+# word and the table grows without buying any recall.
+_MAX_STATION_TOKENS = 4
+
 
 def train_aliases(category: str | None, number: str | None) -> list[tuple[str, str, str, int]]:
     """(alias_norm, alias_display, kind, weight) for one numbered train.
@@ -165,6 +182,52 @@ def line_aliases(category: str | None, line: str | None) -> list[tuple[str, str,
     # Also findable as "NX RE4" when the operator brand differs from the label.
     if category and search_norm(f"{category}{line}") != search_norm(display):
         out.append((search_norm(f"{category}{line}"), f"{category} {line}", kind, weight - 10))
+    return out
+
+
+def station_aliases(
+    name: str, ds100: str | None = None, eva: int | None = None
+) -> list[tuple[str, str, str, int]]:
+    """(alias_norm, alias_display, kind, weight) for one station.
+
+    The table has carried a station_id column and a CHECK permitting it since the
+    schema was written, but nothing ever wrote a row: station search had no index
+    at all. This supplies it, on the same prefix-scan path as trains and lines.
+
+    Word-boundary suffixes are the point. search_norm collapses whitespace
+    entirely, so "Köln Messe/Deutz" becomes 'kolnmessedeutz' and a passenger
+    typing "Deutz" matches nothing. Emitting each tail that starts on a word
+    boundary — never mid-word, which would make "ochum" a hit — fixes that.
+    """
+    out: list[tuple[str, str, str, int]] = []
+    seen: set[str] = set()
+
+    def add(norm: str, display: str, kind_weight: tuple[str, int]) -> None:
+        # The unique constraint is (alias_norm, ..., station_id), so a station may
+        # not offer the same string twice. Dedupe here rather than lean on the
+        # conflict clause: a suffix often equals the short form already emitted.
+        if not norm or norm in seen:
+            return
+        seen.add(norm)
+        kind, weight = kind_weight
+        out.append((norm, display, kind, weight))
+
+    add(search_norm(name), name, ALIAS_STATION_NAME)
+
+    words = [w for w in _NON_ALNUM.split(normalize_name(name)) if w]
+    if words and words[-1] in _STATION_QUALIFIERS:
+        short = words[:-1]
+        if short:
+            add("".join(short), " ".join(short).title(), ALIAS_STATION_SHORT)
+            words = short
+
+    for index in range(1, min(len(words), _MAX_STATION_TOKENS)):
+        add("".join(words[index:]), " ".join(words[index:]).title(), ALIAS_STATION_TOKEN)
+
+    if ds100:
+        add(search_norm(ds100), ds100, ALIAS_STATION_DS100)
+    if eva:
+        add(str(eva), str(eva), ALIAS_STATION_EVA)
     return out
 
 

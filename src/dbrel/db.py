@@ -75,6 +75,25 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
+@contextmanager
+def read_scope() -> Iterator[Session]:
+    """Read-only session: never commits, always rolls back. The web path.
+
+    session_scope commits on exit, which for a GET is both a pointless round-trip
+    and a standing invitation to write from a request — tt_feed_version() inserts
+    a row when none exists, and would happily do so while rendering a page. Making
+    the web use a scope that cannot commit turns "the server never writes" from a
+    convention into a property. Closing per request is also what stops a long read
+    transaction from holding back WAL checkpointing.
+    """
+    session = get_sessionmaker()()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+
+
 def create_all() -> None:
     import dbrel.models  # noqa: F401  (registers every mapper)
 

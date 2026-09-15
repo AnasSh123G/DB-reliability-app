@@ -1,5 +1,10 @@
 """All ORM models. Importing this module registers every mapper."""
 
+from dbrel.models.aggregates import (
+    BASIS_REAL,
+    BASIS_SYNTH,
+    TrainStationDelay,
+)
 from dbrel.models.core import (
     QUALITY_CANCELLED,
     QUALITY_NO_DATA,
@@ -23,6 +28,8 @@ from dbrel.models.timetables import (
 )
 
 __all__ = [
+    "BASIS_REAL",
+    "BASIS_SYNTH",
     "QUALITY_CANCELLED",
     "QUALITY_NO_DATA",
     "QUALITY_PREDICTION_ONLY",
@@ -35,6 +42,7 @@ __all__ = [
     "Station",
     "StationStop",
     "Train",
+    "TrainStationDelay",
     "Trip",
     "TripStop",
     "TtMessage",

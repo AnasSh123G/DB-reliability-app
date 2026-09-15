@@ -1,0 +1,180 @@
+"""The averaging pass, against a real schema in memory.
+
+The filters are the point. Each one excludes rows that would otherwise bias the
+number in a specific direction, and none of them is visible in the output — so
+they are asserted here rather than trusted.
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from dbrel.db import Base
+from dbrel.derive.delay_averages import _percentile, run_delay_averages
+from dbrel.identity import SOURCE_SYNTH, SOURCE_TT
+from dbrel.models import (
+    BASIS_REAL,
+    BASIS_SYNTH,
+    QUALITY_CANCELLED,
+    QUALITY_NO_DATA,
+    QUALITY_PREDICTION_ONLY,
+    QUALITY_RECORDED,
+    Station,
+    Train,
+    TrainStationDelay,
+    Trip,
+    TripStop,
+)
+
+STATION_ID = 1
+TRAIN_ID = 1
+
+
+@pytest.fixture
+def session():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine, future=True) as s:
+        s.add(Station(id=STATION_ID, natural_key="bochum@51.478,7.223", name="Bochum Hbf",
+                      lat=51.478, lon=7.223))
+        s.add(Train(id=TRAIN_ID, source=SOURCE_TT, identity_key="tts:RE/10422",
+                    category="RE", segment="RV", display_name="RE 10422"))
+        s.flush()
+        yield s
+
+
+NOW = int(time.time())
+
+
+def add_run(session, day: int, *, source=SOURCE_TT, quality=QUALITY_RECORDED,
+            dep_delay=60, arr_delay=60, is_handover=0, observed_at=NOW):
+    """One trip with a single stop at the fixture station."""
+    service_date = f"2026-09-{day:02d}"
+    trip = Trip(train_id=TRAIN_ID, service_date=service_date, source=source,
+                source_run_key=f"{source}:{day}", status="COMPLETED")
+    session.add(trip)
+    session.flush()
+    session.add(TripStop(
+        trip_id=trip.id, stop_sequence=1, station_id=STATION_ID,
+        arr_delay_s=arr_delay, dep_delay_s=dep_delay, quality=quality,
+        rule_version=1, is_handover=is_handover, last_observed_at=observed_at,
+    ))
+    session.flush()
+    return trip
+
+
+def averages(session, basis=BASIS_REAL) -> TrainStationDelay | None:
+    run_delay_averages(session, basis=basis, full=True)
+    return session.scalar(
+        select(TrainStationDelay).where(TrainStationDelay.basis == basis)
+    )
+
+
+def test_mean_over_recorded_stops(session):
+    for day, delay in enumerate([60, 120, 180], start=1):
+        add_run(session, day, dep_delay=delay, arr_delay=delay)
+    row = averages(session)
+    assert row.n_dep == 3
+    assert row.n_runs == 3
+    assert row.avg_dep_delay_s == pytest.approx(120.0)
+    assert row.segment == "RV"
+
+
+def test_untrusted_grades_are_not_counted_as_on_time(session):
+    """NO_DATA and PREDICTION_ONLY are unknowns, and must not enter the mean."""
+    add_run(session, 1, dep_delay=600, arr_delay=600)
+    add_run(session, 2, quality=QUALITY_NO_DATA, dep_delay=0, arr_delay=0)
+    add_run(session, 3, quality=QUALITY_PREDICTION_ONLY, dep_delay=0, arr_delay=0)
+    row = averages(session)
+    assert row.n_dep == 1, "only the RECORDED stop is a sample"
+    assert row.avg_dep_delay_s == pytest.approx(600.0), "absence must not dilute the mean"
+
+
+def test_cancellations_are_counted_but_never_averaged(session):
+    add_run(session, 1, dep_delay=300, arr_delay=300)
+    add_run(session, 2, quality=QUALITY_CANCELLED, dep_delay=None, arr_delay=None)
+    row = averages(session)
+    assert row.n_dep == 1
+    assert row.n_cancelled == 1
+    assert row.n_known == 2
+    assert row.avg_dep_delay_s == pytest.approx(300.0), "a cancellation is not a zero delay"
+
+
+def test_handover_stops_are_excluded(session):
+    """A run that changes number shows one physical stop on both sides."""
+    add_run(session, 1, dep_delay=60, arr_delay=60)
+    add_run(session, 2, dep_delay=6000, arr_delay=6000, is_handover=1)
+    row = averages(session)
+    assert row.n_dep == 1
+    assert row.avg_dep_delay_s == pytest.approx(60.0)
+
+
+def test_real_and_synthetic_never_share_a_row(session):
+    add_run(session, 1, dep_delay=60, arr_delay=60)
+    add_run(session, 2, source=SOURCE_SYNTH, dep_delay=3000, arr_delay=3000)
+
+    real = averages(session, BASIS_REAL)
+    synth = averages(session, BASIS_SYNTH)
+    assert real.avg_dep_delay_s == pytest.approx(60.0)
+    assert synth.avg_dep_delay_s == pytest.approx(3000.0)
+    assert real.id != synth.id
+
+
+def test_punctuality_uses_the_six_minute_threshold(session):
+    # 359s is on time, 361s is not.
+    for day, delay in enumerate([359, 361, 361, 361], start=1):
+        add_run(session, day, dep_delay=delay, arr_delay=delay)
+    row = averages(session)
+    assert row.pct_dep_punctual == pytest.approx(0.25)
+
+
+def test_full_pass_reconciles_pairs_whose_samples_vanished(session):
+    """Wholesale deletion leaves nothing to mark a pair dirty, so --full owns it."""
+    add_run(session, 1, dep_delay=60, arr_delay=60)
+    assert averages(session) is not None
+
+    session.execute(TripStop.__table__.delete())
+    session.flush()
+
+    run_delay_averages(session, basis=BASIS_REAL, full=False)
+    assert session.scalar(select(TrainStationDelay)) is not None, (
+        "the incremental pass has no signal that these samples ever existed"
+    )
+
+    run_delay_averages(session, basis=BASIS_REAL, full=True)
+    assert session.scalar(select(TrainStationDelay)) is None, (
+        "an average must not outlive the samples behind it"
+    )
+
+
+def test_incremental_pass_drops_a_pair_that_lost_its_last_good_sample(session):
+    """Here a dirty marker survives, so the incremental pass can see the loss."""
+    add_run(session, 1, dep_delay=60, arr_delay=60)
+    assert averages(session) is not None
+
+    # The stop is still there and still recently observed, but now ungraded.
+    session.execute(
+        TripStop.__table__.update().values(quality=QUALITY_NO_DATA, last_observed_at=NOW + 1)
+    )
+    session.flush()
+
+    run_delay_averages(session, basis=BASIS_REAL, full=False)
+    assert session.scalar(select(TrainStationDelay)) is None
+
+
+@pytest.mark.parametrize(
+    "values,fraction,expected",
+    [
+        ([10], 0.5, 10),
+        ([10, 20, 30], 0.5, 20),
+        ([10, 20, 30, 40], 0.9, 40),
+        (list(range(1, 101)), 0.9, 90),
+        ([], 0.5, None),
+    ],
+)
+def test_percentile_is_nearest_rank(values, fraction, expected):
+    assert _percentile(values, fraction) == expected

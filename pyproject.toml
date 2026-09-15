@@ -15,6 +15,13 @@ dependencies = [
     "typer>=0.27.2",
 ]
 
+[project.optional-dependencies]
+# The web UI is optional: the collector and the CLI must keep working on a machine
+# that has no reason to serve pages.
+web = [
+    "django>=5.2,<6.0",
+]
+
 [project.scripts]
 dbrel = "dbrel.cli:main"
 

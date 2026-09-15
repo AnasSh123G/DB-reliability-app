@@ -1,0 +1,33 @@
+{% extends "dbrel/base.html" %}
+
+{% block content %}
+<section class="hero">
+  <h1>How late is it, usually?</h1>
+  <p>
+    Search a <strong>station</strong> to see everything arriving and departing with the
+    average delay each train runs there &mdash; or search a <strong>line</strong> or
+    <strong>train</strong> to see its whole route with scheduled times and typical lateness
+    at every stop.
+  </p>
+  <p class="hint">Start typing above — a few letters is enough.</p>
+</section>
+
+{% if stations %}
+<section class="monitored">
+  <h2>Currently monitored</h2>
+  <p class="hint">
+    Delays are only recorded at these {{ stations|length }} station{{ stations|pluralize }};
+    everything else is searchable but has no board.
+  </p>
+  <ul class="chips">
+    {% for station in stations %}
+    <li><a href="{{ station.url }}">{{ station.name }}</a></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>document.getElementById('q').focus();</script>
+{% endblock %}

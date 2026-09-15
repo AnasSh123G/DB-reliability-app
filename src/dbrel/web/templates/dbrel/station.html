@@ -1,0 +1,78 @@
+{% extends "dbrel/base.html" %}
+
+{% block title %}{{ board.station.name }} — train reliability{% endblock %}
+
+{% block content %}
+{% if simulated %}
+<div class="banner" role="status">
+  <strong>Simulated data.</strong>
+  Not enough real observations have accumulated yet &mdash; an average needs at
+  least {{ min_samples }} runs of the same train at the same station &mdash; so every
+  figure below is generated. Keep <code>dbrel tt-poll</code> running and the page
+  switches to measured data on its own.
+</div>
+{% endif %}
+
+<h1 class="station-name">
+  {{ board.station.name }}
+  {% if board.station.eva %}<span class="eva">EVA {{ board.station.eva }}</span>{% endif %}
+</h1>
+
+<p class="window">
+  Calls between {{ board.window.from }} and {{ board.window.to }} on {{ board.window.date }}.
+  {% if not board.station.tracked %}
+  <span class="warn">This station is not monitored, so it has no timetable pattern.</span>
+  {% endif %}
+</p>
+
+{% if board.calls %}
+<ol class="calls" data-basis="{{ board.basis }}">
+  {% for call in board.calls %}
+  <li class="call">
+    <div class="times">
+      {% if call.arr %}<span class="t"><abbr title="arrives">arr</abbr> {{ call.arr }}</span>{% endif %}
+      {% if call.dep %}<span class="t dep"><abbr title="departs">dep</abbr> {{ call.dep }}</span>{% endif %}
+      {% if call.platform %}<span class="platform">Pl.&nbsp;{{ call.platform }}</span>{% endif %}
+    </div>
+
+    <div class="who">
+      <span class="train {{ call.segment|lower }}">{{ call.train }}</span>
+      {% if call.headline %}<span class="dest">{{ call.headline }}</span>{% endif %}
+      {% if call.terminates %}<span class="ends">ends here</span>{% endif %}
+    </div>
+
+    {% with avg=call.dep_avg|default:call.arr_avg %}
+    {% if avg %}
+    <div class="avg" data-basis="{{ board.basis }}">
+      <span class="figure">&#8709; {{ avg.avg_min }} min late</span>
+      <span class="sep">·</span>
+      <span>{{ avg.punctual_pct }}% under 6&nbsp;min</span>
+      <span class="sep">·</span>
+      <span class="n">{{ avg.n }} samples</span>
+      {% if avg.p90_min %}
+      <span class="sep">·</span>
+      <span class="p90">worst 10%: {{ avg.p90_min }} min</span>
+      {% endif %}
+      {% if avg.cancel_pct %}
+      <span class="sep">·</span>
+      <span class="cancel">{{ avg.cancel_pct }}% cancelled</span>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="avg none">&mdash; not enough observations yet</div>
+    {% endif %}
+    {% endwith %}
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="empty">
+  Nothing scheduled in this window.
+  {% if board.station.tracked %}
+  Try widening it: <a href="?back=120&amp;fwd=240">&plusmn;a few hours</a>.
+  {% else %}
+  Add this station to the tracked set with <code>dbrel tt-map-stations</code> first.
+  {% endif %}
+</p>
+{% endif %}
+{% endblock %}

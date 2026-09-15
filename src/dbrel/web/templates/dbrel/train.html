@@ -1,0 +1,75 @@
+{% extends "dbrel/base.html" %}
+
+{% block title %}{{ route.train.name }} — train reliability{% endblock %}
+
+{% block content %}
+{% if simulated %}
+<div class="banner" role="status">
+  <strong>Simulated data.</strong>
+  Not enough real observations have accumulated yet &mdash; an average needs at
+  least {{ min_samples }} runs of the same train at the same station &mdash; so every
+  figure below is generated.
+</div>
+{% endif %}
+
+<h1 class="station-name">
+  <span class="train {{ route.train.segment|lower }}">{{ route.train.name }}</span>
+  {% if route.train.line %}
+  <a class="linechip" href="/line/{{ route.train.line.id }}/">{{ route.train.line.name }}</a>
+  {% endif %}
+  {% if route.train.replacement_bus %}<span class="ends">replacement bus</span>{% endif %}
+</h1>
+
+<p class="window">
+  {{ route.train.origin }} &rarr; {{ route.train.destination }}
+  &middot; {{ route.train.n_stops }} stops, {{ route.n_monitored }} monitored
+  {% if route.train.operator %}&middot; {{ route.train.operator }}{% endif %}
+  {% if route.avg_delay_min %}
+  <br><strong>Typically {{ route.avg_delay_min }} min late</strong> across the stops we measure.
+  {% endif %}
+</p>
+
+<ol class="route">
+  {% for stop in route.stops %}
+  <li class="stop {% if stop.monitored %}measured{% else %}unmeasured{% endif %}">
+    <div class="rail" aria-hidden="true"><span class="dot"></span></div>
+
+    <div class="stopname">
+      {% if stop.monitored %}<a href="{{ stop.url }}">{{ stop.name }}</a>
+      {% else %}{{ stop.name }}{% endif %}
+      {% if stop.platform %}<span class="platform">Pl.&nbsp;{{ stop.platform }}</span>{% endif %}
+    </div>
+
+    <div class="stoptimes">
+      {% if stop.monitored %}
+        {% if stop.arr %}<span class="t"><abbr title="scheduled arrival">arr</abbr> {{ stop.arr }}</span>{% endif %}
+        {% if stop.dep %}<span class="t dep"><abbr title="scheduled departure">dep</abbr> {{ stop.dep }}</span>{% endif %}
+      {% else %}
+        <span class="nodata">not monitored</span>
+      {% endif %}
+    </div>
+
+    <div class="stopavg">
+      {% with avg=stop.dep_avg|default:stop.arr_avg %}
+      {% if avg %}
+      <span class="avg" data-basis="{{ route.basis }}">
+        <span class="figure">&#8709; {{ avg.avg_min }} min</span>
+        <span class="sep">·</span>{{ avg.punctual_pct }}% under 6&nbsp;min
+        <span class="sep">·</span><span class="n">{{ avg.n }} samples</span>
+      </span>
+      {% elif stop.monitored %}
+      <span class="avg none">&mdash; not enough observations</span>
+      {% endif %}
+      {% endwith %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+
+{% if route.n_monitored == 0 %}
+<p class="empty">
+  None of this train's stops are in the monitored corridor, so there are no times
+  or averages for it &mdash; only the route IRIS publishes.
+</p>
+{% endif %}
+{% endblock %}

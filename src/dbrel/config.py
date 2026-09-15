@@ -80,6 +80,24 @@ TT_PLAN_LEAD_HOURS = int(os.environ.get("DBREL_TT_PLAN_LEAD_HOURS", "3"))
 # tram halts, which /station/ will happily return for a name query (findings §14).
 RAIL_EVA_RANGE = range(8_000_000, 8_100_000)
 
+# --- Aggregates ------------------------------------------------------------
+# DB's own threshold: a train under six minutes late counts as pünktlich. Using
+# the operator's definition means the published figures are comparable.
+PUNCTUAL_S = 360
+
+AVERAGES_RULE_VERSION = 1
+
+# Below this many samples the UI shows "—" rather than a number. An average over
+# two runs is noise, and printing it is worse than printing nothing.
+AVG_MIN_SAMPLES = 5
+
+# --- Station board ---------------------------------------------------------
+# A service day runs past midnight; GTFS seconds-of-day exceed 86400 accordingly.
+SERVICE_DAY_MAX_S = 30 * 3600
+BOARD_BACK_S = 15 * 60
+BOARD_FWD_S = 90 * 60
+BOARD_LIMIT = 200
+
 # --- Actual-time derivation (rule_version 1) -------------------------------
 RULE_VERSION = 1
 

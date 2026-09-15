@@ -293,6 +293,10 @@ class StationStop(Base):
         # feed_version_id means a caller can scope to one feed rather than summing
         # every rebuild's copy of the same pattern.
         Index("ix_ss_station", "station_id", "feed_version_id", "planned_departure_sec"),
+        # A station board is half arrivals, and the departure index cannot serve
+        # them: it seeks (station, feed_version) and then filter-sorts the rest.
+        # Same reasoning that added ix_ts_station_arr to trip_stop.
+        Index("ix_ss_station_arr", "station_id", "feed_version_id", "planned_arrival_sec"),
         Index("ix_ss_train", "train_id"),
     )
 

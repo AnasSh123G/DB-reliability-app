@@ -408,3 +408,37 @@ Separately, **118 runs were created directly from `/fchg`** in that one sweep �
 carrying a full `<tl>` + `pt` record, i.e. the additions and replacements `/plan`
 structurally cannot contain. Under the old `keep=` predicate all 118 were discarded before
 an object existed.
+
+## 24. `/plan` drops past hours of *today* after roughly 14 hours
+
+§15 established that `/plan` serves today and tomorrow and 404s for yesterday. It did not
+ask how much of **today** survives, and the answer is: not all of it.
+
+Measured on 2026-09-14, importing `--date 2026-09-14 --hours 0-23` across 15 stations at
+**22:39 local**, 360 station-hour buckets:
+
+| hours | result |
+|---|---|
+| 00–08 | **404 at every one of the 15 stations** (135 buckets) |
+| 09–23 | 200 at every one of the 15 stations (225 buckets) |
+
+The cut is clean, uniform across stations, and sits about 13–14 hours behind the wall
+clock. So `/plan` keeps a rolling window of roughly the last ~14 hours of today plus the
+remainder of today and tomorrow; anything older is purged even though the calendar date is
+still "today".
+
+Consequences:
+
+- **There is a partial backfill, and it is worth taking.** A one-off
+  `tt-import-plan --date <today> --hours 0-23` recovers ~15 hours of schedule that the
+  3-hour rolling importer would never have fetched — for a database started mid-day this
+  is the difference between a few hours of usable history and most of a day. It cost 360
+  calls and ~7 minutes at 50 rpm.
+- **But it is not a full day**, and the gap is silent: the missing buckets return 404,
+  which `import_plan` counts as `buckets_missing` with no error, exactly like a genuinely
+  empty hour. Do not infer from a clean run that the whole day was captured.
+- §15's "captured inside its window or gone for good" therefore stands, with the window
+  being ~14 hours wide rather than one hour. The hourly cron remains mandatory.
+- Downstream, a stop whose `/plan` bucket was never fetched has no planned time, and the
+  poller's "no planned time ⇒ no delay to state" rule discards the `/fchg` value for it.
+  Missing early-morning plan buckets thus cost actuals too, not just schedule.
