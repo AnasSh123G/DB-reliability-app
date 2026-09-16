@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import typer
 from sqlalchemy import func, select, text
 
-from dbrel.config import DB_PATH, STATIC_FEEDS
+from dbrel.config import (
+    COLLECT_DURATION_S,
+    COLLECT_INTERVAL_S,
+    COLLECT_MAX_LOOKBACK_S,
+    DB_PATH,
+    DEFAULT_STATIONS_FILE,
+    STATIC_FEEDS,
+    TT_PLAN_LEAD_HOURS,
+    TT_RATELIMIT_STATE,
+    TT_SWEEP_LOCK,
+)
 from dbrel.db import create_all, session_scope
 from dbrel.gtfs.download import fetch_static
 from dbrel.identity import SOURCE_SYNTH
@@ -546,6 +557,139 @@ def tt_finalize(
     )
     for quality, count in sorted(result.by_quality.items(), key=lambda kv: -kv[1]):
         typer.echo(f"    {quality:<22} {count:>7,}")
+
+
+@app.command("collect")
+def collect(
+    every: str = typer.Option(None, help="cycle interval, e.g. 4h, 90m, 1h30m (default 4h)"),
+    for_: str = typer.Option(None, "--for", help="total run time, e.g. 7d, 12h; '0' = until Ctrl-C (default 7d)"),
+    lead_hours: int = typer.Option(TT_PLAN_LEAD_HOURS, help="how far ahead /plan is pulled each cycle"),
+    max_lookback: str = typer.Option(
+        None, help="how far back the /plan window may reach (default 16h; see docs/probe-findings.md §24)"
+    ),
+    stations: Path = typer.Option(
+        None, help=f"station seed file for the cold start (default {DEFAULT_STATIONS_FILE})"
+    ),
+    cold_start: bool = typer.Option(
+        True, help="run init-db/import-static/station-seed/backfill if the tracked set is empty"
+    ),
+    once: bool = typer.Option(False, help="run exactly one cycle and exit"),
+    dry_run: bool = typer.Option(False, help="poll but do not write any recorded values"),
+) -> None:
+    """Run the whole ingest on a timer: plan -> poll -> finalize -> averages.
+
+    Safe to leave running for days. A cold start seeds the tracked stations and
+    backfills today's schedule if the database is empty (docs/probe-findings.md
+    §24). Only one instance runs at a time (data/tt_sweep.lock). Ctrl-C
+    finishes the current phase, then prints a summary rather than a traceback;
+    a second Ctrl-C aborts immediately. The /plan window is computed explicitly
+    each cycle rather than trusted to the rolling watermark, which is only
+    safe at intervals under about two hours -- see src/dbrel/collect.py.
+    """
+    from dbrel.collect import AlreadyRunning, format_duration, parse_duration, run_collect
+
+    try:
+        every_s = parse_duration(every) if every else COLLECT_INTERVAL_S
+        for_s = parse_duration(for_) if for_ else COLLECT_DURATION_S
+        max_lookback_s = parse_duration(max_lookback) if max_lookback else COLLECT_MAX_LOOKBACK_S
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if every_s < 60:
+        raise typer.BadParameter("--every must be at least 60s")
+    if for_s and for_s < every_s and not once:
+        raise typer.BadParameter("--for must cover at least one --every interval (or pass --once)")
+
+    stations_file = stations or DEFAULT_STATIONS_FILE
+    if cold_start and not stations_file.exists():
+        raise typer.BadParameter(f"no station seed file at {stations_file}")
+
+    typer.echo(
+        f"collecting every {format_duration(every_s)} for "
+        f"{'until interrupted' if not for_s else format_duration(for_s)}"
+        + (" (single cycle)" if once else "")
+    )
+
+    try:
+        result = run_collect(
+            every_s=every_s,
+            for_s=for_s,
+            lead_hours=lead_hours,
+            max_lookback_s=max_lookback_s,
+            stations_file=stations_file,
+            cold_start=cold_start,
+            once=once,
+            dry_run=dry_run,
+            progress=typer.echo,
+        )
+    except AlreadyRunning as exc:
+        typer.echo(f"! {exc}")
+        raise typer.Exit(1) from None
+
+    label = "stopped" if result.interrupted else "done"
+    typer.echo(f"\n=== {label}: {len(result.cycles)} cycle(s) in {result.elapsed_s:.0f}s")
+    failed = sum(1 for c in result.cycles if not c.ok)
+    if failed:
+        typer.echo(f"  {failed}/{len(result.cycles)} cycle(s) had at least one failed phase")
+    if result.aborted_reason:
+        typer.echo(f"  ! {result.aborted_reason}")
+        raise typer.Exit(1)
+
+
+@app.command("reset-db")
+def reset_db(
+    yes: bool = typer.Option(False, "--yes", help="skip the confirmation prompt"),
+    reset_ratelimit: bool = typer.Option(
+        False, help="also clear the token-bucket state (normally left alone; it tracks the gateway's quota, not our data)"
+    ),
+) -> None:
+    """Delete the database. Keeps the cached GTFS feeds (data/feeds) and probe output.
+
+    Refuses while a 'dbrel collect' is running (data/tt_sweep.lock), since that
+    process holds a pooled connection against the very file being deleted.
+    """
+    from dbrel.collect import AlreadyRunning, exclusive_lock
+    from dbrel.db import dispose_engine
+
+    try:
+        with exclusive_lock(TT_SWEEP_LOCK, label="reset-db"):
+            if not DB_PATH.exists():
+                typer.echo(f"no database at {DB_PATH}")
+                return
+
+            size = DB_PATH.stat().st_size
+            typer.echo(f"{DB_PATH}  ({size:,} bytes)")
+            try:
+                with session_scope() as session:
+                    for label, model in (("stations", Station), ("trips", Trip), ("trip_stop", TripStop)):
+                        count = session.scalar(select(func.count()).select_from(model))
+                        typer.echo(f"  {label}: {count:,}")
+            except Exception:
+                pass  # schema may be partial/corrupt -- the size alone is enough to confirm on
+
+            if not yes:
+                typer.confirm(
+                    "delete this database and its WAL siblings? this cannot be undone", abort=True
+                )
+
+            dispose_engine()
+            deleted = []
+            for suffix in ("", "-wal", "-shm"):
+                p = Path(str(DB_PATH) + suffix)
+                if p.exists():
+                    p.unlink()
+                    deleted.append(p.name)
+            typer.echo(f"deleted {', '.join(deleted)}")
+            typer.echo("kept data/feeds (cached GTFS zips) and data/probe")
+
+            if reset_ratelimit and TT_RATELIMIT_STATE.exists():
+                TT_RATELIMIT_STATE.unlink()
+                typer.echo(f"cleared {TT_RATELIMIT_STATE}")
+
+            typer.echo("\nnext: uv run dbrel collect --every 4h --for 7d")
+    except AlreadyRunning as exc:
+        typer.echo(f"! {exc}")
+        raise typer.Exit(1) from None
 
 
 @app.command("build-aliases")

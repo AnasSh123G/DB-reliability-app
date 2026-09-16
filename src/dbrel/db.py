@@ -54,6 +54,21 @@ def get_engine() -> Engine:
     return _engine
 
 
+def dispose_engine() -> None:
+    """Close the pool and forget the module-level singletons.
+
+    A later get_engine()/get_sessionmaker() call rebuilds them lazily. Needed
+    before deleting the SQLite file out from under a live process (reset-db):
+    without this, a pooled connection can keep the file open and the delete
+    either fails or leaves the reader confused about what it is reading.
+    """
+    global _engine, _Session
+    if _engine is not None:
+        _engine.dispose()
+    _engine = None
+    _Session = None
+
+
 def get_sessionmaker() -> sessionmaker[Session]:
     global _Session
     if _Session is None:

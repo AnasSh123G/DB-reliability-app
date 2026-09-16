@@ -87,8 +87,10 @@ PUNCTUAL_S = 360
 
 AVERAGES_RULE_VERSION = 1
 
-# Below this many samples the UI shows "—" rather than a number. An average over
-# two runs is noise, and printing it is worse than printing nothing.
+# Below this many samples the UI marks the average "provisional" rather than
+# hiding it — a figure from one run is still the truest number available while
+# a fresh, no-synthetic-data collection is under way, it is just noisier than
+# five runs. Below AVG_MIN_SAMPLES, printed but flagged; at or above, plain.
 AVG_MIN_SAMPLES = 5
 
 # --- Station board ---------------------------------------------------------
@@ -111,6 +113,32 @@ SETTLE_S = 300
 # long finalize waits before stamping a run finalized_at: past that point no
 # further read can add anything, so the grades are safe to freeze.
 SERVICE_DATE_CLOSE_S = 6 * 3600
+
+# --- Continuous collection (dbrel collect) ---------------------------------
+# Checked into the repo (data/ is gitignored) — see docs/probe-findings.md §22 for
+# why re-resolving these by name after a reset is risky rather than free.
+DEFAULT_STATIONS_FILE = Path(os.environ.get("DBREL_STATIONS_FILE", "config/ruhr_stations.toml"))
+
+# TT_LINGER_S (below) is the true ceiling: past 6h, an unread stop is graded
+# "we weren't listening" rather than "nothing happened". 4h leaves margin for a
+# slow cycle. See docs/probe-findings.md §20 (~15h /fchg retention) and §24
+# (~14h /plan retention of today) for why this is not the binding constraint.
+COLLECT_INTERVAL_S = int(os.environ.get("DBREL_COLLECT_EVERY_S", 4 * 3600))
+COLLECT_DURATION_S = int(os.environ.get("DBREL_COLLECT_FOR_S", 7 * 86400))
+
+# How far back a cycle's /plan window may reach even if the previous cycle ran
+# long ago. /plan purges past hours of today after ~14h (§24), and a 404'd
+# bucket is NOT skipped by the fetch dedup (only a 200 is), so a longer window
+# costs one live, wasted API call per station per hour, every single cycle.
+COLLECT_MAX_LOOKBACK_S = int(os.environ.get("DBREL_COLLECT_MAX_LOOKBACK_S", 16 * 3600))
+
+# The 1-hour safety margin added on top of "time since the last cycle", so a
+# cycle that ran slightly late does not leave a bucket uncovered.
+COLLECT_OVERLAP_S = 3600
+
+# Consecutive failed cycles before a long unattended run gives up rather than
+# quietly doing nothing for days (e.g. a revoked credential, not a blip).
+COLLECT_MAX_FAILED_CYCLES = 5
 
 # How long a passed event stays visible in the /fchg horizon. §18 could only show
 # it exceeds 75 minutes, because the pilot's watch ended before the API dropped

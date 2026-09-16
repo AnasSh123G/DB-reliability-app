@@ -211,6 +211,19 @@ main, .masthead, footer { max-width: 60rem; margin-inline: auto; padding-inline:
 .avg .sep { opacity: 0.4; }
 .avg.none { font-style: italic; opacity: 0.75; }
 
+/* A real average resting on fewer than AVG_MIN_SAMPLES runs -- shown, not
+   hidden, but visibly not settled yet. */
+.provisional-tag {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.04rem 0.32rem;
+  border-radius: 3px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border: 1px solid var(--warn-line);
+}
+
 footer {
   padding-block: 1.5rem 3rem;
   color: var(--muted);

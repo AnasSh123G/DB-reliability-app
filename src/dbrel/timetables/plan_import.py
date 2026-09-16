@@ -119,29 +119,31 @@ def import_plan(
             buckets = _pending_hours(station.last_plan_hour, lead_hours)
 
         for day, hour in buckets:
-            if not force:
-                already = session.execute(
-                    select(TtPlanFetch.id).where(
-                        TtPlanFetch.eva == station.eva,
-                        TtPlanFetch.plan_date == day,
-                        TtPlanFetch.plan_hour == hour,
-                        TtPlanFetch.http_status == 200,
-                    )
-                ).scalar_one_or_none()
-                if already is not None:
-                    result.buckets_skipped += 1
-                    continue
+            # Looked up regardless of status (not just the 200 case): a bucket
+            # that previously 404'd still has a row under the unique key
+            # (eva, plan_date, plan_hour), and a caller that re-covers the same
+            # window on purpose — as the collect orchestrator does, so an
+            # overlap never leaves a gap — must update that row rather than
+            # insert a second one, or the unique constraint raises.
+            existing = session.execute(
+                select(TtPlanFetch).where(
+                    TtPlanFetch.eva == station.eva,
+                    TtPlanFetch.plan_date == day,
+                    TtPlanFetch.plan_hour == hour,
+                )
+            ).scalar_one_or_none()
+            if not force and existing is not None and existing.http_status == 200:
+                result.buckets_skipped += 1
+                continue
 
             yymmdd = date_cls.fromisoformat(day).strftime("%y%m%d")
             resp = client.plan(station.eva, yymmdd, hour)
-            fetch = TtPlanFetch(
-                eva=station.eva,
-                plan_date=day,
-                plan_hour=hour,
-                fetched_at=int(time.time()),
-                http_status=resp.status,
-                content_sha256=hashlib.sha256(resp.body).hexdigest() if resp.ok else None,
-            )
+            fetch = existing or TtPlanFetch(eva=station.eva, plan_date=day, plan_hour=hour)
+            fetch.fetched_at = int(time.time())
+            fetch.http_status = resp.status
+            fetch.content_sha256 = hashlib.sha256(resp.body).hexdigest() if resp.ok else None
+            fetch.error = None
+            fetch.n_stops = 0
             if not resp.ok:
                 # 404 is routine: no service in this hour, or beyond the horizon.
                 result.buckets_missing += 1

@@ -1,0 +1,109 @@
+# The tracked-station seed for `dbrel collect`.
+#
+# These 15 evas were resolved once against /station/ and behaviourally checked
+# with tt-verify-stations (docs/probe-findings.md §22: 4 of the original 21
+# needed a human, because IRIS and DELFI disagree on station names in ways a
+# name search cannot resolve on its own). Re-running that name search after a
+# `dbrel reset-db` would risk the same trap that caught them the first time —
+# §14 records /station/KNE returning Neuwied, a valid rail eva for the wrong
+# city — so instead this file is applied directly by name/natural_key match
+# against the freshly-imported GTFS stations, at zero /station/ calls.
+#
+# natural_key is `normalize_name(name)@lat.3f,lon.3f` (gtfs/static_import.py),
+# the same key gtfs.de station rows are deduplicated on, so it survives a feed
+# rebuild even if the station's display name changes slightly. name is kept as
+# a fallback for a first-time import where the natural_key hasn't been seen
+# yet with this exact rounding.
+
+name = "Ruhrgebiet corridor"
+priority = 1
+
+[[stations]]
+name = "Bochum Hbf"
+eva = 8000041
+ds100 = "EBO"
+natural_key = "bochum hbf@51.479,7.223"
+
+[[stations]]
+name = "Bottrop Hbf"
+eva = 8000047
+ds100 = "EBTH"
+natural_key = "bottrop hbf@51.510,6.937"
+
+[[stations]]
+name = "Dortmund Dorstfeld"
+eva = 8000081
+ds100 = "EDDP"
+natural_key = "dortmund dorstfeld@51.510,7.423"
+
+[[stations]]
+name = "Dortmund Hbf"
+eva = 8000080
+ds100 = "EDO"
+natural_key = "dortmund hbf@51.517,7.459"
+
+[[stations]]
+name = "Dortmund Mengede Bf"
+eva = 8001543
+ds100 = "EDMG"
+natural_key = "dortmund mengede bf@51.570,7.376"
+
+[[stations]]
+name = "Duisburg Hbf"
+eva = 8000086
+ds100 = "EDG"
+natural_key = "duisburg hbf@51.430,6.775"
+
+[[stations]]
+name = "Essen Hbf"
+eva = 8000098
+ds100 = "EE"
+natural_key = "essen hbf@51.450,7.012"
+
+[[stations]]
+name = "Essen Steele S"
+eva = 8000099
+ds100 = "EEST"
+natural_key = "essen steele s@51.451,7.075"
+
+[[stations]]
+name = "Essen West S"
+eva = 8001898
+ds100 = "EENW"
+natural_key = "essen west s@51.453,6.982"
+
+[[stations]]
+name = "Gelsenkirchen Hbf"
+eva = 8000118
+ds100 = "EG"
+natural_key = "gelsenkirchen hbf@51.505,7.102"
+
+[[stations]]
+name = "Hagen Hbf"
+eva = 8000142
+ds100 = "EHG"
+natural_key = "hagen hbf@51.362,7.462"
+
+[[stations]]
+name = "Herne Bf"
+eva = 8000164
+ds100 = "EHER"
+natural_key = "herne bf@51.544,7.217"
+
+[[stations]]
+name = "Herne Wanne-Eickel Hbf"
+eva = 8000192
+ds100 = "EWAN"
+natural_key = "herne wanne-eickel hbf@51.532,7.166"
+
+[[stations]]
+name = "Oberhausen Hbf"
+eva = 8000286
+ds100 = "EOB"
+natural_key = "oberhausen hbf@51.474,6.853"
+
+[[stations]]
+name = "Recklinghausen Hbf"
+eva = 8000307
+ds100 = "ERE"
+natural_key = "recklinghausen hbf@51.616,7.201"

@@ -58,25 +58,24 @@ def resolve_basis(session: Session, requested: str | None = None) -> str:
 
     Resolved once per request, for the whole page. The alternative — a badge on
     each row — is something a reader can miss; a page-level answer cannot be.
+
+    Prefers REAL as soon as any real row exists at all — _average now shows a
+    figure from the first sample (marked provisional below AVG_MIN_SAMPLES)
+    rather than hiding it, so there is no longer a "too little to show"
+    threshold to wait past. SYNTH is only ever chosen when synthetic rows
+    genuinely exist, so a database that was never seeded (dbrel seed-demo) can
+    no longer show the "Simulated data" banner over a board with nothing
+    simulated on it.
     """
     if requested:
         upper = requested.upper()
         if upper in (BASIS_REAL, BASIS_SYNTH):
             return upper
-    # "Enough to say something", not merely "a row exists". After one day of
-    # collection every real pair has exactly one sample, which is below the floor
-    # the board will print — switching to REAL then would replace the simulated
-    # figures with a page of em-dashes. This flips over on its own once the
-    # collector has run enough days to carry a real average.
-    usable_real = session.scalar(
-        select(TrainStationDelay.id)
-        .where(
-            TrainStationDelay.basis == BASIS_REAL,
-            TrainStationDelay.n_dep >= AVG_MIN_SAMPLES,
-        )
-        .limit(1)
-    )
-    return BASIS_REAL if usable_real else BASIS_SYNTH
+    has_real = session.scalar(select(TrainStationDelay.id).where(TrainStationDelay.basis == BASIS_REAL).limit(1))
+    if has_real:
+        return BASIS_REAL
+    has_synth = session.scalar(select(TrainStationDelay.id).where(TrainStationDelay.basis == BASIS_SYNTH).limit(1))
+    return BASIS_SYNTH if has_synth else BASIS_REAL
 
 
 def _hhmm(sec: int | None) -> str | None:
@@ -305,11 +304,18 @@ def board_slices(now_epoch: int, back_s: int, fwd_s: int) -> list[tuple[date_cls
 
 
 def _average(row, prefix: str) -> dict | None:
-    """The delay summary for one call, or None when there is too little to say."""
+    """The delay summary for one call, or None when there is nothing to say at all.
+
+    Shown from the first sample rather than hidden below AVG_MIN_SAMPLES: with
+    no synthetic data seeded, hiding it would mean every board reads "not
+    enough observations" for roughly the first five service days. The count
+    is always printed alongside it, and "provisional" marks it below the
+    threshold, so a reader is never misled into treating one run as settled.
+    """
     if row is None:
         return None
     count = row.n_dep if prefix == "dep" else row.n_arr
-    if not count or count < AVG_MIN_SAMPLES:
+    if not count:
         return None
     avg = getattr(row, f"avg_{prefix}_delay_s")
     if avg is None:
@@ -329,6 +335,7 @@ def _average(row, prefix: str) -> dict | None:
         "n_runs": row.n_runs,
         "cancel_rate": cancel_rate,
         "cancel_pct": round(cancel_rate * 100, 1) if cancel_rate else None,
+        "provisional": count < AVG_MIN_SAMPLES,
     }
 
 
@@ -547,9 +554,13 @@ def train_route(session: Session, train_id: int, *, basis: str | None = None) ->
         "basis": basis,
         "n_monitored": sum(1 for s in stops if s["monitored"]),
         # A journey-level headline, averaged over the stops we can actually see.
+        # Provisional whenever any contributing stop is -- a headline resting on
+        # one-sample stops needs the same caveat those stops carry individually.
         "avg_delay_min": (
             round(sum(g["avg_min"] for g in graded) / len(graded), 1) if graded else None
         ),
+        "avg_delay_n_stops": len(graded),
+        "avg_delay_provisional": any(g["provisional"] for g in graded) if graded else False,
         "stops": stops,
     }
 

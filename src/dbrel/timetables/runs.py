@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date as date_cls
 from datetime import datetime
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -325,6 +325,37 @@ def upsert_run(
     # --- trip -------------------------------------------------------
     first_dep = next((s.departure.planned_ts for s in stops if s.departure), None)
     last_arr = next((s.arrival.planned_ts for s in reversed(stops) if s.arrival), None)
+
+    # Trip carries two independent unique constraints -- uq_trip_train_date
+    # (train_id, service_date) and uq_trip_src_run_date (source,
+    # source_run_key, service_date) -- and an ON CONFLICT clause can only
+    # target one of them. The ordinary case (re-importing the same run_key)
+    # hits the second. But two different run_keys can legitimately resolve to
+    # the same train_id on the same service_date -- observed live during a
+    # full-day backfill, where a wide window groups the same physical run
+    # slightly differently across buckets -- and that hits the first, which
+    # this statement's ON CONFLICT does not cover, so the plain INSERT below
+    # it raises IntegrityError instead of upserting. Checked explicitly first
+    # because of that: if a trip already exists for this train on this
+    # service_date under a different run_key, it IS this run's trip, so its
+    # timing is refreshed in place rather than attempting a second, colliding
+    # insert under the new run_key.
+    existing_id = session.execute(
+        select(Trip.id).where(Trip.train_id == train_id, Trip.service_date == head.service_date)
+    ).scalar_one_or_none()
+    if existing_id is not None:
+        session.execute(
+            update(Trip)
+            .where(Trip.id == existing_id)
+            .values(
+                supposed_departure_utc=first_dep,
+                supposed_arrival_utc=last_arr,
+                n_stops_tracked=len(stops),
+            )
+        )
+        counters.trips_created += 1
+        return existing_id
+
     session.execute(
         sqlite_insert(Trip)
         .values(

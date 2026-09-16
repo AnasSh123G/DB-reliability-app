@@ -25,7 +25,9 @@
   &middot; {{ route.train.n_stops }} stops, {{ route.n_monitored }} monitored
   {% if route.train.operator %}&middot; {{ route.train.operator }}{% endif %}
   {% if route.avg_delay_min %}
-  <br><strong>Typically {{ route.avg_delay_min }} min late</strong> across the stops we measure.
+  <br><strong>Typically {{ route.avg_delay_min }} min late</strong>
+  across {{ route.avg_delay_n_stops }} stop{{ route.avg_delay_n_stops|pluralize }} we measure
+  {% if route.avg_delay_provisional %}<span class="provisional-tag">provisional</span>{% endif %}
   {% endif %}
 </p>
 
@@ -55,10 +57,11 @@
       <span class="avg" data-basis="{{ route.basis }}">
         <span class="figure">&#8709; {{ avg.avg_min }} min</span>
         <span class="sep">·</span>{{ avg.punctual_pct }}% under 6&nbsp;min
-        <span class="sep">·</span><span class="n">{{ avg.n }} samples</span>
+        <span class="sep">·</span><span class="n">{{ avg.n }} sample{{ avg.n|pluralize }}</span>
+        {% if avg.provisional %}<span class="provisional-tag">provisional</span>{% endif %}
       </span>
       {% elif stop.monitored %}
-      <span class="avg none">&mdash; not enough observations</span>
+      <span class="avg none">&mdash; no observations yet</span>
       {% endif %}
       {% endwith %}
     </div>

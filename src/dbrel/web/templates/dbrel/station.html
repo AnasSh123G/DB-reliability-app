@@ -48,7 +48,7 @@
       <span class="sep">·</span>
       <span>{{ avg.punctual_pct }}% under 6&nbsp;min</span>
       <span class="sep">·</span>
-      <span class="n">{{ avg.n }} samples</span>
+      <span class="n">{{ avg.n }} sample{{ avg.n|pluralize }}</span>
       {% if avg.p90_min %}
       <span class="sep">·</span>
       <span class="p90">worst 10%: {{ avg.p90_min }} min</span>
@@ -57,9 +57,13 @@
       <span class="sep">·</span>
       <span class="cancel">{{ avg.cancel_pct }}% cancelled</span>
       {% endif %}
+      {% if avg.provisional %}
+      <span class="sep">·</span>
+      <span class="provisional-tag">provisional</span>
+      {% endif %}
     </div>
     {% else %}
-    <div class="avg none">&mdash; not enough observations yet</div>
+    <div class="avg none">&mdash; no observations yet</div>
     {% endif %}
     {% endwith %}
   </li>
