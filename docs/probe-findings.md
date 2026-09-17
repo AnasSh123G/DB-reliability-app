@@ -562,3 +562,48 @@ alone is ≈11h/lap), so priority tiering (§ the `poll_priority` mechanism alre
 `changes_poller.py`, not yet extended to `plan_import.py`) is not an optimisation at
 national scale, it is a hard requirement: most of Germany's ~8,215 stations would need to be
 checked far less often than a curated set of hubs and corridors.
+
+## 27. The advertised 60/min limit is not enforced — at least not within a 30-second burst
+
+Every prior finding in this log, and the whole `TT_RPM` design (config.py), assumed the
+`x-ratelimit-limit: name=default,60` header was a real, enforced ceiling. Tested directly
+against the live gateway with two separate client-id/api-key pairs, using raw `httpx` calls
+that bypass dbrel's own client-side `TokenBucket` entirely, it is not — or at least not at
+the volumes and durations tested:
+
+| test | pace | result |
+|---|---|---|
+| pair 1 alone, `/station` | 400 req in 9s (~2,660/min) | 400×200, 0×429 |
+| pair 1 alone, `/station`, extended | 1,500 req in 34s (~2,660/min) | 1,500×200, 0×429 |
+| pair 1 alone, `/fchg` | 300 req in 7s (~2,560/min) | 300×200, 0×429 |
+| pair 2 alone, `/station` | 550 req total, up to 45 req/s | 550×200, 0×429 |
+| both pairs concurrently | 90 req in 1s (45 each) | 90×200, 0×429 |
+
+`x-ratelimit-remaining` behaves inconsistently with either key actually being blocked: pair
+1's counter (the older, previously-used credential) counts down from a real number and
+clamps at `0`; pair 2's (freshly subscribed, never used before this test) reported `0` from
+its very first request ever made. In both cases, reaching `0` never produced a single 429 —
+the header looks like bookkeeping that is not wired to an enforcement path, at least for the
+Timetables product's current tier.
+
+**This does not resolve "per-key vs shared account limit"** — the question the two-pair test
+was originally built to answer — because neither key is throttled at all under these
+conditions, so the question does not have a meaningful answer right now.
+
+**Caveats, both real:** (1) this is a ≤34-second burst test, not an hours-long sustained one,
+so a longer-window (hourly/daily) cap elsewhere cannot be ruled out; (2) whatever is causing
+this could be a temporary gateway state rather than a permanent policy change — DB could
+switch enforcement back on without notice.
+
+**Consequence, implemented rather than just noted:** the client-side limiter
+(`timetables/ratelimit.py`) no longer runs at a fixed, pessimistic rate. It runs fast by
+default (`TT_RPS_FAST`, 60/s — an order of magnitude above the advertised minute-based
+figure) and degrades only on evidence: a real 429 triggers `penalise()`, which pins every
+process sharing the lock file to `TT_RPM_PENALTY` (58/min, the advertised-safe rate) for
+`TT_PENALTY_S` (180s), then returns to fast mode on its own. This is deliberately not "trust
+the measurement and remove the limiter" — caveat (2) above is exactly why a real 429 must
+still produce real, immediate, cross-process backoff rather than being ignored.
+
+Measured effect on the full-day, 212-station backfill (5,088 `/plan` calls): **≈70 seconds**,
+down from ≈88 minutes at the old fixed 58/min. A full cold-start-to-first-cycle run completed
+in 120s against the live API, with zero 429s observed.
