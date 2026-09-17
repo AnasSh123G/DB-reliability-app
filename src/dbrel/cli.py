@@ -9,6 +9,7 @@ import typer
 from sqlalchemy import func, select, text
 
 from dbrel.config import (
+    COLLECT_DERIVE_EVERY,
     COLLECT_DURATION_S,
     COLLECT_INTERVAL_S,
     COLLECT_MAX_LOOKBACK_S,
@@ -583,6 +584,12 @@ def collect(
     cold_start: bool = typer.Option(
         True, help="run init-db/import-static/station-seed/backfill if the tracked set is empty"
     ),
+    derive_every: int = typer.Option(
+        COLLECT_DERIVE_EVERY, help="run finalize+averages every Nth cycle (backfill/poll run every cycle)"
+    ),
+    start_at_midnight: bool = typer.Option(
+        False, help="wait until the next local midnight before cold start, so --for covers whole calendar days"
+    ),
     once: bool = typer.Option(False, help="run exactly one cycle and exit"),
     dry_run: bool = typer.Option(False, help="poll but do not write any recorded values"),
 ) -> None:
@@ -590,11 +597,12 @@ def collect(
 
     Safe to leave running for days. A cold start seeds the tracked stations and
     backfills today's schedule if the database is empty (docs/probe-findings.md
-    §24). Only one instance runs at a time (data/tt_sweep.lock). Ctrl-C
-    finishes the current phase, then prints a summary rather than a traceback;
-    a second Ctrl-C aborts immediately. The /plan window is computed explicitly
-    each cycle rather than trusted to the rolling watermark, which is only
-    safe at intervals under about two hours -- see src/dbrel/collect.py.
+    §24); every day after that gets its own fresh backfill too. Only one
+    instance runs at a time (data/tt_sweep.lock). Ctrl-C finishes the current
+    phase, then prints a summary rather than a traceback; a second Ctrl-C
+    aborts immediately. The /plan window is computed explicitly each cycle
+    rather than trusted to the rolling watermark, which is only safe at
+    intervals under about two hours -- see src/dbrel/collect.py.
     """
     from dbrel.collect import AlreadyRunning, format_duration, parse_duration, run_collect
 
@@ -630,6 +638,8 @@ def collect(
             cold_start=cold_start,
             once=once,
             dry_run=dry_run,
+            derive_every=derive_every,
+            start_at_midnight=start_at_midnight,
             progress=typer.echo,
         )
     except AlreadyRunning as exc:

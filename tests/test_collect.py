@@ -19,15 +19,17 @@ from dbrel.collect import (
     SeedStation,
     apply_station_seed,
     buckets_by_date,
+    day_needs_backfill,
     exclusive_lock,
     format_duration,
     hour_buckets,
+    next_midnight_after,
     parse_duration,
     plan_window,
 )
 from dbrel.config import TZ
 from dbrel.db import Base
-from dbrel.models import Station
+from dbrel.models import Station, TtPlanFetch
 
 # --------------------------------------------------------------------------
 # parse_duration / format_duration
@@ -124,6 +126,41 @@ def test_hour_buckets_fall_back_requests_the_doubled_hour_once():
 def test_hour_buckets_requires_aware_datetimes():
     with pytest.raises(ValueError):
         hour_buckets(datetime(2026, 9, 15), datetime(2026, 9, 15, 1))
+
+
+# --------------------------------------------------------------------------
+# next_midnight_after -- --start-at-midnight
+# --------------------------------------------------------------------------
+
+
+def test_next_midnight_after_evening_is_a_few_hours_away():
+    now = datetime(2026, 9, 17, 20, 0, tzinfo=TZ)
+    assert next_midnight_after(now) == datetime(2026, 9, 18, 0, 0, tzinfo=TZ)
+
+
+def test_next_midnight_after_just_past_midnight_is_almost_a_full_day():
+    """A near-exact-midnight invocation still waits for the *next* one --
+    correct behaviour, not a bug, since a human never invokes this at the
+    literal microsecond of local midnight."""
+    now = datetime(2026, 9, 17, 0, 0, 1, tzinfo=TZ)
+    assert next_midnight_after(now) == datetime(2026, 9, 18, 0, 0, tzinfo=TZ)
+
+
+def test_next_midnight_after_spans_a_spring_forward_transition_correctly():
+    """2026-03-29: 02:00 CET -> 03:00 CEST, so the day is only 23 hours long.
+    Aware-datetime subtraction must still report 23h, not the naive 24h."""
+    now = datetime(2026, 3, 28, 23, 0, tzinfo=TZ)
+    midnight = next_midnight_after(now)
+    assert midnight == datetime(2026, 3, 29, 0, 0, tzinfo=TZ)
+    assert (midnight - now).total_seconds() == 3600.0
+
+
+def test_next_midnight_after_spans_a_fall_back_transition_correctly():
+    """2026-10-25: 03:00 CEST -> 02:00 CET, so the day is 25 hours long."""
+    now = datetime(2026, 10, 24, 23, 0, tzinfo=TZ)
+    midnight = next_midnight_after(now)
+    assert midnight == datetime(2026, 10, 25, 0, 0, tzinfo=TZ)
+    assert (midnight - now).total_seconds() == 3600.0
 
 
 # --------------------------------------------------------------------------
@@ -302,3 +339,76 @@ def test_default_station_seed_file_is_well_formed():
 
     for s in seed:
         assert s.eva in RAIL_EVA_RANGE, f"{s.name}: eva {s.eva} outside RAIL_EVA_RANGE"
+
+
+# --------------------------------------------------------------------------
+# day_needs_backfill -- the gate on the once-a-day full-day /plan sweep
+# --------------------------------------------------------------------------
+
+
+def _attempt(session, eva: int, day: str, hour: int, status: int = 200) -> None:
+    session.add(
+        TtPlanFetch(eva=eva, plan_date=day, plan_hour=hour, fetched_at=0, http_status=status)
+    )
+
+
+def _track(session, *evas: int) -> None:
+    for index, eva in enumerate(evas, start=1):
+        session.add(
+            Station(id=index, natural_key=f"s{index}@1,1", name=f"S{index}",
+                    lat=1, lon=1, eva=eva, tracked=1)
+        )
+    session.flush()
+
+
+def test_day_needs_backfill_is_true_before_anything_is_fetched(session):
+    _track(session, 8000041)
+    assert day_needs_backfill(session, "2026-09-18") is True
+
+
+def test_day_needs_backfill_is_false_once_every_bucket_was_attempted(session):
+    _track(session, 8000041)
+    for hour in range(24):
+        _attempt(session, 8000041, "2026-09-18", hour)
+    session.flush()
+    assert day_needs_backfill(session, "2026-09-18") is False
+
+
+def test_a_404_still_counts_as_attempted(session):
+    """Otherwise a rural station with no 03:00 service re-runs the sweep forever."""
+    _track(session, 8000041)
+    for hour in range(24):
+        _attempt(session, 8000041, "2026-09-18", hour, status=404)
+    session.flush()
+    assert day_needs_backfill(session, "2026-09-18") is False
+
+
+def test_a_partly_fetched_day_still_needs_the_backfill(session):
+    """A crash mid-sweep must resume, not skip the rest of the day."""
+    _track(session, 8000041)
+    for hour in range(20):
+        _attempt(session, 8000041, "2026-09-18", hour)
+    session.flush()
+    assert day_needs_backfill(session, "2026-09-18") is True
+
+
+def test_each_tracked_station_needs_its_own_24_hours(session):
+    """One station complete is not the day complete."""
+    _track(session, 8000041, 8000080)
+    for hour in range(24):
+        _attempt(session, 8000041, "2026-09-18", hour)
+    session.flush()
+    assert day_needs_backfill(session, "2026-09-18") is True
+
+
+def test_another_days_buckets_do_not_count(session):
+    _track(session, 8000041)
+    for hour in range(24):
+        _attempt(session, 8000041, "2026-09-17", hour)
+    session.flush()
+    assert day_needs_backfill(session, "2026-09-18") is True
+
+
+def test_no_tracked_stations_means_nothing_to_back_fill(session):
+    """Before the cold start seeds anything there is no work, not infinite work."""
+    assert day_needs_backfill(session, "2026-09-18") is False

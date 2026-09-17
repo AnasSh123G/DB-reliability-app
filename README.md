@@ -20,8 +20,15 @@ Two sources, and they do different jobs:
 
 ```bash
 uv sync --extra web
-uv run dbrel collect --every 4h --for 7d   # cold start, then a cycle every 4 hours for a week
+cp .env.example .env   # then fill in DB_CLIENT_ID and TIMETABLES_API_KEY -- see below
+uv run dbrel collect --every 15m --for 7d  # cold start, then a cycle every 15 minutes for a week
 ```
+
+Credentials come from https://developers.deutschebahn.com: register, create an app, then
+subscribe that app to the "Timetables" product (free tier, 60 requests/minute). `.env` is
+gitignored, so this is the one thing a fresh clone needs before anything else works —
+`dbrel tt-check` verifies both headers and reports which one is wrong, without ever
+printing them.
 
 One command runs the whole pipeline: schema, GTFS import, the tracked stations
 (`config/ruhr_stations.toml` — 212 stations within 70 km of Bochum Hbf, ranked by traffic),
@@ -90,23 +97,50 @@ layer via `read_scope()`, which never commits.
 
 ```bash
 uv run dbrel collect \
-  --every 4h \                       # cycle interval: 4h, 90m, 1h30m (default 4h)
+  --every 15m \                      # cycle interval: 15m, 4h, 1h30m (default 15m)
   --for 7d \                         # total run time: 7d, 12h, 30m; '0' = until Ctrl-C
   --lead-hours 3 \                   # how far ahead /plan is pulled each cycle
   --max-lookback 16h \               # how far back a cycle's /plan window may reach
+  --derive-every 4 \                 # run finalize+averages every Nth cycle (default 4)
+  --start-at-midnight \              # wait until the next local midnight before starting
   --stations config/ruhr_stations.toml \  # the tracked corridor (default, shown for clarity)
   --cold-start                       # schema, GTFS import, station seed, aliases, verify,
-                                      # and a one-off 0-23h /plan backfill, only if needed
+                                      # and the first 0-23h /plan backfill, only if needed
 
 uv run dbrel collect --once          # a single cycle — the shape a cron slot wants
 uv run dbrel reset-db --yes          # drop the database; keeps data/feeds (~11 MB) and data/probe
 ```
 
-Each cycle runs `/plan` import → `/fchg` poll → finalize → averages, and commits each phase
-independently, so a failure partway through never rolls back work already done. Ctrl-C
-finishes the phase in progress and prints a summary instead of a traceback; a second Ctrl-C
-aborts immediately. Only one `collect` runs at a time (`data/tt_sweep.lock`); a second
-instance — including a `reset-db` while one is running — refuses with the first one's pid.
+**`--start-at-midnight`.** `--for` measures wall-clock runtime from launch, not calendar
+dates — starting `--for 7d` at 21:00 gives a partial evening, six full days, and a seventh
+that stops mid-afternoon. `--start-at-midnight` waits (Ctrl-C-able, like everything else)
+until the next local 00:00 before cold start runs at all, so the day cold start backfills —
+and every day after it for the rest of `--for` — is a whole calendar day. The wait is not
+charged against `--for`; that clock still starts only once cold start begins.
+
+```bash
+uv run dbrel reset-db --yes
+uv run dbrel collect --every 15m --for 7d --start-at-midnight
+```
+
+Each cycle runs **daily backfill → `/plan` import → `/fchg` poll → finalize → averages**, and
+commits each phase independently, so a failure partway through never rolls back work already
+done. Ctrl-C finishes the phase in progress and prints a summary instead of a traceback; a
+second Ctrl-C aborts immediately. Only one `collect` runs at a time (`data/tt_sweep.lock`); a
+second instance — including a `reset-db` while one is running — refuses with the first one's pid.
+
+**The daily backfill.** The first cycle of each calendar day pulls that whole day's schedule —
+all 24 hours for every tracked station, 5,088 calls, about a minute — before anything is
+polled against it. That ordering is not cosmetic: `/fchg` sends a bare *changed* time for an
+ordinary run, with no planned time attached, so a stop whose planned row is missing is a value
+that has to be thrown away. It is gated on work actually done rather than a "last run" marker
+(`tt_plan_fetch` has a row per bucket attempted, whatever the status), so it costs one count
+query on the other 95 cycles of the day, resumes correctly after a crash mid-sweep, and heals
+a day left partial by a 404 while that day is still inside `/plan`'s ~14 h window.
+
+**Why finalize and averages run every 4th cycle.** Neither makes an API call, and neither can
+produce anything the poll before it did not already store — on a 15-minute cycle they would
+simply repeat thousands of rows of work 96 times a day. Backfill and poll still run every cycle.
 
 **Why the /plan window is computed explicitly instead of trusted to the rolling importer.**
 `tt-import-plan` with no `--date` rolls forward from a per-station high-water mark, but its
@@ -117,10 +151,13 @@ computes the hour buckets from the previous cycle back to `--max-lookback`, forw
 `--lead-hours`, and imports them explicitly. Re-covering an hour that already succeeded
 costs nothing — a 200 is never re-fetched — so the overlap is free insurance, not overhead.
 
-**Why 4 hours.** `/fchg` itself retains a value for about 15 hours (§20), so nothing measured
-is ever lost. The real ceiling is `TT_LINGER_S` (6 hours): past it, a stop that produced no
-value is graded "we weren't listening" instead of "nothing happened yet". 4 hours leaves
-margin for a slow cycle. `--max-lookback` (default 16h) is capped independently, because
+**Why 15 minutes.** One `/fchg` sweep is one call per tracked station — about 4 seconds for
+212 of them — so the cadence is chosen for how promptly a passed event is recorded, not for
+cost. `/fchg` retains a value for about 15 hours (§20), and the real ceiling is `TT_LINGER_S`
+(6 hours): past it, a stop that produced no value is graded "we weren't listening" instead of
+"nothing happened yet". 15 minutes sits far inside both. Going below ~2 minutes buys nothing:
+`GRACE_S` means an event is not recordable until 120 s after it passes.
+`--max-lookback` (default 16h) is capped independently, because
 `/plan` itself purges past hours of *today* after roughly 14 hours (§24) — reaching further
 back than that buys nothing and, unlike a 200, a 404 is retried every cycle, so an
 unnecessarily wide window is a standing cost rather than a one-time one.
@@ -150,7 +187,7 @@ corridor the two jobs together cost under 5% of the 72,000/day request budget.
 | `tt-import-plan [--date D --hours 5-22] [--force]` | Import planned timetables; rolls forward hourly by default |
 | `tt-poll [--interval S --minutes M]` | Read `/fchg` and record every event that has already happened |
 | `tt-finalize [--service-date D] [--force]` | Grade the stops that produced no value; roll each run up |
-| `collect [--every 4h --for 7d] [--stations FILE] [--once]` | Run plan → poll → finalize → averages on a timer; cold-starts an empty database |
+| `collect [--every 15m --for 7d] [--stations FILE] [--once]` | Run daily backfill → plan → poll → finalize → averages on a timer; cold-starts an empty database |
 | `reset-db [--yes]` | Delete the database; keeps `data/feeds` and `data/probe` |
 | `build-aliases` | Index every station for search; run once after `import-static` |
 | `compute-averages [--basis real\|synth\|all] [--full]` | Average each train's delay at each station into `train_station_delay` |
@@ -163,8 +200,30 @@ corridor the two jobs together cost under 5% of the 72,000/day request budget.
 | `unmatched` | `/fchg` events with no schedule — the alarm that the roller has fallen behind |
 
 Credentials go in `.env` as `DB_CLIENT_ID` and `TIMETABLES_API_KEY`. Both headers are
-required; either alone returns 401. Free tier is 60 requests/minute, shared across
-processes by a lock-file token bucket.
+required; either alone returns 401.
+
+### Request rate
+
+The gateway advertises 60 requests per **minute** in `x-ratelimit-limit`, but measurement
+says it does not enforce it: 1,500 sequential calls at ~44/s and 300 `/fchg` calls at
+~2,560/min both drew zero 429s, with `x-ratelimit-remaining` pinned at `0` throughout
+without ever blocking.
+
+So the limiter is adaptive rather than pessimistic, and degrades on evidence:
+
+| | rate | when |
+|---|---|---|
+| fast (default) | `DBREL_TT_RPS_FAST` = 60/**second** | normally |
+| penalty | `DBREL_TT_RPM_PENALTY` = 58/**minute** | for `DBREL_TT_PENALTY_S` = 180 s after any 429 |
+
+The penalty lives in the shared lock file, so a 429 seen by one process slows every
+process, and it expires on its own without needing a restart. If DB ever switches
+enforcement on, that is a three-minute slowdown instead of a wall of failures.
+
+One connection tops out near 45/s on this API's ~22 ms round trip, so `/plan` buckets are
+fetched through a small pool (`DBREL_TT_FETCH_WORKERS`, default 8) to reach the permitted
+rate. Only the HTTP fetch is concurrent — parsing and every database write stay on the
+calling thread. A full-day, 212-station backfill is 5,088 calls: about **1 minute**.
 
 ## The data model
 
@@ -193,18 +252,44 @@ service_line ──< train                    'RE 4', 'S1'
 - **`trip_stop`** — **the fact table**: supposed vs actual, per stop, with a quality
   grade. This is what you query.
 - **`train_station_delay`** — a derived rollup: mean, median, p90 and punctuality for one
-  train at one station. Rebuildable from `trip_stop` at any time, which is why it lives in
-  `models/aggregates.py` rather than beside the domain. Keyed on `(station, train, basis)`,
-  where `basis` is `REAL` or `SYNTH` — measured and simulated samples never share a row, so
-  no figure is ever a blend of the two. Not keyed on `service_line`: `upsert_line` only
-  mints a line when both category and line are present, and no long-distance stop carries
-  `dp@l` (§11), so every ICE and IC would be dropped.
+  train at one station **on one day of the week**. Rebuildable from `trip_stop` at any
+  time, which is why it lives in `models/aggregates.py` rather than beside the domain.
+  Keyed on `(station, train, basis, dow)`:
+  - `basis` is `REAL` or `SYNTH` — measured and simulated samples never share a row, so
+    no figure is ever a blend of the two.
+  - `dow` is `0`=Monday..`6`=Sunday, taken from `trip.service_date` (the departure date at
+    the run's *origin*, so an overnight run keeps one weekday end to end). A weekday and a
+    Sunday are different railways; one mean over both describes neither. The cost is that
+    samples divide by seven, so a single week gives one run per row — these only start to
+    mean "usually" after several weeks.
+
+  Not keyed on `service_line`: `upsert_line` only mints a line when both category and line
+  are present, and no long-distance stop carries `dp@l` (§11), so every ICE and IC would
+  be dropped.
 - **`tt_message`** — delay causes attached to a stop. The most useful label in the
   database for training.
 
 Recording how it was obtained: `tt_poll` (which station we read, when — the listening
 record), `tt_plan_fetch` (which schedule buckets are already captured), `tt_unmatched`
 (events we hold no schedule for). Provenance: `feed_version`, `route`, `search_alias`.
+
+### The seven day views
+
+`trip_stop` carries no date of its own — it is reached through `trip_id`, and
+`trip.service_date` is what says which day a run belongs to. That join is written once, in
+`src/dbrel/views.py`, and given seven names:
+
+```sql
+SELECT * FROM day_monday WHERE station_id = 42;   -- ... through day_sunday
+```
+
+Each view is every stop of every run that departed its origin on that weekday, carrying
+`service_date` so one Monday is still distinguishable from another. They are created by
+`create_all()`, so they exist from the first `init-db`.
+
+One trap they exist to hide: SQLite's `strftime('%w')` is **0=Sunday**, while Python's
+`date.weekday()` — which is what the `dow` column stores — is **0=Monday**. The views
+convert deliberately, and `tests/test_views.py` pins the two against real dates.
 
 Supposed times are **copied into `trip_stop`**, not joined from `station_stop`: the
 planned time of a run that already happened is a historical fact and must not change when

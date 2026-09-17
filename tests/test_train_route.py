@@ -29,6 +29,11 @@ from dbrel.web import queries
 ROUTE = ["Aachen Hbf", "Köln Hbf", "Duisburg Hbf", "Bochum Hbf", "Hamm(Westf)Hbf"]
 TRAIN_ID = 500
 
+# Averages are keyed per day of week, so the fixture's row belongs to one weekday
+# and the tests that read it ask for that weekday. Pinned rather than "today", or
+# the suite would pass or fail depending on the day it is run.
+DOW = 2  # Wednesday
+
 
 @pytest.fixture
 def session():
@@ -56,6 +61,7 @@ def session():
                           station_id=4, planned_arrival_sec=10 * 3600,
                           planned_departure_sec=10 * 3600 + 60, platform_code="3"))
         s.add(TrainStationDelay(station_id=4, train_id=TRAIN_ID, basis=BASIS_SYNTH,
+                                dow=DOW,
                                 n_arr=20, n_dep=20, n_runs=20, n_known=20,
                                 avg_dep_delay_s=180.0, p50_dep_delay_s=120,
                                 p90_dep_delay_s=480, pct_dep_punctual=0.85,
@@ -82,7 +88,9 @@ def test_times_land_on_the_right_stop(session):
 
 
 def test_average_attaches_only_where_there_is_one(session):
-    stops = {s["name"]: s for s in queries.train_route(session, TRAIN_ID)["stops"]}
+    stops = {
+        s["name"]: s for s in queries.train_route(session, TRAIN_ID, dow=DOW)["stops"]
+    }
     assert stops["Bochum Hbf"]["dep_avg"]["avg_min"] == 3.0
     assert stops["Bochum Hbf"]["dep_avg"]["punctual_pct"] == 85
     # Monitored but no averages row computed yet.
@@ -90,8 +98,16 @@ def test_average_attaches_only_where_there_is_one(session):
     assert stops["Hamm(Westf)Hbf"]["dep_avg"] is None
 
 
+def test_average_belongs_to_one_weekday(session):
+    """The Wednesday row must not show up when another day is asked for."""
+    stops = {
+        s["name"]: s for s in queries.train_route(session, TRAIN_ID, dow=DOW + 1)["stops"]
+    }
+    assert stops["Bochum Hbf"]["dep_avg"] is None
+
+
 def test_headline_average_covers_only_measured_stops(session):
-    assert queries.train_route(session, TRAIN_ID)["avg_delay_min"] == 3.0
+    assert queries.train_route(session, TRAIN_ID, dow=DOW)["avg_delay_min"] == 3.0
 
 
 def test_unknown_train_returns_none(session):

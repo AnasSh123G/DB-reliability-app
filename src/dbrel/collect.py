@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dbrel.config import (
+    COLLECT_DERIVE_EVERY,
     COLLECT_MAX_FAILED_CYCLES,
     COLLECT_OVERLAP_S,
     RAIL_EVA_RANGE,
@@ -97,6 +98,18 @@ def format_duration(seconds: int) -> str:
             count, remaining = divmod(remaining, size)
             parts.append(f"{count}{unit}")
     return "".join(parts) or "0s"
+
+
+def next_midnight_after(now: datetime) -> datetime:
+    """The next local 00:00 strictly following `now`.
+
+    Zeroing today's time-of-day always gives a moment at or before `now` (equal
+    only in the vanishing case of `now` being exactly midnight already), so the
+    +1 day lands on the next midnight to come, whatever time of day `now` is.
+    Requires a timezone-aware `now`; the subtraction against it elsewhere is
+    then correct across a DST transition without any special-casing.
+    """
+    return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
 
 # --------------------------------------------------------------------------
@@ -388,7 +401,6 @@ def run_cold_start(
     from dbrel.gtfs.static_import import import_feed
     from dbrel.search_index import index_stations
     from dbrel.timetables.client import TimetablesClient
-    from dbrel.timetables.plan_import import import_plan
     from dbrel.timetables.stations import verify_station
 
     phases: list[PhaseResult] = []
@@ -464,35 +476,94 @@ def run_cold_start(
 
     phase("tt-verify-stations", do_verify)
 
-    def do_backfill() -> str:
-        from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
-
-        today = datetime.now(TZ).date().isoformat()
-        with TimetablesClient() as client, session_scope() as session:
-            client.require_credentials()
-            with Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TimeRemainingColumn(),
-            ) as bar:
-                task_id = bar.add_task("plan-backfill buckets", total=None)
-                result = import_plan(
-                    session,
-                    client,
-                    date=today,
-                    hours=list(range(24)),
-                    progress=bar.console.print,
-                    on_progress=lambda done, total: bar.update(task_id, completed=done, total=total),
-                )
-        return (
-            f"{result.buckets_fetched} fetched, {result.buckets_missing} missing/404, "
-            f"{result.trips_created} trips"
-        )
-
-    phase("plan-backfill", do_backfill)
+    phase("plan-backfill", lambda: run_day_backfill(datetime.now(TZ).date().isoformat()))
 
     return phases
+
+
+# --------------------------------------------------------------------------
+# The daily full-day /plan backfill. Runs once per calendar day rather than
+# once per database, because the schedule for a day only exists to be fetched
+# on that day: /plan serves today and tomorrow, and purges today's past hours
+# after about 14 hours (docs/probe-findings.md §24).
+# --------------------------------------------------------------------------
+
+
+def day_needs_backfill(session: Session, day: str) -> bool:
+    """True until every (station, hour) bucket of `day` has been attempted once.
+
+    Counts attempts, not successes. A 404 is a legitimate permanent answer for a
+    rural station at 03:00, so "every bucket returned 200" is a state that would
+    never be reached and would re-run the backfill forever. tt_plan_fetch is
+    unique on (eva, plan_date, plan_hour) and gets a row whatever the status, so
+    a plain row count for the date is already the count of distinct buckets tried.
+
+    Derived from work actually done rather than from a "last backfilled" marker,
+    so a crash mid-backfill resumes instead of skipping the rest of the day.
+    """
+    tracked = (
+        session.scalar(
+            select(func.count())
+            .select_from(Station)
+            .where(Station.tracked == 1, Station.eva.isnot(None))
+        )
+        or 0
+    )
+    if not tracked:
+        return False
+    attempted = (
+        session.scalar(
+            select(func.count()).select_from(TtPlanFetch).where(TtPlanFetch.plan_date == day)
+        )
+        or 0
+    )
+    return attempted < 24 * tracked
+
+
+def run_day_backfill(day: str, *, force: bool = False, label: str = "plan-backfill") -> str:
+    """Fetch all 24 hour-buckets of `day` for every tracked station, if needed.
+
+    Cheap to call repeatedly: import_plan skips a bucket that already returned 200
+    without spending a request, so a day already covered costs one count query, and
+    a day left partial by a 404 retries only the gaps — which is what lets a day
+    that was mid-flight during a restart heal on the next cycle.
+    """
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
+    from dbrel.db import session_scope
+    from dbrel.timetables.client import TimetablesClient
+    from dbrel.timetables.plan_import import import_plan
+
+    with TimetablesClient() as client, session_scope() as session:
+        if not force and not day_needs_backfill(session, day):
+            return f"{day}: already complete"
+        client.require_credentials()
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        ) as bar:
+            task_id = bar.add_task(f"{label} {day}", total=None)
+            result = import_plan(
+                session,
+                client,
+                date=day,
+                hours=list(range(24)),
+                force=force,
+                progress=bar.console.print,
+                on_progress=lambda done, total: bar.update(task_id, completed=done, total=total),
+            )
+    return (
+        f"{day}: {result.buckets_fetched} fetched, {result.buckets_skipped} skipped, "
+        f"{result.buckets_missing} missing/404, {result.trips_created} trips"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -548,6 +619,7 @@ def run_cycle(
     now: datetime,
     lead_hours: int,
     max_lookback_s: int,
+    derive_every: int = COLLECT_DERIVE_EVERY,
     dry_run: bool = False,
     progress: Progress = lambda msg: None,
 ) -> CycleResult:
@@ -574,6 +646,15 @@ def run_cycle(
         previous_at, now, lead_hours=lead_hours, max_lookback_s=max_lookback_s
     )
     date_groups = buckets_by_date(hour_buckets(start, end))
+
+    # First, because the whole point of it is that the day's schedule is complete
+    # before any actual times are read against it: /fchg sends a bare changed time
+    # for an ordinary run, so a stop with no planned row yet is a value that has to
+    # be thrown away. A no-op on every cycle but the first of each calendar day.
+    result.phases.append(
+        _run_phase("backfill", lambda: run_day_backfill(now.date().isoformat()))
+    )
+    progress(f"  backfill  {result.phases[-1].summary or result.phases[-1].error}")
 
     def do_plan() -> str:
         totals = {"fetched": 0, "skipped": 0, "missing": 0, "trips": 0, "stops": 0}
@@ -606,6 +687,15 @@ def run_cycle(
 
     result.phases.append(_run_phase("poll", do_poll))
     progress(f"  poll      {result.phases[-1].summary or result.phases[-1].error}")
+
+    # finalize and averages are CPU over the accumulated history, not API calls, and
+    # neither can produce anything the poll before them did not already store — so on
+    # a short cycle they are simply repeated work. Every derive_every-th cycle keeps
+    # the derived tables fresh without re-deriving the whole week 96 times a day.
+    if index % max(1, derive_every) != 0:
+        progress(f"  derive    skipped (every {derive_every} cycles)")
+        result.elapsed_s = time.monotonic() - started
+        return result
 
     def do_finalize() -> str:
         with session_scope() as session:
@@ -659,14 +749,23 @@ def run_collect(
     once: bool = False,
     dry_run: bool = False,
     priority: int = 1,
+    derive_every: int = COLLECT_DERIVE_EVERY,
+    start_at_midnight: bool = False,
     progress: Progress = lambda msg: None,
 ) -> CollectResult:
     """Run cold-start-if-needed, then cycles every `every_s` seconds for `for_s`
     seconds (0 = until interrupted), or exactly one cycle if `once`.
 
+    `start_at_midnight` delays everything -- cold start included -- until the
+    next local midnight, so the day cold start's own backfill covers (and every
+    day after it, for `for_s`) is a whole, clean calendar day rather than
+    whatever is left of the one the process happened to be launched on. The
+    `--for` clock itself is unaffected: it still starts after cold start, as
+    before, so the wait is not charged against the run's duration.
+
     Ctrl-C: the first SIGINT sets a flag that is checked between phases and in
-    every sleep slice, so the current phase finishes and commits (each phase
-    owns its own session_scope) before the loop exits with a clean summary. A
+    every sleep slice -- including the midnight wait -- so a run cancelled
+    before it even starts exits cleanly rather than needing a second signal. A
     second SIGINT restores the default handler, so it raises immediately --
     a hard abort is always two keystrokes away.
     """
@@ -689,6 +788,23 @@ def run_collect(
 
     try:
         with exclusive_lock(TT_SWEEP_LOCK, label="collect"):
+            if start_at_midnight:
+                now = datetime.now(TZ)
+                next_midnight = next_midnight_after(now)
+                wait_s = (next_midnight - now).total_seconds()
+                progress(
+                    f"--start-at-midnight: waiting {format_duration(int(wait_s))} "
+                    f"until {next_midnight.strftime('%Y-%m-%d %H:%M %Z')}"
+                )
+                slept = 0.0
+                while slept < wait_s and not stop.requested:
+                    step = min(1.0, wait_s - slept)
+                    time.sleep(step)
+                    slept += step
+                if stop.requested:
+                    out.interrupted = True
+                    return out
+
             if cold_start:
                 # create_all() is a no-op against an existing schema, but on a
                 # database that does not exist at all yet, needs_cold_start's own
@@ -720,6 +836,7 @@ def run_collect(
                     now=now,
                     lead_hours=lead_hours,
                     max_lookback_s=max_lookback_s,
+                    derive_every=derive_every,
                     dry_run=dry_run,
                     progress=progress,
                 )

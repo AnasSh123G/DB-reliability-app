@@ -23,14 +23,18 @@ BASIS_SYNTH = "SYNTH"
 
 
 class TrainStationDelay(Base):
-    """How late one train usually is at one station.
+    """How late one train usually is at one station, on one day of the week.
 
-    Grain is (station, train, basis). Not keyed on service_line: train.line_id is
-    functionally determined by train_id, so adding it produces no extra rows, and
+    Grain is (station, train, basis, dow). Not keyed on service_line: train.line_id
+    is functionally determined by train_id, so adding it produces no extra rows, and
     upsert_line only mints a line when both category and line are present — no
     long-distance stop carries dp@l (findings §11), so every ICE and IC has
     line_id NULL and a line-keyed table would silently drop them. line_id is kept
     as an attribute so the board can group without a second join.
+
+    Day of week is part of the key rather than averaged over, because a weekday and
+    a Sunday are different railways: different stopping patterns, different traffic,
+    different delays. One number spanning both describes neither.
     """
 
     __tablename__ = "train_station_delay"
@@ -39,6 +43,14 @@ class TrainStationDelay(Base):
     station_id: Mapped[int] = mapped_column(ForeignKey("station.id", ondelete="CASCADE"))
     train_id: Mapped[int] = mapped_column(ForeignKey("train.id", ondelete="CASCADE"))
     basis: Mapped[str] = mapped_column(String(8))
+
+    # 0=Monday..6=Sunday, i.e. Python's date.weekday(), taken from trip.service_date
+    # — the planned departure date at the run's ORIGIN, so a run that crosses
+    # midnight keeps the weekday it set out on instead of splitting in two.
+    #
+    # Note this is not SQLite's strftime('%w'), which is 0=Sunday. The day views in
+    # views.py have to convert; a test pins the two against each other.
+    dow: Mapped[int] = mapped_column(Integer)
 
     line_id: Mapped[int | None] = mapped_column(ForeignKey("service_line.id"))
     segment: Mapped[str | None] = mapped_column(String(4))
@@ -72,14 +84,16 @@ class TrainStationDelay(Base):
     rule_version: Mapped[int] = mapped_column(Integer)
 
     __table_args__ = (
-        UniqueConstraint("station_id", "train_id", "basis", name="uq_tsd_station_train_basis"),
-        Index("ix_tsd_train_basis", "train_id", "basis"),
-        # "Which trains are worst at this station" — served index-only.
-        Index("ix_tsd_station_basis_dep", "station_id", "basis", "avg_dep_delay_s"),
+        UniqueConstraint(
+            "station_id", "train_id", "basis", "dow", name="uq_tsd_station_train_basis_dow"
+        ),
+        Index("ix_tsd_train_basis", "train_id", "basis", "dow"),
+        # "Which trains are worst at this station, on this day" — served index-only.
+        Index("ix_tsd_station_basis_dep", "station_id", "basis", "dow", "avg_dep_delay_s"),
     )
 
     def __repr__(self) -> str:
         return (
             f"<TrainStationDelay station={self.station_id} train={self.train_id} "
-            f"{self.basis} n_dep={self.n_dep}>"
+            f"{self.basis} dow={self.dow} n_dep={self.n_dep}>"
         )

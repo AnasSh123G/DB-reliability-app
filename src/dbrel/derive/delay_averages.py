@@ -1,8 +1,14 @@
-"""How late each train usually is at each station.
+"""How late each train usually is at each station, on each day of the week.
 
-One row per (station, train, basis), computed from trip_stop. The honesty of the
-number rests on three filters, each of which excludes rows that would otherwise
-quietly bias it:
+One row per (station, train, basis, dow), computed from trip_stop. Splitting on the
+day of week is what makes the figure usable: the same train number on a Tuesday and
+on a Sunday is a different service with different traffic around it, and one mean
+over both describes neither. The cost is that samples divide by seven, so a single
+week of collection gives one run per row — the rows only start to mean "usually"
+after several weeks.
+
+The honesty of the number rests on three further filters, each of which excludes
+rows that would otherwise quietly bias it:
 
 * **Only RECORDED delays.** NO_DATA and PREDICTION_ONLY are unknowns, not zeros;
   counting them as on time would reward exactly the gaps in our own coverage.
@@ -24,6 +30,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date as date_cls
 from typing import Iterable
 
 from sqlalchemy import and_, delete, func, or_, select
@@ -68,7 +75,7 @@ class DelayAveragesResult:
 
 @dataclass(slots=True)
 class _Samples:
-    """Accumulator for one (station, train) pair."""
+    """Accumulator for one (station, train, dow) group."""
 
     arr: list[int]
     dep: list[int]
@@ -103,6 +110,22 @@ def _rate(values: list[int], threshold: int) -> float | None:
     if not values:
         return None
     return sum(1 for v in values if v < threshold) / len(values)
+
+
+def _dow(service_date: str | None) -> int | None:
+    """0=Monday..6=Sunday from a 'YYYY-MM-DD' service date, or None if unusable.
+
+    service_date is the planned departure date at the run's origin, so an overnight
+    run counts under the day it set out on at every station it reaches — which is
+    the grouping a timetable reader expects, and the only one that keeps a single
+    run in a single bucket.
+    """
+    if not service_date:
+        return None
+    try:
+        return date_cls.fromisoformat(service_date).weekday()
+    except ValueError:
+        return None
 
 
 def _dirty_pairs(session: Session, sources: tuple[str, ...], basis: str) -> set[tuple[int, int]]:
@@ -145,7 +168,7 @@ def _collect(
     pairs: set[tuple[int, int]] | None,
     station_ids: list[int] | None,
     since: str | None,
-) -> tuple[dict[tuple[int, int], _Samples], int]:
+) -> tuple[dict[tuple[int, int, int], _Samples], int]:
     query = (
         select(
             TripStop.station_id,
@@ -171,7 +194,7 @@ def _collect(
     # No ORDER BY: there is no index on trip_stop that would serve one, so sorting
     # would force a temp B-tree over the whole scan. Grouping in a dict costs a few
     # tens of MB at this scale and nothing in time.
-    samples: dict[tuple[int, int], _Samples] = defaultdict(
+    samples: dict[tuple[int, int, int], _Samples] = defaultdict(
         lambda: _Samples(arr=[], dep=[], trips=set())
     )
     seen = 0
@@ -179,9 +202,12 @@ def _collect(
     for station_id, train_id, trip_id, service_date, arr, dep, quality in stream:
         if station_id is None or train_id is None:
             continue
-        key = (station_id, train_id)
-        if pairs is not None and key not in pairs:
+        if pairs is not None and (station_id, train_id) not in pairs:
             continue
+        dow = _dow(service_date)
+        if dow is None:
+            continue
+        key = (station_id, train_id, dow)
         seen += 1
         bucket = samples[key]
         bucket.trips.add(trip_id)
@@ -235,10 +261,10 @@ def run_delay_averages(
 
     samples, result.samples_read = _collect(session, sources, pairs, station_ids, since)
     result.pairs_considered = len(pairs) if pairs is not None else len(samples)
-    attributes = _attributes(session, {train_id for _, train_id in samples})
+    attributes = _attributes(session, {train_id for _, train_id, _ in samples})
 
     rows = []
-    for (station_id, train_id), bucket in samples.items():
+    for (station_id, train_id, dow), bucket in samples.items():
         arr = sorted(bucket.arr)
         dep = sorted(bucket.dep)
         line_id, segment = attributes.get(train_id, (None, None))
@@ -247,6 +273,7 @@ def run_delay_averages(
                 "station_id": station_id,
                 "train_id": train_id,
                 "basis": basis,
+                "dow": dow,
                 "line_id": line_id,
                 "segment": segment,
                 "n_arr": len(arr),
@@ -274,34 +301,42 @@ def run_delay_averages(
         statement = sqlite_insert(TrainStationDelay)
         session.execute(
             statement.on_conflict_do_update(
-                index_elements=["station_id", "train_id", "basis"],
+                index_elements=["station_id", "train_id", "basis", "dow"],
                 set_={
                     column: statement.excluded[column]
                     for column in rows[0]
-                    if column not in ("station_id", "train_id", "basis")
+                    if column not in ("station_id", "train_id", "basis", "dow")
                 },
             ),
             rows,
         )
         result.pairs_written = len(rows)
 
-    # A pair with no qualifying samples left has to lose its row, or the board
-    # keeps showing an average for a stop the train no longer makes.
+    # A group with no qualifying samples left has to lose its row, or the board
+    # keeps showing an average for a stop the train no longer makes. Reconciliation
+    # is on the full (station, train, dow) key, not the pair: a train that stops
+    # running on Sundays only loses its Sunday row.
+    #
+    # The stored keys are the candidate set either way — deriving it from `pairs`
+    # instead would be a set of pairs being subtracted from a set of triples, which
+    # matches nothing and would delete every row it looked at.
     #
     # Incrementally we can only check pairs something told us to look at: a pair
     # whose samples have vanished entirely leaves no trace to mark it dirty, so
     # it survives until a --full pass, which reconciles against the stored rows.
+    stored = session.execute(
+        select(
+            TrainStationDelay.station_id, TrainStationDelay.train_id, TrainStationDelay.dow
+        ).where(TrainStationDelay.basis == basis)
+    ).all()
     if pairs is None:
-        stale_scope = {
-            (station_id, train_id)
-            for station_id, train_id in session.execute(
-                select(TrainStationDelay.station_id, TrainStationDelay.train_id).where(
-                    TrainStationDelay.basis == basis
-                )
-            )
-        }
+        stale_scope = {(station_id, train_id, dow) for station_id, train_id, dow in stored}
     else:
-        stale_scope = pairs
+        stale_scope = {
+            (station_id, train_id, dow)
+            for station_id, train_id, dow in stored
+            if (station_id, train_id) in pairs
+        }
 
     if stale_scope:
         empty = sorted(stale_scope - set(samples))
@@ -315,8 +350,9 @@ def run_delay_averages(
                             and_(
                                 TrainStationDelay.station_id == station_id,
                                 TrainStationDelay.train_id == train_id,
+                                TrainStationDelay.dow == dow,
                             )
-                            for station_id, train_id in batch
+                            for station_id, train_id, dow in batch
                         ]
                     ),
                 )

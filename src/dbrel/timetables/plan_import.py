@@ -18,6 +18,7 @@ import hashlib
 import time
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date as date_cls
 from datetime import datetime, timedelta
@@ -26,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dbrel.identity import SOURCE_TT
-from dbrel.config import TT_PLAN_LEAD_HOURS, TZ
+from dbrel.config import TT_FETCH_WORKERS, TT_PLAN_LEAD_HOURS, TZ
 from dbrel.models import (
     Station,
     Train,
@@ -85,6 +86,7 @@ def import_plan(
     date: str | None = None,
     hours: list[int] | None = None,
     force: bool = False,
+    workers: int = TT_FETCH_WORKERS,
     progress=lambda msg: None,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
 ) -> PlanImportResult:
@@ -129,52 +131,89 @@ def import_plan(
     done_buckets = 0
     on_progress(done_buckets, total_buckets)
 
+    # Every existing fetch row for the window in one query rather than one SELECT
+    # per bucket: a full-day backfill is 24 buckets x every tracked station, and at
+    # TT_RPS_FAST the round trips would cost more than the fetching does.
+    #
+    # Loaded regardless of status (not just the 200 case): a bucket that previously
+    # 404'd still has a row under the unique key (eva, plan_date, plan_hour), and a
+    # caller that re-covers the same window on purpose — as the collect orchestrator
+    # does, so an overlap never leaves a gap — must update that row rather than
+    # insert a second one, or the unique constraint raises.
+    days = {day for buckets in station_buckets.values() for day, _ in buckets}
+    existing_by_key: dict[tuple[int, str, int], TtPlanFetch] = {}
+    if days:
+        for row in session.execute(
+            select(TtPlanFetch).where(
+                TtPlanFetch.plan_date.in_(days),
+                TtPlanFetch.eva.in_([st.eva for st in tracked]),
+            )
+        ).scalars():
+            existing_by_key[(row.eva, row.plan_date, row.plan_hour)] = row
+
+    # Decide what needs the network before touching it, so the pool below is pure
+    # I/O and every database access stays on this thread.
+    pending: list[tuple[Station, str, int, TtPlanFetch | None]] = []
     for station in tracked:
         for day, hour in station_buckets[station.id]:
-            done_buckets += 1
-            on_progress(done_buckets, total_buckets)
-            # Looked up regardless of status (not just the 200 case): a bucket
-            # that previously 404'd still has a row under the unique key
-            # (eva, plan_date, plan_hour), and a caller that re-covers the same
-            # window on purpose — as the collect orchestrator does, so an
-            # overlap never leaves a gap — must update that row rather than
-            # insert a second one, or the unique constraint raises.
-            existing = session.execute(
-                select(TtPlanFetch).where(
-                    TtPlanFetch.eva == station.eva,
-                    TtPlanFetch.plan_date == day,
-                    TtPlanFetch.plan_hour == hour,
-                )
-            ).scalar_one_or_none()
+            existing = existing_by_key.get((station.eva, day, hour))
             if not force and existing is not None and existing.http_status == 200:
                 result.buckets_skipped += 1
+                done_buckets += 1
+                on_progress(done_buckets, total_buckets)
                 continue
+            pending.append((station, day, hour, existing))
 
-            yymmdd = date_cls.fromisoformat(day).strftime("%y%m%d")
-            resp = client.plan(station.eva, yymmdd, hour)
-            fetch = existing or TtPlanFetch(eva=station.eva, plan_date=day, plan_hour=hour)
-            fetch.fetched_at = int(time.time())
-            fetch.http_status = resp.status
-            fetch.content_sha256 = hashlib.sha256(resp.body).hexdigest() if resp.ok else None
-            fetch.error = None
-            fetch.n_stops = 0
+    # Plain ints and strings, resolved here rather than inside the worker: handing a
+    # thread an ORM object risks it touching an expired attribute, which would emit a
+    # lazy SELECT on a Session that is being written from this thread at the same time.
+    fetch_args = [
+        (station.eva, date_cls.fromisoformat(day).strftime("%y%m%d"), hour)
+        for station, day, hour, _ in pending
+    ]
+
+    def fetch(args: tuple[int, str, int]):
+        eva, yymmdd, hour = args
+        return client.plan(eva, yymmdd, hour)
+
+    # map() yields in submission order, which keeps last_plan_hour advancing
+    # monotonically per station exactly as the sequential version did. The workers
+    # only call client.plan(); parsing and every session touch happen right here.
+    flushed_station_id: int | None = None
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for (station, day, hour, existing), resp in zip(pending, pool.map(fetch, fetch_args)):
+            if flushed_station_id is not None and station.id != flushed_station_id:
+                session.flush()
+            flushed_station_id = station.id
+
+            done_buckets += 1
+            on_progress(done_buckets, total_buckets)
+
+            fetch_row = existing or TtPlanFetch(eva=station.eva, plan_date=day, plan_hour=hour)
+            fetch_row.fetched_at = int(time.time())
+            fetch_row.http_status = resp.status
+            fetch_row.content_sha256 = hashlib.sha256(resp.body).hexdigest() if resp.ok else None
+            fetch_row.error = None
+            fetch_row.n_stops = 0
             if not resp.ok:
                 # 404 is routine: no service in this hour, or beyond the horizon.
                 result.buckets_missing += 1
-                fetch.error = None if resp.status == 404 else resp.body[:200].decode("utf-8", "replace")
-                session.add(fetch)
+                fetch_row.error = (
+                    None if resp.status == 404 else resp.body[:200].decode("utf-8", "replace")
+                )
+                session.add(fetch_row)
                 continue
 
             try:
                 parsed = parse_timetable(resp.body)
             except Exception as exc:
-                fetch.error = f"parse: {exc}"
-                session.add(fetch)
+                fetch_row.error = f"parse: {exc}"
+                session.add(fetch_row)
                 result.errors.append(f"{station.name} {day}:{hour}: {exc}")
                 continue
 
-            fetch.n_stops = len(parsed.stops)
-            session.add(fetch)
+            fetch_row.n_stops = len(parsed.stops)
+            session.add(fetch_row)
             result.buckets_fetched += 1
             result.stops_seen += len(parsed.stops)
             for stop in parsed.stops:
@@ -183,7 +222,7 @@ def import_plan(
                 by_run[stop.run_key][stop.stop_index] = stop
 
             station.last_plan_hour = f"{day}:{hour:02d}"
-        session.flush()
+    session.flush()
 
     progress(f"  {result.buckets_fetched} buckets, {result.stops_seen} stops, {len(by_run)} runs")
 

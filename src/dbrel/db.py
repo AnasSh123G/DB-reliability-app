@@ -111,5 +111,9 @@ def read_scope() -> Iterator[Session]:
 
 def create_all() -> None:
     import dbrel.models  # noqa: F401  (registers every mapper)
+    from dbrel.views import create_day_views
 
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    # After the tables, because the views select from them.
+    create_day_views(engine)

@@ -35,7 +35,7 @@ def session():
 
 def _row(**overrides):
     defaults = dict(
-        station_id=1, train_id=1, basis=BASIS_REAL,
+        station_id=1, train_id=1, basis=BASIS_REAL, dow=0,
         n_arr=1, n_dep=1, n_runs=1, n_known=1, n_cancelled=0,
         avg_dep_delay_s=60.0, avg_arr_delay_s=60.0,
         p50_dep_delay_s=60, p90_dep_delay_s=60,

@@ -67,9 +67,23 @@ TT_CLIENT_ID, TT_CLIENT_ID_SOURCE = _first_env(
     "DBREL_TT_CLIENT_ID", "DB_CLIENT_ID", "DB_CLIENT_ID_1"
 )
 
-# The gateway advertises name=default,60 in x-ratelimit-limit. Work to 58 and keep
-# a 2-call margin for retries; the bucket is shared across processes via a lock file.
-TT_RPM = int(os.environ.get("DBREL_TT_RPM", "58"))
+# The gateway advertises name=default,60 in x-ratelimit-limit, but measurement says it
+# does not enforce it: 1,500 sequential /station calls at ~44/s and 300 /fchg calls at
+# ~2,560/min both drew zero 429s, with x-ratelimit-remaining pinned at 0 throughout.
+#
+# So the limiter runs fast by default and degrades on evidence rather than on the
+# advertised number: any 429 drops every process to the advertised-legal rate for
+# TT_PENALTY_S, after which it returns to full speed on its own. If DB ever switches
+# enforcement on, that is a three-minute slowdown instead of a wall of failures.
+TT_RPS_FAST = int(os.environ.get("DBREL_TT_RPS_FAST", "60"))
+TT_RPM_PENALTY = int(os.environ.get("DBREL_TT_RPM_PENALTY", "58"))
+TT_PENALTY_S = int(os.environ.get("DBREL_TT_PENALTY_S", "180"))
+
+# How many /plan buckets may be in flight at once. One connection tops out near 45/s on
+# this API's ~22 ms round trip, below TT_RPS_FAST, so the backfill needs a little
+# concurrency to reach the rate the limiter allows. Fetch only — parsing and every write
+# stay on the calling thread, because a SQLAlchemy Session is not thread-safe.
+TT_FETCH_WORKERS = int(os.environ.get("DBREL_TT_FETCH_WORKERS", "8"))
 TT_RATELIMIT_STATE = DATA_DIR / "tt_ratelimit.json"
 TT_SWEEP_LOCK = DATA_DIR / "tt_sweep.lock"
 
@@ -123,12 +137,20 @@ SERVICE_DATE_CLOSE_S = 6 * 3600
 # why re-resolving these by name after a reset is risky rather than free.
 DEFAULT_STATIONS_FILE = Path(os.environ.get("DBREL_STATIONS_FILE", "config/ruhr_stations.toml"))
 
-# TT_LINGER_S (below) is the true ceiling: past 6h, an unread stop is graded
-# "we weren't listening" rather than "nothing happened". 4h leaves margin for a
-# slow cycle. See docs/probe-findings.md §20 (~15h /fchg retention) and §24
-# (~14h /plan retention of today) for why this is not the binding constraint.
-COLLECT_INTERVAL_S = int(os.environ.get("DBREL_COLLECT_EVERY_S", 4 * 3600))
+# One /fchg sweep is one call per tracked station — about 4 seconds for 212 of them
+# at TT_RPS_FAST — so the cadence is chosen for how promptly a passed event is
+# recorded, not for cost. 15 minutes is well inside TT_LINGER_S (6h, past which an
+# unread stop is graded "we weren't listening" rather than "nothing happened") and
+# inside /fchg's ~15h retention (§20). Going below ~2 minutes buys nothing: GRACE_S
+# means an event is not recordable until 120 s after it passes.
+COLLECT_INTERVAL_S = int(os.environ.get("DBREL_COLLECT_EVERY_S", 15 * 60))
 COLLECT_DURATION_S = int(os.environ.get("DBREL_COLLECT_FOR_S", 7 * 86400))
+
+# finalize and compute-averages are CPU over the whole history, not API calls, and
+# nothing they produce changes faster than the poll that feeds them. Running them on
+# every 15-minute cycle would repeat thousands of rows of work 96 times a day, so they
+# run every Nth cycle instead; backfill and poll still run every cycle.
+COLLECT_DERIVE_EVERY = int(os.environ.get("DBREL_COLLECT_DERIVE_EVERY", "4"))
 
 # How far back a cycle's /plan window may reach even if the previous cycle ran
 # long ago. /plan purges past hours of today after ~14h (§24), and a 404'd

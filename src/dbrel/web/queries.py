@@ -398,7 +398,12 @@ def station_board(
                     TrainStationDelay,
                     (TrainStationDelay.station_id == StationStop.station_id)
                     & (TrainStationDelay.train_id == StationStop.train_id)
-                    & (TrainStationDelay.basis == basis),
+                    & (TrainStationDelay.basis == basis)
+                    # Averages are per day of week, so the board shows the figure for
+                    # the day being looked at -- a Sunday board quoting a Tuesday's
+                    # delays would be wrong, and joining without this would return
+                    # seven rows per call and duplicate every entry on the board.
+                    & (TrainStationDelay.dow == service_date.weekday()),
                 )
                 .where(
                     StationStop.station_id == station_id,
@@ -461,7 +466,9 @@ def station_board(
     return payload
 
 
-def train_route(session: Session, train_id: int, *, basis: str | None = None) -> dict | None:
+def train_route(
+    session: Session, train_id: int, *, basis: str | None = None, dow: int | None = None
+) -> dict | None:
     """One train's whole journey, with scheduled times and typical lateness.
 
     The full route comes from train.route_path — IRIS's own ppth, every stop the
@@ -470,6 +477,10 @@ def train_route(session: Session, train_id: int, *, basis: str | None = None) ->
     most rows carry a name and nothing else. Showing the whole journey and
     marking which parts are measured is more honest than showing only the three
     stops we happen to watch and letting it read like the entire route.
+
+    `dow` picks which day of the week the averages describe, defaulting to today:
+    the route itself is undated, but every average now belongs to one weekday, and
+    joining without choosing would return the same stop seven times.
     """
     train = session.get(Train, train_id)
     if train is None:
@@ -477,6 +488,8 @@ def train_route(session: Session, train_id: int, *, basis: str | None = None) ->
 
     basis = resolve_basis(session, basis)
     fv_id = tt_feed_version_id(session)
+    if dow is None:
+        dow = datetime.now(TZ).date().weekday()
 
     measured: dict[int, tuple] = {}
     if fv_id is not None:
@@ -487,7 +500,8 @@ def train_route(session: Session, train_id: int, *, basis: str | None = None) ->
                 TrainStationDelay,
                 (TrainStationDelay.station_id == StationStop.station_id)
                 & (TrainStationDelay.train_id == StationStop.train_id)
-                & (TrainStationDelay.basis == basis),
+                & (TrainStationDelay.basis == basis)
+                & (TrainStationDelay.dow == dow),
             )
             .where(
                 StationStop.train_id == train_id,

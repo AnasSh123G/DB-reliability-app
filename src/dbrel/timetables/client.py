@@ -6,6 +6,7 @@ here, so the parser stays pure and testable.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -19,7 +20,7 @@ from dbrel.config import (
     TT_CLIENT_ID_SOURCE,
     TT_HTTP_TIMEOUT_S,
     TT_RATELIMIT_STATE,
-    TT_RPM,
+    TT_RPS_FAST,
 )
 from dbrel.timetables.ratelimit import TokenBucket
 
@@ -54,15 +55,24 @@ class TimetablesClient:
         *,
         client_id: str | None = None,
         api_key: str | None = None,
-        rpm: int = TT_RPM,
+        rps: float = TT_RPS_FAST,
         base_url: str = TT_BASE_URL,
         timeout: float = TT_HTTP_TIMEOUT_S,
     ) -> None:
         self.client_id = client_id or TT_CLIENT_ID
         self.api_key = api_key or TT_API_KEY
         self.base_url = base_url.rstrip("/")
-        self.bucket = TokenBucket(TT_RATELIMIT_STATE, rpm)
-        self.http = httpx.Client(timeout=timeout, follow_redirects=True)
+        self.bucket = TokenBucket(TT_RATELIMIT_STATE, rps)
+        # Shared by every thread in the fetch pool: httpx.Client is thread-safe and
+        # pools connections, which is what makes concurrent /plan fetches worthwhile.
+        self.http = httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=32),
+        )
+        # get() is called from the /plan fetch pool, so the counters need a lock:
+        # `+=` is a read-modify-write and would silently undercount otherwise.
+        self._counter_lock = threading.Lock()
         self.n_requests = 0
         self.n_retries = 0
 
@@ -87,11 +97,19 @@ class TimetablesClient:
             h["DB-Api-Key"] = self.api_key
         return h
 
+    def _count(self, *, requests: int = 0, retries: int = 0) -> None:
+        with self._counter_lock:
+            self.n_requests += requests
+            self.n_retries += retries
+
     def get(self, path: str, *, with_id: bool = True, with_key: bool = True) -> Response:
         """GET path relative to the API root, respecting the shared rate limit.
 
         A 5xx or 429 is retried; a 404 is returned as-is, because /plan legitimately
         404s for an hour bucket with no service or beyond the horizon.
+
+        Safe to call from several threads at once: the bucket serialises on a file
+        lock, httpx.Client pools connections, and the counters take a lock.
         """
         url = self.base_url + path
         headers = self.headers(with_id=with_id, with_key=with_key)
@@ -104,25 +122,27 @@ class TimetablesClient:
             except httpx.HTTPError as exc:
                 if attempt == MAX_RETRIES - 1:
                     return Response(0, str(exc).encode(), int((time.monotonic() - started) * 1000))
-                self.n_retries += 1
+                self._count(retries=1)
                 time.sleep(backoff)
                 backoff *= 2
                 continue
 
-            self.n_requests += 1
+            self._count(requests=1)
             elapsed = int((time.monotonic() - started) * 1000)
             out = Response(resp.status_code, resp.content, elapsed, dict(resp.headers))
 
             if resp.status_code == 429:
-                # The server counted this request even though it served nothing.
+                # The server counted this request even though it served nothing, and
+                # it is the only direct evidence that the advertised limit is real —
+                # so it drops every process to the penalty rate, not just this call.
                 self.bucket.penalise()
-                self.n_retries += 1
+                self._count(retries=1)
                 wait = float(resp.headers.get("Retry-After", backoff))
                 time.sleep(wait)
                 backoff *= 2
                 continue
             if resp.status_code >= 500 and attempt < MAX_RETRIES - 1:
-                self.n_retries += 1
+                self._count(retries=1)
                 time.sleep(backoff)
                 backoff *= 2
                 continue

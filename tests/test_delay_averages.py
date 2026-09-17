@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from dbrel.db import Base
@@ -52,10 +52,27 @@ NOW = int(time.time())
 
 def add_run(session, day: int, *, source=SOURCE_TT, quality=QUALITY_RECORDED,
             dep_delay=60, arr_delay=60, is_handover=0, observed_at=NOW):
-    """One trip with a single stop at the fixture station."""
-    service_date = f"2026-09-{day:02d}"
+    """One trip with a single stop at the fixture station.
+
+    `day` counts weeks, not days: averages are grouped per day of the week, so
+    runs meant to average together have to fall on the same weekday. 1 -> Tue
+    2026-09-01, 2 -> Tue 2026-09-08, and so on. Tests that want two *different*
+    weekdays call add_run_on_date directly.
+    """
+    return add_run_on_date(
+        session, f"2026-09-{1 + 7 * (day - 1):02d}", key=str(day), source=source,
+        quality=quality, dep_delay=dep_delay, arr_delay=arr_delay,
+        is_handover=is_handover, observed_at=observed_at,
+    )
+
+
+def add_run_on_date(session, service_date: str, *, key: str | None = None,
+                    source=SOURCE_TT, quality=QUALITY_RECORDED,
+                    dep_delay=60, arr_delay=60, is_handover=0, observed_at=NOW):
+    """One trip with a single stop at the fixture station, on an exact date."""
+    key = key or service_date
     trip = Trip(train_id=TRAIN_ID, service_date=service_date, source=source,
-                source_run_key=f"{source}:{day}", status="COMPLETED")
+                source_run_key=f"{source}:{key}", status="COMPLETED")
     session.add(trip)
     session.flush()
     session.add(TripStop(
@@ -130,6 +147,54 @@ def test_punctuality_uses_the_six_minute_threshold(session):
         add_run(session, day, dep_delay=delay, arr_delay=delay)
     row = averages(session)
     assert row.pct_dep_punctual == pytest.approx(0.25)
+
+
+def test_each_weekday_gets_its_own_row(session):
+    """Tuesday and Wednesday are different services, so different averages."""
+    add_run_on_date(session, "2026-09-01", dep_delay=60, arr_delay=60)    # Tuesday
+    add_run_on_date(session, "2026-09-08", dep_delay=120, arr_delay=120)  # Tuesday
+    add_run_on_date(session, "2026-09-02", dep_delay=600, arr_delay=600)  # Wednesday
+
+    run_delay_averages(session, basis=BASIS_REAL, full=True)
+    rows = {
+        row.dow: row
+        for row in session.scalars(
+            select(TrainStationDelay).where(TrainStationDelay.basis == BASIS_REAL)
+        )
+    }
+    assert sorted(rows) == [1, 2], "one row per weekday seen, Monday=0"
+    assert rows[1].n_dep == 2
+    assert rows[1].avg_dep_delay_s == pytest.approx(90.0), "the two Tuesdays only"
+    assert rows[2].n_dep == 1
+    assert rows[2].avg_dep_delay_s == pytest.approx(600.0), "Wednesday is untouched by it"
+
+
+def test_dow_matches_pythons_weekday_not_sqlites(session):
+    """strftime('%w') is 0=Sunday; the dow column is 0=Monday. Pin the difference."""
+    add_run_on_date(session, "2026-09-06")  # a Sunday
+    run_delay_averages(session, basis=BASIS_REAL, full=True)
+    row = session.scalar(select(TrainStationDelay).where(TrainStationDelay.basis == BASIS_REAL))
+    assert row.dow == 6, "Sunday is 6 here, even though SQLite would call it 0"
+
+
+def test_a_weekday_that_loses_its_samples_loses_only_its_own_row(session):
+    add_run_on_date(session, "2026-09-01", dep_delay=60, arr_delay=60)    # Tuesday
+    add_run_on_date(session, "2026-09-02", dep_delay=600, arr_delay=600)  # Wednesday
+    run_delay_averages(session, basis=BASIS_REAL, full=True)
+    assert session.scalar(select(func.count()).select_from(TrainStationDelay)) == 2
+
+    # Ungrade only the Wednesday stop, leaving a dirty marker behind.
+    wednesday = session.scalar(select(Trip).where(Trip.service_date == "2026-09-02"))
+    session.execute(
+        TripStop.__table__.update()
+        .where(TripStop.trip_id == wednesday.id)
+        .values(quality=QUALITY_NO_DATA, last_observed_at=NOW + 1)
+    )
+    session.flush()
+
+    run_delay_averages(session, basis=BASIS_REAL, full=False)
+    rows = list(session.scalars(select(TrainStationDelay)))
+    assert [r.dow for r in rows] == [1], "Tuesday survives; only Wednesday is dropped"
 
 
 def test_full_pass_reconciles_pairs_whose_samples_vanished(session):
