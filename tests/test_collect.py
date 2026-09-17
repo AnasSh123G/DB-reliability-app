@@ -293,7 +293,7 @@ def test_default_station_seed_file_is_well_formed():
     from dbrel.collect import load_station_seed
 
     seed = load_station_seed(DEFAULT_STATIONS_FILE)
-    assert len(seed) == 15
+    assert 200 <= len(seed) <= 300, "the corridor is expected to sit in the 200-300 range"
     evas = [s.eva for s in seed]
     assert len(evas) == len(set(evas)), "duplicate eva in the seed file"
     natural_keys = [s.natural_key for s in seed if s.natural_key]

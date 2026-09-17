@@ -251,3 +251,18 @@ class TestStationNameMatching:
 
     def test_variants_move_a_trailing_city_to_the_front(self):
         assert "Berlin Ostkreuz" in query_variants("S Ostkreuz Bhf (Berlin)")
+
+    def test_variants_try_the_iris_hyphenated_suburb_form(self):
+        """IRIS hyphenates 'City District' where gtfs.de spaces it -- confirmed
+        live against 9/10 sampled Ruhrgebiet suburb stops (§25)."""
+        assert "Bochum-Dahlhausen" in query_variants("Bochum Dahlhausen")
+        assert "Duisburg-Hochfeld Süd" in query_variants("Duisburg Hochfeld Süd")
+
+    def test_variants_drop_the_trailing_s_bahn_marker_before_hyphenating(self):
+        """gtfs.de appends a bare 'S' IRIS never carries in the name
+        ('Essen Steele S' -> IRIS 'Essen-Steele'); confirmed live (§25)."""
+        assert "Essen-Steele" in query_variants("Essen Steele S")
+        assert "Essen-Steele Ost" in query_variants("Essen Steele Ost S")
+
+    def test_variants_skip_hyphenation_when_there_is_no_space(self):
+        assert query_variants("Bochum") == ["Bochum"]

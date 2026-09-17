@@ -23,11 +23,12 @@ uv sync --extra web
 uv run dbrel collect --every 4h --for 7d   # cold start, then a cycle every 4 hours for a week
 ```
 
-One command runs the whole pipeline: schema, GTFS import, the tracked Ruhrgebiet stations
-(`config/ruhr_stations.toml`), the schedule, the actuals, and the averages — repeating on a
-timer until the duration elapses or you press Ctrl-C (see
-[Collecting continuously](#collecting-continuously) below). `uv run dbrel reset-db --yes`
-deletes the database to start over, without re-downloading the cached GTFS feeds.
+One command runs the whole pipeline: schema, GTFS import, the tracked stations
+(`config/ruhr_stations.toml` — 212 stations within 70 km of Bochum Hbf, ranked by traffic),
+the schedule, the actuals, and the averages — repeating on a timer until the duration
+elapses or you press Ctrl-C (see [Collecting continuously](#collecting-continuously)
+below). `uv run dbrel reset-db --yes` deletes the database to start over, without
+re-downloading the cached GTFS feeds.
 
 <details>
 <summary>Or step by step, if you want to run one stage at a time</summary>
@@ -133,8 +134,8 @@ unnecessarily wide window is a standing cost rather than a one-time one.
 
 Here the two-hour lookback clamp is safe because the cadence is hourly. Polling hourly is
 generous on its own terms too: a passed event lingers in the `/fchg` horizon for about 15
-hours, so nothing is lost by reading long after the fact. At 21 stations the two jobs
-together cost ~3% of the 72,000/day request budget.
+hours, so nothing is lost by reading long after the fact. At the current 212-station
+corridor the two jobs together cost under 5% of the 72,000/day request budget.
 
 ## Commands
 
@@ -297,3 +298,25 @@ shape.
   requests/day against an 86k budget). It covers a tracked subset, which grows by command
   rather than by migration — `stop_sequence` is sparse, so adding a station fills a gap
   instead of renumbering any history.
+- **TODO: a one-shot full-day `/plan` backfill cannot be scaled to all of Germany at all,
+  not just slowly** — confirmed live on the 212-station backfill (§26): major hubs 404'd
+  during morning rush hour because their target hour had already aged past `/plan`'s ~14h
+  same-day retention (§24) by the time the backfill reached them, not because no train ran.
+  At Germany's ~8,215 rail stations (§6) a full-day sweep needs ~65.7h at 50 rpm — over 4×
+  the 14h retention window — and no reordering fixes it: even sweeping hour-outer instead
+  of station-outer, the math (`(h+1)×2.74h ≤ h+14h`) only holds through hour ≈6, so a flat
+  national sweep can never capture more than the first 6-7 hours of any day. The same
+  ceiling hits the *recurring* cycle too (an 8h rolling window across 8,215 stations costs
+  ~21.9h/cycle, vs. the 6h `TT_LINGER_S` budget). Real fix, not yet done: never backfill
+  history at national scale — only ever request a short near-term lookahead, continuously,
+  and extend `poll_priority` tiering (already live in `changes_poller.py`) into
+  `plan_import.py` so most of Germany's stations are checked far less often than a curated
+  set of hubs/corridors.
+- **TODO: ~40% of candidate stations fail automatic EVA resolution once minor stops are
+  in scope** — 94 of 238 candidates within 40 km of Bochum Hbf never got an eva and are
+  simply untracked (§25). Two concrete, not-yet-done fixes: (1) expand the Rhein-Ruhr city
+  abbreviations DELFI uses (`D-`, `DO-`, `DU-`, `BOT `, `OB `, `GE `, `ME-`, …) as another
+  `query_variants` fallback — mechanical, no manual work, likely recovers a meaningful
+  chunk on its own; (2) for whatever's left, a human looks up the correct eva by hand and
+  assigns it with `tt-map-stations --manual <station_id>=<eva>`. Regenerate
+  `config/ruhr_stations.toml` afterward either way, so the fix is permanent.

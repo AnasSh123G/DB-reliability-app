@@ -1,22 +1,95 @@
 # The tracked-station seed for `dbrel collect`.
 #
-# These 15 evas were resolved once against /station/ and behaviourally checked
-# with tt-verify-stations (docs/probe-findings.md §22: 4 of the original 21
-# needed a human, because IRIS and DELFI disagree on station names in ways a
-# name search cannot resolve on its own). Re-running that name search after a
-# `dbrel reset-db` would risk the same trap that caught them the first time —
-# §14 records /station/KNE returning Neuwied, a valid rail eva for the wrong
-# city — so instead this file is applied directly by name/natural_key match
-# against the freshly-imported GTFS stations, at zero /station/ calls.
+# These EVAs were resolved once against /station/ (or, for the original 15, hand-verified
+# earlier) and behaviourally checked with tt-verify-stations. Re-running the name search
+# after a `dbrel reset-db` risks the same naming traps that make automatic resolution
+# imperfect in the first place (docs/probe-findings.md §13/§14/§22/§25) -- so this file is
+# applied directly by name/natural_key match against the freshly-imported GTFS stations, at
+# zero /station/ calls.
 #
-# natural_key is `normalize_name(name)@lat.3f,lon.3f` (gtfs/static_import.py),
-# the same key gtfs.de station rows are deduplicated on, so it survives a feed
-# rebuild even if the station's display name changes slightly. name is kept as
-# a fallback for a first-time import where the natural_key hasn't been seen
-# yet with this exact rounding.
+# Corridor: every station within 70 km of Bochum Hbf that resolved to an IRIS eva, ranked by
+# traffic. Expanded from the original 15-station Ruhrgebiet pilot on 2026-09-16; see §25 for
+# why the automatic hit rate is well under 100% once minor stops are in scope.
+#
+# natural_key is `normalize_name(name)@lat.3f,lon.3f` (gtfs/static_import.py), the same key
+# gtfs.de station rows are deduplicated on, so it survives a feed rebuild even if the
+# station's display name changes slightly. name is kept as a fallback for a first-time
+# import where the natural_key hasn't been seen yet with this exact rounding.
 
-name = "Ruhrgebiet corridor"
+name = "Bochum corridor (70 km, traffic-ranked)"
 priority = 1
+
+[[stations]]
+name = "Altenberge, Bahnhof"
+eva = 8000518
+ds100 = "EABG"
+natural_key = "altenberge, bahnhof@52.051,7.482"
+
+[[stations]]
+name = "Anrath"
+eva = 8000584
+ds100 = "KANR"
+natural_key = "anrath@51.286,6.450"
+
+[[stations]]
+name = "Attendorn Bf"
+eva = 8000638
+ds100 = "EAT"
+natural_key = "attendorn bf@51.125,7.908"
+
+[[stations]]
+name = "Attendorn-Hohen Hagen Bf"
+eva = 8087039
+ds100 = "EHOH"
+natural_key = "attendorn-hohen hagen bf@51.090,7.855"
+
+[[stations]]
+name = "Bad Sassendorf, Bahnhof"
+eva = 8000745
+ds100 = "EBSA"
+natural_key = "bad sassendorf, bahnhof@51.587,8.163"
+
+[[stations]]
+name = "Balve, Bahnhof"
+eva = 8000793
+ds100 = "EBAV"
+natural_key = "balve, bahnhof@51.332,7.863"
+
+[[stations]]
+name = "Bergisch Gladbach (S)"
+eva = 8000899
+ds100 = "KBGG"
+natural_key = "bergisch gladbach (s)@50.991,7.125"
+
+[[stations]]
+name = "Billerbeck, Bahnhof"
+eva = 8000970
+ds100 = "EBB"
+natural_key = "billerbeck, bahnhof@51.981,7.297"
+
+[[stations]]
+name = "Bocholt, Bahnhof"
+eva = 8000040
+ds100 = "EBCH"
+natural_key = "bocholt, bahnhof@51.834,6.620"
+
+[[stations]]
+name = "Bochum Dahlhausen"
+eva = 8001038
+ds100 = "EBDA"
+natural_key = "bochum dahlhausen@51.427,7.143"
+
+[[stations]]
+name = "Bochum Ehrenfeld"
+eva = 8001039
+ds100 = "EBOE"
+natural_key = "bochum ehrenfeld@51.473,7.211"
+
+[[stations]]
+name = "Bochum Hamme"
+eva = 8006710
+ds100 = "EBOH"
+natural_key = "bochum hamme@51.491,7.201"
 
 [[stations]]
 name = "Bochum Hbf"
@@ -25,10 +98,148 @@ ds100 = "EBO"
 natural_key = "bochum hbf@51.479,7.223"
 
 [[stations]]
+name = "Bochum Langendreer"
+eva = 8000358
+ds100 = "EBP"
+natural_key = "bochum langendreer@51.478,7.324"
+
+[[stations]]
+name = "Bochum Langendreer West"
+eva = 8004474
+ds100 = "EBW"
+natural_key = "bochum langendreer west@51.478,7.302"
+
+[[stations]]
+name = "Bochum Riemke"
+eva = 8001035
+ds100 = "EBGZ"
+natural_key = "bochum riemke@51.518,7.205"
+
+[[stations]]
+name = "Bochum West Bf"
+eva = 8006711
+ds100 = "EBOW"
+natural_key = "bochum west bf@51.481,7.212"
+
+[[stations]]
+name = "Borgeln, Bahnhof"
+eva = 8001093
+ds100 = "EBOR"
+natural_key = "borgeln, bahnhof@51.598,8.032"
+
+[[stations]]
 name = "Bottrop Hbf"
 eva = 8000047
 ds100 = "EBTH"
 natural_key = "bottrop hbf@51.510,6.937"
+
+[[stations]]
+name = "Bottrop-Boy Bf"
+eva = 8001107
+ds100 = "EBTB"
+natural_key = "bottrop-boy bf@51.537,6.968"
+
+[[stations]]
+name = "Buldern, Bahnhof"
+eva = 8001266
+ds100 = "EBUD"
+natural_key = "buldern, bahnhof@51.863,7.371"
+
+[[stations]]
+name = "Bönen, Bahnhof"
+eva = 8001061
+ds100 = "EBEO"
+natural_key = "bonen, bahnhof@51.598,7.758"
+
+[[stations]]
+name = "Castrop-Rauxel Hbf"
+eva = 8001327
+ds100 = "ECA"
+natural_key = "castrop-rauxel hbf@51.573,7.305"
+
+[[stations]]
+name = "Castrop-Rauxel Merklinde Bf"
+eva = 8001329
+ds100 = "ECME"
+natural_key = "castrop-rauxel merklinde bf@51.528,7.324"
+
+[[stations]]
+name = "Castrop-Rauxel Süd Bf"
+eva = 8001328
+ds100 = "ECAS"
+natural_key = "castrop-rauxel sud bf@51.550,7.311"
+
+[[stations]]
+name = "Coesfeld, Schulzentrum"
+eva = 8001343
+ds100 = "ECFS"
+natural_key = "coesfeld, schulzentrum@51.951,7.166"
+
+[[stations]]
+name = "Davensberg, Bahnhof"
+eva = 8001390
+ds100 = "EDVB"
+natural_key = "davensberg, bahnhof@51.817,7.598"
+
+[[stations]]
+name = "Dormagen Bf"
+eva = 8001506
+ds100 = "KDO"
+natural_key = "dormagen bf@51.099,6.816"
+
+[[stations]]
+name = "Dormagen Chempark"
+eva = 8001507
+ds100 = "KDBW"
+natural_key = "dormagen chempark@51.077,6.838"
+
+[[stations]]
+name = "Dorsten Bf"
+eva = 8006709
+ds100 = "EDRN"
+natural_key = "dorsten bf@51.658,6.970"
+
+[[stations]]
+name = "Dortmund Aplerbeck Bf"
+eva = 8001523
+ds100 = "EDAP"
+natural_key = "dortmund aplerbeck bf@51.490,7.554"
+
+[[stations]]
+name = "Dortmund Aplerbeck Süd Bf"
+eva = 8001524
+ds100 = "EDAU"
+natural_key = "dortmund aplerbeck sud bf@51.483,7.554"
+
+[[stations]]
+name = "Dortmund Asseln Mitte"
+eva = 8001526
+ds100 = "EDAM"
+natural_key = "dortmund asseln mitte@51.526,7.582"
+
+[[stations]]
+name = "Dortmund Barop"
+eva = 8001527
+ds100 = "EDBA"
+natural_key = "dortmund barop@51.477,7.431"
+
+[[stations]]
+name = "Dortmund Brackel"
+eva = 8001529
+ds100 = "EDBK"
+natural_key = "dortmund brackel@51.521,7.548"
+
+[[stations]]
+name = "Dortmund Bövinghausen Bf"
+eva = 8001528
+ds100 = "EDBH"
+natural_key = "dortmund bovinghausen bf@51.521,7.329"
+
+[[stations]]
+name = "Dortmund Derne Bf"
+eva = 8001530
+ds100 = "EDD"
+natural_key = "dortmund derne bf@51.567,7.527"
 
 [[stations]]
 name = "Dortmund Dorstfeld"
@@ -37,10 +248,106 @@ ds100 = "EDDP"
 natural_key = "dortmund dorstfeld@51.510,7.423"
 
 [[stations]]
+name = "Dortmund Dorstfeld Süd"
+eva = 8004230
+ds100 = "EDDS"
+natural_key = "dortmund dorstfeld sud@51.500,7.420"
+
+[[stations]]
+name = "Dortmund Germania"
+eva = 8001540
+ds100 = "EDGM"
+natural_key = "dortmund germania@51.497,7.362"
+
+[[stations]]
 name = "Dortmund Hbf"
 eva = 8000080
 ds100 = "EDO"
 natural_key = "dortmund hbf@51.517,7.459"
+
+[[stations]]
+name = "Dortmund Huckarde Nord"
+eva = 8001532
+ds100 = "EDHU"
+natural_key = "dortmund huckarde nord@51.534,7.415"
+
+[[stations]]
+name = "Dortmund Hörde Bf"
+eva = 8000961
+ds100 = "EDH"
+natural_key = "dortmund horde bf@51.488,7.500"
+
+[[stations]]
+name = "Dortmund Kirchderne Bf"
+eva = 8001533
+ds100 = "EDKD"
+natural_key = "dortmund kirchderne bf@51.545,7.511"
+
+[[stations]]
+name = "Dortmund Kirchhörde Bf"
+eva = 8001534
+ds100 = "EDKH"
+natural_key = "dortmund kirchhorde bf@51.463,7.458"
+
+[[stations]]
+name = "Dortmund Kley"
+eva = 8004269
+ds100 = "EDK"
+natural_key = "dortmund kley@51.489,7.365"
+
+[[stations]]
+name = "Dortmund Kruckel"
+eva = 8001536
+ds100 = "EDKR"
+natural_key = "dortmund kruckel@51.458,7.415"
+
+[[stations]]
+name = "Dortmund Kurl Bf"
+eva = 8001537
+ds100 = "EDKU"
+natural_key = "dortmund kurl bf@51.558,7.584"
+
+[[stations]]
+name = "Dortmund Körne"
+eva = 8001535
+ds100 = "EDKO"
+natural_key = "dortmund korne@51.513,7.514"
+
+[[stations]]
+name = "Dortmund Körne West"
+eva = 8003916
+ds100 = "EDWK"
+natural_key = "dortmund korne west@51.510,7.501"
+
+[[stations]]
+name = "Dortmund Löttringhausen Bf"
+eva = 8001538
+ds100 = "EDLH"
+natural_key = "dortmund lottringhausen bf@51.453,7.445"
+
+[[stations]]
+name = "Dortmund Lütgendortmund"
+eva = 8001516
+ds100 = "EDLS"
+natural_key = "dortmund lutgendortmund@51.499,7.335"
+
+[[stations]]
+name = "Dortmund Lütgendortmund Nord"
+eva = 8001539
+ds100 = "EDLN"
+natural_key = "dortmund lutgendortmund nord@51.508,7.343"
+
+[[stations]]
+name = "Dortmund Marten Bf"
+eva = 8001541
+ds100 = "EDMR"
+natural_key = "dortmund marten bf@51.515,7.374"
+
+[[stations]]
+name = "Dortmund Marten Süd"
+eva = 8001542
+ds100 = "EDMS"
+natural_key = "dortmund marten sud@51.509,7.389"
 
 [[stations]]
 name = "Dortmund Mengede Bf"
@@ -49,10 +356,202 @@ ds100 = "EDMG"
 natural_key = "dortmund mengede bf@51.570,7.376"
 
 [[stations]]
+name = "Dortmund Möllerbrücke"
+eva = 8001518
+ds100 = "EDMB"
+natural_key = "dortmund mollerbrucke@51.507,7.451"
+
+[[stations]]
+name = "Dortmund Oespel"
+eva = 8004288
+ds100 = "EDOP"
+natural_key = "dortmund oespel@51.489,7.385"
+
+[[stations]]
+name = "Dortmund Rahm Bf"
+eva = 8001544
+ds100 = "EDRA"
+natural_key = "dortmund rahm bf@51.525,7.394"
+
+[[stations]]
+name = "Dortmund Scharnhorst Bf"
+eva = 8001515
+ds100 = "EDSH"
+natural_key = "dortmund scharnhorst bf@51.538,7.538"
+
+[[stations]]
+name = "Dortmund Somborn"
+eva = 8001549
+ds100 = "EDSM"
+natural_key = "dortmund somborn@51.496,7.351"
+
+[[stations]]
+name = "Dortmund Stadthaus"
+eva = 8001520
+ds100 = "EDST"
+natural_key = "dortmund stadthaus@51.508,7.469"
+
+[[stations]]
+name = "Dortmund Sölde Bf"
+eva = 8001545
+ds100 = "EDSO"
+natural_key = "dortmund solde bf@51.495,7.588"
+
+[[stations]]
+name = "Dortmund Tierpark Bf"
+eva = 8001521
+ds100 = "EDTP"
+natural_key = "dortmund tierpark bf@51.478,7.462"
+
+[[stations]]
+name = "Dortmund Universität"
+eva = 8004419
+ds100 = "EDUV"
+natural_key = "dortmund universitat@51.493,7.416"
+
+[[stations]]
+name = "Dortmund Westerfilde"
+eva = 8001525
+ds100 = "EDOF"
+natural_key = "dortmund westerfilde@51.547,7.382"
+
+[[stations]]
+name = "Dortmund Wickede"
+eva = 8001546
+ds100 = "EDWI"
+natural_key = "dortmund wickede@51.534,7.624"
+
+[[stations]]
+name = "Dortmund Wickede West"
+eva = 8003936
+ds100 = "EDWW"
+natural_key = "dortmund wickede west@51.529,7.608"
+
+[[stations]]
+name = "Dortmund Wischlingen S"
+eva = 8001531
+ds100 = "EDOL"
+natural_key = "dortmund wischlingen s@51.519,7.413"
+
+[[stations]]
+name = "Drensteinfurt, Bahnhof"
+eva = 8001558
+ds100 = "EDRS"
+natural_key = "drensteinfurt, bahnhof@51.798,7.734"
+
+[[stations]]
+name = "Duisburg Buchholz Bf"
+eva = 8001600
+ds100 = "EDBU"
+natural_key = "duisburg buchholz bf@51.384,6.775"
+
+[[stations]]
+name = "Duisburg Großenbaum S"
+eva = 8001602
+ds100 = "EDGR"
+natural_key = "duisburg grossenbaum s@51.365,6.777"
+
+[[stations]]
 name = "Duisburg Hbf"
 eva = 8000086
 ds100 = "EDG"
 natural_key = "duisburg hbf@51.430,6.775"
+
+[[stations]]
+name = "Duisburg Meiderich Ost Bf"
+eva = 8001607
+ds100 = "EDMO"
+natural_key = "duisburg meiderich ost bf@51.469,6.801"
+
+[[stations]]
+name = "Duisburg Ruhrort Bf"
+eva = 8001611
+ds100 = "EDRU"
+natural_key = "duisburg ruhrort bf@51.457,6.735"
+
+[[stations]]
+name = "Duisburg Schlenk Bf"
+eva = 8001596
+ds100 = "EDSL"
+natural_key = "duisburg schlenk bf@51.403,6.773"
+
+[[stations]]
+name = "Dülmen, Bahnhof"
+eva = 8000083
+ds100 = "EDUL"
+natural_key = "dulmen, bahnhof@51.828,7.295"
+
+[[stations]]
+name = "Düsseldorf Hbf"
+eva = 8000085
+ds100 = "KD"
+natural_key = "dusseldorf hbf@51.220,6.793"
+
+[[stations]]
+name = "Eichhagen Bf"
+eva = 8001706
+ds100 = "EEHG"
+natural_key = "eichhagen bf@51.058,7.837"
+
+[[stations]]
+name = "Engelskirchen Bf"
+eva = 8001789
+ds100 = "KENL"
+natural_key = "engelskirchen bf@50.987,7.408"
+
+[[stations]]
+name = "Erkrath Nord Bf"
+eva = 8001842
+ds100 = "KERN"
+natural_key = "erkrath nord bf@51.229,6.909"
+
+[[stations]]
+name = "Essen Altenessen Bf"
+eva = 8001900
+ds100 = "EEAL"
+natural_key = "essen altenessen bf@51.484,7.009"
+
+[[stations]]
+name = "Essen Bergeborbeck Bf"
+eva = 8001901
+ds100 = "EEBE"
+natural_key = "essen bergeborbeck bf@51.480,6.978"
+
+[[stations]]
+name = "Essen Borbeck Bf"
+eva = 8001902
+ds100 = "EEBB"
+natural_key = "essen borbeck bf@51.472,6.949"
+
+[[stations]]
+name = "Essen Dellwig Bf"
+eva = 8001903
+ds100 = "EEDL"
+natural_key = "essen dellwig bf@51.488,6.925"
+
+[[stations]]
+name = "Essen Dellwig Ost Bf"
+eva = 8001904
+ds100 = "EEDO"
+natural_key = "essen dellwig ost bf@51.488,6.927"
+
+[[stations]]
+name = "Essen Eiberg S"
+eva = 8001905
+ds100 = "EEIB"
+natural_key = "essen eiberg s@51.442,7.109"
+
+[[stations]]
+name = "Essen Frohnhausen S"
+eva = 8001906
+ds100 = "EEFO"
+natural_key = "essen frohnhausen s@51.455,6.964"
+
+[[stations]]
+name = "Essen Gerschede"
+eva = 8001907
+ds100 = "EEGE"
+natural_key = "essen gerschede@51.484,6.944"
 
 [[stations]]
 name = "Essen Hbf"
@@ -61,10 +560,70 @@ ds100 = "EE"
 natural_key = "essen hbf@51.450,7.012"
 
 [[stations]]
+name = "Essen Holthausen Bf"
+eva = 8006514
+ds100 = "EEHH"
+natural_key = "essen holthausen bf@51.418,7.075"
+
+[[stations]]
+name = "Essen Horst"
+eva = 8006194
+ds100 = "EEHT"
+natural_key = "essen horst@51.431,7.102"
+
+[[stations]]
+name = "Essen Hügel S"
+eva = 8001908
+ds100 = "EEHU"
+natural_key = "essen hugel s@51.404,7.009"
+
+[[stations]]
+name = "Essen Kray Nord Bf"
+eva = 8001910
+ds100 = "EEKN"
+natural_key = "essen kray nord bf@51.469,7.081"
+
+[[stations]]
+name = "Essen Kray Süd Bf"
+eva = 8001911
+ds100 = "EEKS"
+natural_key = "essen kray sud bf@51.459,7.078"
+
+[[stations]]
+name = "Essen Kupferdreh"
+eva = 8001912
+ds100 = "EEKU"
+natural_key = "essen kupferdreh@51.391,7.081"
+
+[[stations]]
+name = "Essen Stadtwald S"
+eva = 8001896
+ds100 = "EESA"
+natural_key = "essen stadtwald s@51.423,7.023"
+
+[[stations]]
+name = "Essen Steele Ost S"
+eva = 8001913
+ds100 = "EESO"
+natural_key = "essen steele ost s@51.445,7.087"
+
+[[stations]]
 name = "Essen Steele S"
 eva = 8000099
 ds100 = "EEST"
 natural_key = "essen steele s@51.451,7.075"
+
+[[stations]]
+name = "Essen Süd S"
+eva = 8001897
+ds100 = "EESD"
+natural_key = "essen sud s@51.440,7.023"
+
+[[stations]]
+name = "Essen Werden S"
+eva = 8001915
+ds100 = "EEWD"
+natural_key = "essen werden s@51.387,6.998"
 
 [[stations]]
 name = "Essen West S"
@@ -73,10 +632,112 @@ ds100 = "EENW"
 natural_key = "essen west s@51.453,6.982"
 
 [[stations]]
+name = "Essen Zollverein Nord Bf"
+eva = 8001909
+ds100 = "EEKB"
+natural_key = "essen zollverein nord bf@51.494,7.046"
+
+[[stations]]
+name = "Essen Überruhr Bf"
+eva = 8071254
+ds100 = "D8071254"
+natural_key = "essen uberruhr bf@51.429,7.069"
+
+[[stations]]
+name = "Finnentrop Bf"
+eva = 8000102
+ds100 = "EFP"
+natural_key = "finnentrop bf@51.173,7.965"
+
+[[stations]]
+name = "Frechen Königsdorf Bf"
+eva = 8002389
+ds100 = "KFKO"
+natural_key = "frechen konigsdorf bf@50.936,6.778"
+
+[[stations]]
+name = "Fröndenberg, Bahnhof"
+eva = 8000113
+ds100 = "EFOE"
+natural_key = "frondenberg, bahnhof@51.471,7.763"
+
+[[stations]]
+name = "Gelsenkirchen Buer Süd Bf"
+eva = 8002225
+ds100 = "EGBS"
+natural_key = "gelsenkirchen buer sud bf@51.548,7.041"
+
+[[stations]]
+name = "Gelsenkirchen Hassel Bf"
+eva = 8002226
+ds100 = "EGHS"
+natural_key = "gelsenkirchen hassel bf@51.612,7.066"
+
+[[stations]]
 name = "Gelsenkirchen Hbf"
 eva = 8000118
 ds100 = "EG"
 natural_key = "gelsenkirchen hbf@51.505,7.102"
+
+[[stations]]
+name = "Gelsenkirchen Rotthausen"
+eva = 8002227
+ds100 = "EGRO"
+natural_key = "gelsenkirchen rotthausen@51.492,7.089"
+
+[[stations]]
+name = "Gelsenkirchen Zoo Bf"
+eva = 8002223
+ds100 = "EGZO"
+natural_key = "gelsenkirchen zoo bf@51.536,7.111"
+
+[[stations]]
+name = "Gevelsberg West"
+eva = 8002268
+ds100 = "KGVW"
+natural_key = "gevelsberg west@51.317,7.313"
+
+[[stations]]
+name = "Gevelsberg-Kipp"
+eva = 8002509
+ds100 = "KGVK"
+natural_key = "gevelsberg-kipp@51.320,7.326"
+
+[[stations]]
+name = "Gevelsberg-Knapp"
+eva = 8001943
+ds100 = "EGVA"
+natural_key = "gevelsberg-knapp@51.337,7.378"
+
+[[stations]]
+name = "Gladbeck Ost Bf"
+eva = 8002283
+ds100 = "EGBO"
+natural_key = "gladbeck ost bf@51.576,6.995"
+
+[[stations]]
+name = "Gladbeck-Zweckel Bf"
+eva = 8002284
+ds100 = "EZK"
+natural_key = "gladbeck-zweckel bf@51.591,6.984"
+
+[[stations]]
+name = "Gummersbach Dieringhausen Bf"
+eva = 8000363
+ds100 = "KDI"
+natural_key = "gummersbach dieringhausen bf@50.985,7.542"
+
+[[stations]]
+name = "Haan Bf"
+eva = 8002490
+ds100 = "KHAN"
+natural_key = "haan bf@51.189,6.998"
+
+[[stations]]
+name = "Haan-Gruiten"
+eva = 8000138
+ds100 = "KGUA"
+natural_key = "haan-gruiten@51.215,7.011"
 
 [[stations]]
 name = "Hagen Hbf"
@@ -85,10 +746,82 @@ ds100 = "EHG"
 natural_key = "hagen hbf@51.362,7.462"
 
 [[stations]]
+name = "Hagen Heubing Bf"
+eva = 8002512
+ds100 = "EHGI"
+natural_key = "hagen heubing bf@51.352,7.423"
+
+[[stations]]
+name = "Hagen Vorhalle Bf"
+eva = 8000977
+ds100 = "EHGV"
+natural_key = "hagen vorhalle bf@51.388,7.433"
+
+[[stations]]
+name = "Hagen Wehringhausen"
+eva = 8006712
+ds100 = "EHGW"
+natural_key = "hagen wehringhausen@51.354,7.453"
+
+[[stations]]
+name = "Hagen Westerbauer Bf"
+eva = 8004440
+ds100 = "EHWB"
+natural_key = "hagen westerbauer bf@51.342,7.396"
+
+[[stations]]
+name = "Haltern am See Bf"
+eva = 8000145
+ds100 = "EHLT"
+natural_key = "haltern am see bf@51.738,7.185"
+
+[[stations]]
+name = "Halver, Oberbrügge"
+eva = 8002535
+ds100 = "EOBG"
+natural_key = "halver, oberbrugge@51.192,7.573"
+
+[[stations]]
+name = "Hamminkeln Dingden Bf"
+eva = 8001465
+ds100 = "EDGD"
+natural_key = "hamminkeln dingden bf@51.770,6.608"
+
+[[stations]]
+name = "Havixbeck, Bahnhof"
+eva = 8002670
+ds100 = "EHBK"
+natural_key = "havixbeck, bahnhof@51.967,7.408"
+
+[[stations]]
+name = "Heggen Bf"
+eva = 8002682
+ds100 = "EHEG"
+natural_key = "heggen bf@51.154,7.963"
+
+[[stations]]
+name = "Hemmerde, Bahnhof"
+eva = 8002745
+ds100 = "EHMD"
+natural_key = "hemmerde, bahnhof@51.554,7.804"
+
+[[stations]]
+name = "Herdecke"
+eva = 8002769
+ds100 = "EHCK"
+natural_key = "herdecke@51.405,7.433"
+
+[[stations]]
 name = "Herne Bf"
 eva = 8000164
 ds100 = "EHER"
 natural_key = "herne bf@51.544,7.217"
+
+[[stations]]
+name = "Herne Börnig Bf"
+eva = 8002779
+ds100 = "EHBO"
+natural_key = "herne bornig bf@51.555,7.268"
 
 [[stations]]
 name = "Herne Wanne-Eickel Hbf"
@@ -97,13 +830,464 @@ ds100 = "EWAN"
 natural_key = "herne wanne-eickel hbf@51.532,7.166"
 
 [[stations]]
+name = "Herten(Westf)"
+eva = 8002795
+ds100 = "EHRM"
+natural_key = "herten(westf)@51.598,7.139"
+
+[[stations]]
+name = "Hilden Süd S"
+eva = 8002828
+ds100 = "KHIS"
+natural_key = "hilden sud s@51.163,6.939"
+
+[[stations]]
+name = "Holzwickede, Bahnhof"
+eva = 8000392
+ds100 = "EHZW"
+natural_key = "holzwickede, bahnhof@51.505,7.620"
+
+[[stations]]
+name = "Iserlohnerheide Bf"
+eva = 8003090
+ds100 = "EILH"
+natural_key = "iserlohnerheide bf@51.400,7.692"
+
+[[stations]]
+name = "Kamen, Bahnhof"
+eva = 8003168
+ds100 = "EKAM"
+natural_key = "kamen, bahnhof@51.585,7.661"
+
+[[stations]]
+name = "Kapellen Wevelinghoven Bf"
+eva = 8003174
+ds100 = "KKAW"
+natural_key = "kapellen wevelinghoven bf@51.130,6.621"
+
+[[stations]]
+name = "Kraghammer Bf"
+eva = 8003420
+ds100 = "EKRG"
+natural_key = "kraghammer bf@51.109,7.874"
+
+[[stations]]
+name = "Krefeld Hbf"
+eva = 8000211
+ds100 = "KKR"
+natural_key = "krefeld hbf@51.326,6.568"
+
+[[stations]]
+name = "Krefeld Linn Bf"
+eva = 8003426
+ds100 = "KKRL"
+natural_key = "krefeld linn bf@51.335,6.631"
+
+[[stations]]
+name = "Krefeld Oppum Bf"
+eva = 8000212
+ds100 = "KKRO"
+natural_key = "krefeld oppum bf@51.329,6.612"
+
+[[stations]]
+name = "Krefeld Uerdingen Bf"
+eva = 8003427
+ds100 = "KKRX"
+natural_key = "krefeld uerdingen bf@51.357,6.646"
+
+[[stations]]
+name = "Krefeld-Hohenbudberg Chempark"
+eva = 8002941
+ds100 = "KHB"
+natural_key = "krefeld-hohenbudberg chempark@51.374,6.665"
+
+[[stations]]
+name = "Köln Blumenberg (S)"
+eva = 8079140
+ds100 = "KKBL"
+natural_key = "koln blumenberg (s)@51.037,6.882"
+
+[[stations]]
+name = "Köln Chorweiler"
+eva = 8003365
+ds100 = "KKC"
+natural_key = "koln chorweiler@51.021,6.898"
+
+[[stations]]
+name = "Köln Chorweiler Nord (S)"
+eva = 8003366
+ds100 = "KKCN"
+natural_key = "koln chorweiler nord (s)@51.028,6.893"
+
+[[stations]]
+name = "Köln Hansaring"
+eva = 8003392
+ds100 = "KKHR"
+natural_key = "koln hansaring@50.949,6.953"
+
+[[stations]]
+name = "Köln Hbf"
+eva = 8000207
+ds100 = "KK"
+natural_key = "koln hbf@50.943,6.959"
+
+[[stations]]
+name = "Köln Süd Bf"
+eva = 8003361
+ds100 = "KKS"
+natural_key = "koln sud bf@50.927,6.938"
+
+[[stations]]
+name = "Köln Weiden West"
+eva = 8003383
+ds100 = "KKWW"
+natural_key = "koln weiden west@50.941,6.815"
+
+[[stations]]
+name = "Köln West Bf"
+eva = 8003363
+ds100 = "KKW"
+natural_key = "koln west bf@50.944,6.934"
+
+[[stations]]
+name = "Königsborn, Bahnhof"
+eva = 8012066
+ds100 = "LKB"
+natural_key = "konigsborn, bahnhof@51.553,7.689"
+
+[[stations]]
+name = "Legden, Bahnhof"
+eva = 8003608
+ds100 = "ELGD"
+natural_key = "legden, bahnhof@52.035,7.089"
+
+[[stations]]
+name = "Leichlingen Bf"
+eva = 8003616
+ds100 = "KLEL"
+natural_key = "leichlingen bf@51.108,7.005"
+
+[[stations]]
+name = "Lennestadt-Grevenbrück Bf"
+eva = 8002370
+ds100 = "EGVB"
+natural_key = "lennestadt-grevenbruck bf@51.142,8.018"
+
+[[stations]]
+name = "Leverkusen Manfort Bf"
+eva = 8003669
+ds100 = "KLS"
+natural_key = "leverkusen manfort bf@51.032,7.015"
+
+[[stations]]
+name = "Listerscheid Bf"
+eva = 8003715
+ds100 = "ELIS"
+natural_key = "listerscheid bf@51.108,7.849"
+
+[[stations]]
+name = "Lutum, Bahnhof"
+eva = 8003804
+ds100 = "ELUT"
+natural_key = "lutum, bahnhof@51.983,7.227"
+
+[[stations]]
+name = "Lüdinghausen, Bahnhof"
+eva = 8003783
+ds100 = "ELDH"
+natural_key = "ludinghausen, bahnhof@51.762,7.432"
+
+[[stations]]
+name = "Lünern, Bahnhof"
+eva = 8003788
+ds100 = "ELRN"
+natural_key = "lunern, bahnhof@51.543,7.761"
+
+[[stations]]
+name = "Marienheide Bf"
+eva = 8070483
+ds100 = "KMAH"
+natural_key = "marienheide bf@51.081,7.532"
+
+[[stations]]
+name = "Marl Mitte"
+eva = 8003888
+ds100 = "EMAM"
+natural_key = "marl mitte@51.653,7.099"
+
+[[stations]]
+name = "Marl Sinsen Bf"
+eva = 8003891
+ds100 = "EMSI"
+natural_key = "marl sinsen bf@51.668,7.174"
+
+[[stations]]
+name = "Marl-Hamm Bf"
+eva = 8003890
+ds100 = "EMHM"
+natural_key = "marl-hamm bf@51.683,7.132"
+
+[[stations]]
+name = "Massen, Bahnhof"
+eva = 8003909
+ds100 = "EMAN"
+natural_key = "massen, bahnhof@51.542,7.644"
+
+[[stations]]
+name = "Neuenrade, Bahnhof"
+eva = 8004273
+ds100 = "ENRA"
+natural_key = "neuenrade, bahnhof@51.285,7.795"
+
+[[stations]]
+name = "Neuss Am Kaiser"
+eva = 8004320
+ds100 = "KNAK"
+natural_key = "neuss am kaiser@51.220,6.698"
+
+[[stations]]
+name = "Neuss Süd S"
+eva = 8004317
+ds100 = "KNSD"
+natural_key = "neuss sud s@51.186,6.690"
+
+[[stations]]
+name = "Nordwalde, Bahnhof"
+eva = 8004461
+ds100 = "ENOW"
+natural_key = "nordwalde, bahnhof@52.079,7.461"
+
+[[stations]]
 name = "Oberhausen Hbf"
 eva = 8000286
 ds100 = "EOB"
 natural_key = "oberhausen hbf@51.474,6.853"
 
 [[stations]]
+name = "Olpe Bf"
+eva = 8004674
+ds100 = "EOLP"
+natural_key = "olpe bf@51.030,7.841"
+
+[[stations]]
+name = "Pulheim Bf"
+eva = 8004898
+ds100 = "KPUL"
+natural_key = "pulheim bf@50.998,6.797"
+
+[[stations]]
+name = "Ratingen Ost S"
+eva = 8004948
+ds100 = "KRAO"
+natural_key = "ratingen ost s@51.296,6.864"
+
+[[stations]]
 name = "Recklinghausen Hbf"
 eva = 8000307
 ds100 = "ERE"
 natural_key = "recklinghausen hbf@51.616,7.201"
+
+[[stations]]
+name = "Remscheid Hbf"
+eva = 8005033
+ds100 = "KR"
+natural_key = "remscheid hbf@51.178,7.200"
+
+[[stations]]
+name = "Remscheid Lennep Bf"
+eva = 8000311
+ds100 = "KRL"
+natural_key = "remscheid lennep bf@51.191,7.253"
+
+[[stations]]
+name = "Remscheid Lüttringhausen Bf"
+eva = 8005035
+ds100 = "KRLU"
+natural_key = "remscheid luttringhausen bf@51.215,7.243"
+
+[[stations]]
+name = "Rinkerode, Bahnhof"
+eva = 8005102
+ds100 = "ERIK"
+natural_key = "rinkerode, bahnhof@51.845,7.688"
+
+[[stations]]
+name = "Rosendahl-Holtwick, Bahnhof"
+eva = 8002972
+ds100 = "EHW"
+natural_key = "rosendahl-holtwick, bahnhof@51.998,7.123"
+
+[[stations]]
+name = "Rösrath-Stümpen Bf"
+eva = 8005143
+ds100 = "KRST"
+natural_key = "rosrath-stumpen bf@50.899,7.159"
+
+[[stations]]
+name = "Schalksmühle"
+eva = 8005316
+ds100 = "ESMU"
+natural_key = "schalksmuhle@51.241,7.533"
+
+[[stations]]
+name = "Schwelm West"
+eva = 8005488
+ds100 = "KSWW"
+natural_key = "schwelm west@51.286,7.270"
+
+[[stations]]
+name = "Selm, Bahnhof"
+eva = 8005525
+ds100 = "ESEM"
+natural_key = "selm, bahnhof@51.707,7.454"
+
+[[stations]]
+name = "Soest, Bahnhof"
+eva = 8000076
+ds100 = "ESOT"
+natural_key = "soest, bahnhof@51.578,8.104"
+
+[[stations]]
+name = "Solingen Grünewald"
+eva = 8005597
+ds100 = "KSGR"
+natural_key = "solingen grunewald@51.164,7.080"
+
+[[stations]]
+name = "Solingen Hbf"
+eva = 8000087
+ds100 = "KSO"
+natural_key = "solingen hbf@51.161,7.004"
+
+[[stations]]
+name = "Solingen Schaberg Bf"
+eva = 8005590
+ds100 = "KSS"
+natural_key = "solingen schaberg bf@51.163,7.128"
+
+[[stations]]
+name = "Sondern Bf"
+eva = 8005600
+ds100 = "ESON"
+natural_key = "sondern bf@51.073,7.843"
+
+[[stations]]
+name = "Telgte, Bahnhof"
+eva = 8005834
+ds100 = "ETEL"
+natural_key = "telgte, bahnhof@51.981,7.780"
+
+[[stations]]
+name = "Unna, Bahnhof"
+eva = 8000171
+ds100 = "EUN"
+natural_key = "unna, bahnhof@51.539,7.693"
+
+[[stations]]
+name = "Velbert Nierenhof Bf"
+eva = 8004430
+ds100 = "ENIR"
+natural_key = "velbert nierenhof bf@51.373,7.134"
+
+[[stations]]
+name = "Welver, Bahnhof"
+eva = 8006323
+ds100 = "EWVE"
+natural_key = "welver, bahnhof@51.617,7.955"
+
+[[stations]]
+name = "Werdohl, Bahnhof"
+eva = 8006339
+ds100 = "EWHL"
+natural_key = "werdohl, bahnhof@51.259,7.758"
+
+[[stations]]
+name = "Werl, Bahnhof"
+eva = 8006342
+ds100 = "EWER"
+natural_key = "werl, bahnhof@51.558,7.914"
+
+[[stations]]
+name = "Wesel Blumenkamp Bf"
+eva = 8001030
+ds100 = "EBKP"
+natural_key = "wesel blumenkamp bf@51.696,6.613"
+
+[[stations]]
+name = "Wesel Feldmark Bf"
+eva = 8006356
+ds100 = "EWFK"
+natural_key = "wesel feldmark bf@51.677,6.616"
+
+[[stations]]
+name = "Westönnen, Bahnhof"
+eva = 8006383
+ds100 = "EWN"
+natural_key = "westonnen, bahnhof@51.558,7.961"
+
+[[stations]]
+name = "Wittbräucke"
+eva = 8006505
+ds100 = "EWIK"
+natural_key = "wittbraucke@51.420,7.446"
+
+[[stations]]
+name = "Witten Hbf"
+eva = 8000251
+ds100 = "EWIT"
+natural_key = "witten hbf@51.435,7.330"
+
+[[stations]]
+name = "Wuppertal Barmen Bf"
+eva = 8006596
+ds100 = "KWBA"
+natural_key = "wuppertal barmen bf@51.268,7.196"
+
+[[stations]]
+name = "Wuppertal Hbf"
+eva = 8000266
+ds100 = "KW"
+natural_key = "wuppertal hbf@51.255,7.149"
+
+[[stations]]
+name = "Wuppertal Langerfeld Bf"
+eva = 8006607
+ds100 = "KWLP"
+natural_key = "wuppertal langerfeld bf@51.278,7.243"
+
+[[stations]]
+name = "Wuppertal Oberbarmen Bf"
+eva = 8006719
+ds100 = "KWO"
+natural_key = "wuppertal oberbarmen bf@51.275,7.222"
+
+[[stations]]
+name = "Wuppertal Ronsdorf Bf"
+eva = 8006616
+ds100 = "KWRO"
+natural_key = "wuppertal ronsdorf bf@51.226,7.215"
+
+[[stations]]
+name = "Wuppertal Sonnborn Bf"
+eva = 8006618
+ds100 = "KWSO"
+natural_key = "wuppertal sonnborn bf@51.241,7.097"
+
+[[stations]]
+name = "Wuppertal Steinbeck Bf"
+eva = 8006619
+ds100 = "KWS"
+natural_key = "wuppertal steinbeck bf@51.250,7.140"
+
+[[stations]]
+name = "Wuppertal Unterbarmen Bf"
+eva = 8006620
+ds100 = "KWU"
+natural_key = "wuppertal unterbarmen bf@51.259,7.173"
+
+[[stations]]
+name = "Wuppertal Vohwinkel Bf"
+eva = 8006718
+ds100 = "KWV"
+natural_key = "wuppertal vohwinkel bf@51.233,7.070"
+

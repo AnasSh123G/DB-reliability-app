@@ -60,12 +60,16 @@ TT_BASE_URL = os.environ.get(
     "DBREL_TT_BASE_URL",
     "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1",
 )
-TT_API_KEY, TT_API_KEY_SOURCE = _first_env("DBREL_TT_API_KEY", "TIMETABLES_API_KEY", "DB_API_KEY")
-TT_CLIENT_ID, TT_CLIENT_ID_SOURCE = _first_env("DBREL_TT_CLIENT_ID", "DB_CLIENT_ID")
+TT_API_KEY, TT_API_KEY_SOURCE = _first_env(
+    "DBREL_TT_API_KEY", "TIMETABLES_API_KEY", "TIMETABLES_API_KEY_1", "DB_API_KEY"
+)
+TT_CLIENT_ID, TT_CLIENT_ID_SOURCE = _first_env(
+    "DBREL_TT_CLIENT_ID", "DB_CLIENT_ID", "DB_CLIENT_ID_1"
+)
 
-# The gateway advertises name=default,60 in x-ratelimit-limit. Work to 50 and keep
-# the remainder for retries; the bucket is shared across processes via a lock file.
-TT_RPM = int(os.environ.get("DBREL_TT_RPM", "50"))
+# The gateway advertises name=default,60 in x-ratelimit-limit. Work to 58 and keep
+# a 2-call margin for retries; the bucket is shared across processes via a lock file.
+TT_RPM = int(os.environ.get("DBREL_TT_RPM", "58"))
 TT_RATELIMIT_STATE = DATA_DIR / "tt_ratelimit.json"
 TT_SWEEP_LOCK = DATA_DIR / "tt_sweep.lock"
 

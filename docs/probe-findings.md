@@ -442,3 +442,123 @@ Consequences:
 - Downstream, a stop whose `/plan` bucket was never fetched has no planned time, and the
   poller's "no planned time ⇒ no delay to state" rule discards the `/fchg` value for it.
   Missing early-morning plan buckets thus cost actuals too, not just schedule.
+
+## 25. Station name resolution collapses badly once minor stops are in scope
+
+§13/§22 established the naming-disagreement problem at 21 stations, all major interchanges
+(Hbf-type), where 17/21 resolved automatically. Expanding the tracked set to 238 stations
+within 40 km of Bochum Hbf — ranked by traffic, so most of them are minor suburban and
+S-Bahn stops rather than hubs — dropped the automatic hit rate to **53/238 (22%)**.
+
+The dominant, previously-undocumented cause: **IRIS hyphenates `City District` compounds
+that gtfs.de/DELFI spaces.** `Bochum Dahlhausen` (GTFS) is `Bochum-Dahlhausen` (IRIS);
+confirmed live against a sample of ten Ruhrgebiet suburb stops, 9 hit on the hyphenated
+form:
+
+| GTFS name | IRIS name | eva |
+|---|---|---|
+| `Bochum Ehrenfeld` | `Bochum-Ehrenfeld` | 8001039 |
+| `Bochum Hamme` | `Bochum-Hamme` | 8006710 |
+| `Bochum Langendreer` | `Bochum-Langendreer` | 8000358 |
+| `Bochum Riemke` | `Bochum-Riemke` | 8001035 |
+| `Duisburg Hochfeld Süd` | `Duisburg-Hochfeld Süd` | 8001605 |
+| `Essen Borbeck` | `Essen-Borbeck` | 8001902 |
+| `Essen Kray Süd` | `Essen-Kray Süd` | 8001911 |
+| `Dortmund Kirchhörde` | `Dortmund-Kirchhörde` | 8001534 |
+| `Wattenscheid Höntrop` | `Wattenscheid-Höntrop` | 8006227 |
+
+Only the *first* space is hyphenated — a multi-word district name keeps its own spacing
+(`Duisburg-Hochfeld Süd`, not `Duisburg-Hochfeld-Süd`). `Bochum Höntrop` was the one miss
+in the sample (`Bochum-Höntrop` returns no match at all — the eva-less GTFS entry may not
+exist in IRIS under any spelling).
+
+**A second, equally systematic pattern, found the same way: gtfs.de appends a bare
+trailing `S` to an S-Bahn-only stop that IRIS's name never carries at all** —
+`Essen Steele S` (GTFS) is `Essen-Steele` (IRIS), combining with the hyphenation above.
+This one alone accounted for roughly 20 of the remaining misses after the hyphenation fix,
+concentrated in the Essen, Erkrath, Ratingen and Düsseldorf S-Bahn network:
+
+| GTFS name | IRIS name | eva |
+|---|---|---|
+| `Essen Steele S` | `Essen-Steele` | 8000099 |
+| `Essen Steele Ost S` | `Essen-Steele Ost` | 8001913 |
+| `Essen Eiberg S` | `Essen-Eiberg` | 8001905 |
+| `Essen Frohnhausen S` | `Essen-Frohnhausen` | 8001906 |
+| `Essen Hügel S` | `Essen-Hügel` | 8001908 |
+| `Essen Werden S` | `Essen-Werden` | 8001915 |
+
+Not universal — `Essen Kettwig S`, `Erkrath Hochdahl S` and `Ratingen Hösel S` still return
+no match under either spelling, so some of these stops may simply not exist in IRIS at all,
+or use a name unrelated to the GTFS one.
+
+Fixed in `query_variants` (`timetables/stations.py`): both a hyphenated fallback and an
+S-suffix-stripped-then-hyphenated fallback are now generated whenever the cleaned name
+contains a space, tried only after every earlier variant — including the untouched
+original name — has already failed. Together the two fixes raised the automatic
+resolution rate at the 238-station scale from 53/238 (22%) to 132/238 (55%).
+
+Also observed, not yet worth a general fix: a `City, Bahnhof`-style GTFS name (`Altena,
+Bahnhof`, `Bork, Bahnhof`) frequently fails outright even after the existing comma-splitting
+variant, because `/station/` returns an unrelated substring match rather than 404
+(`Bork` → `Borkum Reede`, a different place with a non-rail eva) — a second instance of the
+§14 trap, not a new pattern. These remain `--manual` cases.
+
+Consequence for scale: expanding past a handful of major hubs means budgeting for a
+meaningfully lower automatic resolution rate, and treating the unresolved list as
+expected — not a sign something is broken — for genuinely obscure halts.
+
+**TODO, not yet done:** at the 238-candidate/40 km scale, both fixes above raised the hit
+rate from 53/238 (22%) to 144/238 (60%), leaving 94 unresolved. The next systematic pattern
+worth fixing is the Rhein-Ruhr city-abbreviation prefixes DELFI uses that IRIS spells out in
+full — `D-Angermund S`, `OB Sterkrade Bf.`, `BOT Feldhausen Bf`, `DO-Knappschaftskrankenhaus`,
+`DU-Obermeiderich Bf`, `GE Buer Nord Bf`, `ME-Neanderthal S` all fail, while the spelled-out
+form resolves directly (confirmed: `Düsseldorf Flughafen` → eva 8000082, where `D-Flughafen`
+finds nothing). Needs a lookup table of the abbreviations in use (D, DO, DU, BOT, OB, GE,
+ME, …) tried as another `query_variants` fallback, same shape as the two fixes above. What's
+left after that is genuine `--manual` territory: names IRIS doesn't have under any spelling,
+and wrong-match rejections like `Bork` → `Borkum Reede` that need a human to find the right
+eva. See the README's "Notes and limits" for the operational summary of this TODO.
+
+## 26. A one-shot full-day `/plan` backfill cannot survive its own runtime past a few hundred stations
+
+The 212-station backfill on 2026-09-16 (`tt-import-plan --date 2026-09-16 --hours 0-23`,
+22:05–23:45 CEST) produced 2,000/5,088 buckets as 404 — at first glance "no service", but
+it isn't:
+
+- **Bochum Hbf and Dortmund Hbf — the busiest stations in the set — 404'd for hours 6, 7
+  and 8**, i.e. the morning commuter peak. No real-world timetable has zero trains at a
+  major Hbf during rush hour, so this cannot be a scheduling gap.
+- **The 404 boundary lines up with wall-clock time, not the station or the hour.** For
+  bucket `(2026-09-16, hour=9)` specifically, the 120 stations reached earliest in the run
+  got HTTP 200; the 92 reached later got 404. Split point: last success `23:01:26`, first
+  404 `23:01:54` — almost exactly 14 hours after `09:00`, matching §24's "`/plan` drops past
+  hours of *today* after roughly 14 hours" exactly. The backfill started at 22:05
+  (22:05 − 14h ≈ 08:05), so every station reached after its target hour turned 14h stale
+  got a 404 regardless of what actually ran.
+
+**Consequence, generalised to all of Germany (8,215 rail parent stations, §6):** a full-day
+backfill needs 8,215 × 24 = 197,160 `/plan` calls, i.e. ≈65.7 hours at 50 rpm — more than
+4× the 14-hour window that makes any given hour's data recoverable at all. This is not
+solved by reordering the sweep. Sweeping hour-outer instead of station-outer (all 8,215
+stations for hour 0, then all for hour 1, …) still needs `8,215/50rpm ≈ 2.74h` per
+hour-wide pass, and hour `h`'s own deadline is `h+14` (hours after day-start), so the sweep
+only keeps up while `(h+1) × 2.74 ≤ h+14` — true only through **h ≈ 6**. Past that, every
+extra hour of schedule costs 2.74h of sweep time but only buys 1h of extra deadline slack,
+so the gap widens monotonically. **No ordering of a flat national sweep can capture more
+than roughly the first 6-7 hours of a day**; the rest is structurally unreachable within a
+single pass, not merely slow to reach.
+
+The same ceiling reappears in the *recurring* cycle, not just the one-time backfill: keeping
+even a short (~8h) rolling schedule window fresh across 8,215 stations costs `8,215 × 8 /
+50rpm ≈ 21.9h` per cycle — again far longer than the `TT_LINGER_S` (6h) ceiling the whole
+cadence design is built around.
+
+**TODO, not yet done:** national coverage cannot be a bigger version of the current
+station-outer/hour-inner backfill — it needs a fundamentally different shape: never attempt
+to recover history, only ever request a short, near-term lookahead window (a few hours) for
+every station, continuously, so requests are always made well before their retention
+deadline rather than racing it. Even that is expensive at 8,215 stations (a 4h-lead sweep
+alone is ≈11h/lap), so priority tiering (§ the `poll_priority` mechanism already in
+`changes_poller.py`, not yet extended to `plan_import.py`) is not an optimisation at
+national scale, it is a hard requirement: most of Germany's ~8,215 stations would need to be
+checked far less often than a curated set of hubs and corridors.

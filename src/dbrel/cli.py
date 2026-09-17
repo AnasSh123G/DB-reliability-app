@@ -453,6 +453,8 @@ def tt_import_plan(
 
     /plan serves only today and tomorrow, so a bucket missed here is lost.
     """
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
+
     from dbrel.timetables.client import TimetablesClient
     from dbrel.timetables.plan_import import import_plan
 
@@ -466,15 +468,23 @@ def tt_import_plan(
 
     with TimetablesClient() as client, session_scope() as session:
         client.require_credentials()
-        result = import_plan(
-            session,
-            client,
-            lead_hours=lead_hours,
-            date=date,
-            hours=hour_list,
-            force=force,
-            progress=typer.echo,
-        )
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        ) as bar:
+            task_id = bar.add_task("plan buckets", total=None)
+            result = import_plan(
+                session,
+                client,
+                lead_hours=lead_hours,
+                date=date,
+                hours=hour_list,
+                force=force,
+                progress=bar.console.print,
+                on_progress=lambda done, total: bar.update(task_id, completed=done, total=total),
+            )
     typer.echo(
         f"  buckets: {result.buckets_fetched} fetched, {result.buckets_skipped} skipped, "
         f"{result.buckets_missing} missing/404"

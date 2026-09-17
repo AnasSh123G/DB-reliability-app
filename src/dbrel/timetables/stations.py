@@ -38,6 +38,9 @@ _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _SUFFIX = re.compile(r"(hauptbahnhof|bahnhof|hbf|bhf|bf|s)$")
 _PAREN_CITY = re.compile(r"^(.*?)\s*\(([^)]+)\)\s*$")
 _TRAILING_BF = re.compile(r"\s+(Bhf|Bf)$")
+# gtfs.de marks an S-Bahn-only stop with a trailing bare 'S' that IRIS does not
+# carry in the name at all ('Essen Steele S' -> IRIS 'Essen-Steele'). See §25.
+_TRAILING_S = re.compile(r"\s+S$")
 
 
 def loose_name(name: str) -> str:
@@ -73,6 +76,23 @@ def query_variants(name: str, ds100: str | None = None) -> list[str]:
     stripped = _TRAILING_BF.sub("", stripped)
     if stripped != cleaned:
         out.append(stripped)
+
+    # IRIS hyphenates 'City District' compounds that DELFI/gtfs.de spaces
+    # ('Bochum Dahlhausen' -> 'Bochum-Dahlhausen'), and drops the trailing
+    # bare 'S' gtfs.de appends to an S-Bahn-only stop ('Essen Steele S' ->
+    # 'Essen-Steele'). Both confirmed live while expanding the tracked set
+    # past the original 15 hubs — see docs/probe-findings.md §25. Applied
+    # to both the Bf-stripped form and the S-stripped form, in that order,
+    # so 'Essen Steele Ost S' reaches 'Essen-Steele Ost' before anything
+    # else is tried; only the first space is hyphenated, so a multi-word
+    # district name keeps its own spacing ('Duisburg-Hochfeld Süd'). All of
+    # this is a pure fallback, reached only after every earlier variant —
+    # including the untouched original name — has already failed.
+    for candidate in dict.fromkeys((stripped, _TRAILING_S.sub("", stripped))):
+        if candidate != stripped:
+            out.append(candidate)
+        if " " in candidate:
+            out.append(candidate.replace(" ", "-", 1))
     # 'Hamburg, Hamburg-Altona' -> 'Hamburg Hamburg-Altona'
     if "," in cleaned:
         out.append(cleaned.replace(",", " ").strip())

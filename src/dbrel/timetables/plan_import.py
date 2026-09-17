@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date as date_cls
 from datetime import datetime, timedelta
@@ -85,6 +86,7 @@ def import_plan(
     hours: list[int] | None = None,
     force: bool = False,
     progress=lambda msg: None,
+    on_progress: Callable[[int, int], None] = lambda done, total: None,
 ) -> PlanImportResult:
     started = time.monotonic()
     result = PlanImportResult()
@@ -112,13 +114,25 @@ def import_plan(
     # the two copies are the same stop.
     by_run: dict[str, dict[int, TtStop]] = defaultdict(dict)
 
-    for station in tracked:
-        if date is not None:
-            buckets = [(date, h) for h in (hours or range(24))]
-        else:
-            buckets = _pending_hours(station.last_plan_hour, lead_hours)
+    # Computed up front, over every station, so on_progress can report a real
+    # total from the first call -- each station's own bucket count differs in
+    # rolling mode (each has its own last_plan_hour watermark).
+    station_buckets: dict[int, list[tuple[str, int]]] = {
+        station.id: (
+            [(date, h) for h in (hours or range(24))]
+            if date is not None
+            else _pending_hours(station.last_plan_hour, lead_hours)
+        )
+        for station in tracked
+    }
+    total_buckets = sum(len(b) for b in station_buckets.values())
+    done_buckets = 0
+    on_progress(done_buckets, total_buckets)
 
-        for day, hour in buckets:
+    for station in tracked:
+        for day, hour in station_buckets[station.id]:
+            done_buckets += 1
+            on_progress(done_buckets, total_buckets)
             # Looked up regardless of status (not just the 200 case): a bucket
             # that previously 404'd still has a row under the unique key
             # (eva, plan_date, plan_hour), and a caller that re-covers the same

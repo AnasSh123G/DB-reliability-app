@@ -465,12 +465,26 @@ def run_cold_start(
     phase("tt-verify-stations", do_verify)
 
     def do_backfill() -> str:
+        from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
+
         today = datetime.now(TZ).date().isoformat()
         with TimetablesClient() as client, session_scope() as session:
             client.require_credentials()
-            result = import_plan(
-                session, client, date=today, hours=list(range(24)), progress=lambda m: None
-            )
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeRemainingColumn(),
+            ) as bar:
+                task_id = bar.add_task("plan-backfill buckets", total=None)
+                result = import_plan(
+                    session,
+                    client,
+                    date=today,
+                    hours=list(range(24)),
+                    progress=bar.console.print,
+                    on_progress=lambda done, total: bar.update(task_id, completed=done, total=total),
+                )
         return (
             f"{result.buckets_fetched} fetched, {result.buckets_missing} missing/404, "
             f"{result.trips_created} trips"
