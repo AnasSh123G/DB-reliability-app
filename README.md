@@ -25,10 +25,11 @@ uv run dbrel collect --every 15m --for 7d  # cold start, then a cycle every 15 m
 ```
 
 Credentials come from https://developers.deutschebahn.com: register, create an app, then
-subscribe that app to the "Timetables" product (free tier, 60 requests/minute). `.env` is
-gitignored, so this is the one thing a fresh clone needs before anything else works —
-`dbrel tt-check` verifies both headers and reports which one is wrong, without ever
-printing them.
+subscribe that app to the "Timetables" product. `.env` is gitignored, so this is the one
+thing a fresh clone needs before anything else works — `dbrel tt-check` verifies both
+headers and reports which one is wrong, without ever printing them. The rate dbrel actually
+requests at is not fixed at whatever the product page advertises — see
+[Request rate](#request-rate) below, or `src/dbrel/config.py` directly.
 
 One command runs the whole pipeline: schema, GTFS import, the tracked stations
 (`config/ruhr_stations.toml` — 212 stations within 70 km of Bochum Hbf, ranked by traffic),
@@ -203,6 +204,11 @@ Credentials go in `.env` as `DB_CLIENT_ID` and `TIMETABLES_API_KEY`. Both header
 required; either alone returns 401.
 
 ### Request rate
+
+The settings below live in `src/dbrel/config.py` (`TT_RPS_FAST`, `TT_RPM_PENALTY`,
+`TT_PENALTY_S`, `TT_FETCH_WORKERS`), each overridable by the matching `DBREL_TT_*` env var.
+That file is the one source of truth for the current rate — nothing else in this repo sets
+or duplicates it.
 
 The gateway advertises 60 requests per **minute** in `x-ratelimit-limit`, but measurement
 says it does not enforce it: 1,500 sequential calls at ~44/s and 300 `/fchg` calls at
@@ -379,19 +385,27 @@ shape.
 - **Station names do not match between the two sources.** Only 72% of IRIS `ppth` names
   resolve to a gtfs.de station even with punctuation-insensitive matching, so the join
   between sources goes through EVA numbers, never names. See `docs/probe-findings.md` §13.
-- **Timetables cannot cover Germany at 60 rpm** (~5,400 stations would need ~518k
-  requests/day against an 86k budget). It covers a tracked subset, which grows by command
-  rather than by migration — `stop_sequence` is sparse, so adding a station fills a gap
-  instead of renumbering any history.
-- **TODO: a one-shot full-day `/plan` backfill cannot be scaled to all of Germany at all,
-  not just slowly** — confirmed live on the 212-station backfill (§26): major hubs 404'd
-  during morning rush hour because their target hour had already aged past `/plan`'s ~14h
-  same-day retention (§24) by the time the backfill reached them, not because no train ran.
-  At Germany's ~8,215 rail stations (§6) a full-day sweep needs ~65.7h at 50 rpm — over 4×
-  the 14h retention window — and no reordering fixes it: even sweeping hour-outer instead
-  of station-outer, the math (`(h+1)×2.74h ≤ h+14h`) only holds through hour ≈6, so a flat
-  national sweep can never capture more than the first 6-7 hours of any day. The same
-  ceiling hits the *recurring* cycle too (an 8h rolling window across 8,215 stations costs
+- **Timetables covers a tracked subset, not all of Germany** — it grows by command rather
+  than by migration, since `stop_sequence` is sparse, so adding a station fills a gap
+  instead of renumbering any history. The old form of this note put a number on the
+  ceiling (~5,400 stations needing ~518k requests/day against an 86k budget at 60/**min**);
+  that number no longer holds now that the client runs at 60/**s** by default (§27,
+  `src/dbrel/config.py`), so it is not repeated here rather than left stale. Whether the
+  full national set is now actually reachable hasn't been tested — see the TODO below,
+  which has the same caveat.
+- **TODO: whether a one-shot full-day `/plan` backfill can be scaled to all of Germany is
+  now an open question again, not a settled "no."** §26 confirmed live on the 212-station
+  backfill that major hubs 404'd during morning rush hour because their target hour had
+  already aged past `/plan`'s ~14h same-day retention (§24) by the time the backfill
+  reached them, not because no train ran, and calculated that a flat national sweep at
+  **50 rpm** — the rate assumed at the time — could never capture more than the first 6-7
+  hours of any day (math: `(h+1)×2.74h ≤ h+14h` only holds through hour ≈6). §27
+  subsequently found the gateway does not actually enforce that figure, and the live
+  client now runs at 60/**s**, not 60/min — two orders of magnitude faster than this
+  calculation assumed. The conclusion has not been re-derived at the new rate (that needs
+  a sustained, not burst, test against the real gateway — §27's caveats), so this remains a
+  TODO rather than a claim either way. The same recompute affects the *recurring* cycle too
+  (an 8h rolling window across 8,215 stations costs
   ~21.9h/cycle, vs. the 6h `TT_LINGER_S` budget). Real fix, not yet done: never backfill
   history at national scale — only ever request a short near-term lookahead, continuously,
   and extend `poll_priority` tiering (already live in `changes_poller.py`) into

@@ -262,7 +262,9 @@ def run_tt_poll(
         .all()
     )
     # Priority tiering: a station with priority N is polled every Nth sweep, so a
-    # large set can keep high resolution where it matters within 60 rpm.
+    # large set can keep high resolution where it matters within the request
+    # budget. The actual rate is not a fixed number -- see config.py (TT_RPS_FAST /
+    # TT_RPM_PENALTY) and docs/probe-findings.md §27.
     tracked = [
         st
         for st in tracked

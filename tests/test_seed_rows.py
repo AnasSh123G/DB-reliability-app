@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from dbrel.db import Base
 from dbrel.identity import SOURCE_SYNTH, SOURCE_TT
 from dbrel.models import QUALITY_CANCELLED, QUALITY_RECORDED, Station, StationStop, Train, Trip, TripStop
-from dbrel.seed import clear_synthetic, seed_synthetic
+from dbrel.seed import _runs_on, clear_synthetic, seed_synthetic
 from dbrel.timetables.runs import tt_feed_version
 
 
@@ -43,11 +43,27 @@ def session():
         yield s
 
 
+def _expected_runs(days: int, seed: int, train_id: int = 1) -> int:
+    """How many of the `days` dates this train is timetabled on.
+
+    Not simply `days`: DOW_SERVICE_RATE drops a share of services at weekends, so
+    the count depends on which weekdays the window happens to cover.
+    """
+    last = date.today() - timedelta(days=1)
+    first = last - timedelta(days=days - 1)
+    return sum(
+        1
+        for offset in range(days)
+        if _runs_on(seed, train_id, (first + timedelta(days=offset)).weekday())
+    )
+
+
 def test_seeds_the_requested_number_of_days(session):
+    expected = _expected_runs(10, seed=1)
     result = seed_synthetic(session, days=10, seed=1)
-    assert result.trips_written == 10
-    assert result.stops_written == 20  # two stops per run
-    assert session.scalar(select(func.count()).select_from(Trip)) == 10
+    assert result.trips_written == expected
+    assert result.stops_written == expected * 2  # two stops per run
+    assert session.scalar(select(func.count()).select_from(Trip)) == expected
 
 
 def test_every_seeded_row_is_tagged_synthetic(session):
@@ -113,7 +129,7 @@ def test_reseeding_is_a_no_op(session):
     seed_synthetic(session, days=6, seed=1)
     after = session.scalar(select(func.count()).select_from(TripStop))
     assert after == before, "a second run must not duplicate anything"
-    assert first.trips_written == 6
+    assert first.trips_written == _expected_runs(6, seed=1)
 
 
 def test_clear_removes_everything_it_wrote(session):

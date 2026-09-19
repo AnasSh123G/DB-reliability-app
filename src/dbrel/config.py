@@ -67,6 +67,11 @@ TT_CLIENT_ID, TT_CLIENT_ID_SOURCE = _first_env(
     "DBREL_TT_CLIENT_ID", "DB_CLIENT_ID", "DB_CLIENT_ID_1"
 )
 
+# --- Request rate: this is the ONLY place these numbers are set --------------
+# Nothing else in the app, its docs, or its scripts should assert a specific rate;
+# they should point here instead. (docs/probe-findings.md §27 has the measurement
+# this is based on; README's "Request rate" section explains it for a reader.)
+#
 # The gateway advertises name=default,60 in x-ratelimit-limit, but measurement says it
 # does not enforce it: 1,500 sequential /station calls at ~44/s and 300 /fchg calls at
 # ~2,560/min both drew zero 429s, with x-ratelimit-remaining pinned at 0 throughout.

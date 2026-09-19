@@ -781,11 +781,17 @@ def seed_demo(
     days: int = typer.Option(28, help="how many service dates to invent"),
     seed: int = typer.Option(20260914, help="rng seed; same seed, same data"),
     clear: bool = typer.Option(False, help="remove seeded rows instead of writing them"),
+    averages: bool = typer.Option(
+        False, help="also compute synthetic averages (off by default: seeding writes facts only)"
+    ),
 ) -> None:
     """Invent plausible past runs so the UI has something to show.
 
     Seeded runs are tagged trip.source='synth' and sit on dates strictly before the
     earliest real run, so they can never be confused with or collide against one.
+
+    Writes trip and trip_stop only. Averages are a separate, explicit step so the
+    averaging logic is always exercised against facts it did not produce.
     """
     from dbrel.derive.delay_averages import run_delay_averages
     from dbrel.seed import clear_synthetic, seed_synthetic
@@ -807,8 +813,11 @@ def seed_demo(
             f"  {result.trips_written:,} runs, {result.stops_written:,} stops "
             f"({result.first_date} .. {result.last_date}, {result.elapsed_s:.1f}s)"
         )
-        averages = run_delay_averages(session, basis=BASIS_SYNTH, full=True, progress=typer.echo)
-        typer.echo(f"  {averages.pairs_written:,} synthetic averages computed")
+        if not averages:
+            typer.echo("  averages not computed (pass --averages to compute them)")
+            return
+        computed = run_delay_averages(session, basis=BASIS_SYNTH, full=True, progress=typer.echo)
+        typer.echo(f"  {computed.pairs_written:,} synthetic averages computed")
 
 
 @app.command("serve")

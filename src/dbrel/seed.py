@@ -15,6 +15,12 @@ Two rules keep this honest:
 Only the actuals are invented. What runs, where it calls and at what planned time
 all come from the real station_stop pattern, so a seeded board shows real trains at
 real times — just with delays that never happened.
+
+The day of the week is a first-class dimension, because that is what the `dow`
+column on train_station_delay and the seven day_* views exist to separate. Two
+tables shape it: DOW_DELAY_SCALE moves the delay level, and DOW_SERVICE_RATE
+thins the timetable at weekends, so a Sunday differs from a Tuesday in what runs
+as well as in how late it is.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ from dbrel.identity import SEGMENT_FV, SEGMENT_RV, SEGMENT_S, SOURCE_SYNTH
 from dbrel.models import (
     BASIS_SYNTH,
     QUALITY_CANCELLED,
+    QUALITY_NO_DATA,
     QUALITY_RECORDED,
     StationStop,
     Train,
@@ -70,41 +77,80 @@ class DelayProfile:
     tail_mu: float
     tail_sigma: float
     cancel_rate: float
+    no_data_rate: float
     target_mean_s: float
 
 
-# Calibrated against published German punctuality: long distance is the outlier,
-# with roughly three in eight trains over six minutes late.
+# Fitted to the one complete day this project has actually measured: Friday
+# 2026-09-18 over the 212 tracked Ruhr stations, quality='RECORDED', is_handover=0
+# (24,580 stops, mean departure delay 333.5 s). Deliberately not the published
+# national figures, which are far more optimistic than this sample on every
+# segment — RV alone measured 0.68 punctual against a published 0.90.
+#
+# How each number was obtained, so it can be refitted when more days exist:
+#   punctual_rate  share of stops with dep_delay_s < PUNCTUAL_S
+#   tail_mu        ln(median of dep_delay_s - PUNCTUAL_S over the tail)
+#   tail_sigma     sqrt(2 * ln(tail mean / tail median))
+#   shape_k        solved from mean = p*(PUNCTUAL_S/(k+1) - early) + (1-p)*(PUNCTUAL_S + L)
+#   cancel_rate    share of the segment's stops graded CANCELLED
+#   no_data_rate   share graded NO_DATA
+# early_offset_s is 0 on every segment: the measured share of early departures is
+# between 0.0% and 0.3%, so the 20-30 s offset the published profiles carried was
+# inventing early trains that this railway does not run.
+#
+# tests/test_seed.py draws from each profile and asserts the realised figures,
+# which is what turns these constants from assertion into contract.
 SEGMENT_PROFILES: dict[str, DelayProfile] = {
     SEGMENT_FV: DelayProfile(
-        punctual_rate=0.62,
+        punctual_rate=0.3441,
+        # The one segment where the three measured figures are not jointly
+        # satisfiable: at the measured tail mean the tail alone already accounts
+        # for the whole mean, leaving the punctual block nothing to contribute.
+        # tail_sigma is therefore fitted to the tail *median* and then trimmed
+        # (0.764 -> 0.662) until k lands in a sane range, which costs a little of
+        # the most extreme tail and keeps the mean and punctuality exact.
         shape_k=1.5,
-        early_offset_s=30,
-        tail_mu=6.37,
-        tail_sigma=0.90,
-        cancel_rate=0.020,
-        target_mean_s=540.0,
+        early_offset_s=0,
+        tail_mu=6.867,
+        tail_sigma=0.662,
+        cancel_rate=0.041,
+        no_data_rate=0.031,
+        target_mean_s=1069.2,
     ),
     SEGMENT_RV: DelayProfile(
-        punctual_rate=0.90,
-        shape_k=3.0,
-        early_offset_s=30,
-        tail_mu=5.91,
-        tail_sigma=1.00,
-        cancel_rate=0.015,
-        target_mean_s=150.0,
+        punctual_rate=0.6827,
+        shape_k=5.58,
+        early_offset_s=0,
+        tail_mu=6.040,
+        tail_sigma=0.985,
+        cancel_rate=0.020,
+        no_data_rate=0.055,
+        target_mean_s=368.1,
     ),
     SEGMENT_S: DelayProfile(
-        punctual_rate=0.93,
-        shape_k=4.0,
-        early_offset_s=20,
-        tail_mu=5.64,
-        tail_sigma=1.00,
-        cancel_rate=0.010,
-        target_mean_s=105.0,
+        punctual_rate=0.7905,
+        shape_k=4.19,
+        early_offset_s=0,
+        tail_mu=5.704,
+        tail_sigma=0.974,
+        cancel_rate=0.022,
+        no_data_rate=0.011,
+        target_mean_s=231.2,
     ),
 }
 _DEFAULT_PROFILE = SEGMENT_PROFILES[SEGMENT_RV]
+
+# Indexed by Python's weekday(): 0=Monday..6=Sunday, the same convention as the
+# dow column and src/dbrel/views.py. Friday is 1.0 by construction — the profiles
+# above are fitted to a real Friday, so every other day is expressed relative to
+# it and a synthetic Friday stays directly comparable to the measured one.
+DOW_DELAY_SCALE = (1.02, 0.94, 0.95, 1.01, 1.00, 0.78, 0.72)
+
+# Share of the weekday timetable that runs at all. Which trains are dropped is
+# decided per (train, weekday) and not per date, so the same services are missing
+# every Saturday — a fresh random subset each week is not a timetable, and it
+# would smear the weekday signal these views exist to show.
+DOW_SERVICE_RATE = (1.0, 1.0, 1.0, 1.0, 1.0, 0.70, 0.55)
 
 # A train never arrives more than three minutes early in practice, and a delay
 # beyond four hours is a different kind of event than the one being modelled.
@@ -146,6 +192,67 @@ def _station_bias(seed: int, station_id: int) -> int:
     stations apart without moving the segment's overall figure.
     """
     return int(max(-90, min(120, random.Random(seed ^ (station_id * 2_654_435_761)).gauss(0, 45))))
+
+
+def _train_bias(seed: int, train_id: int) -> int:
+    """A fixed per-train offset, so some services are reliably worse than others.
+
+    _station_bias spreads the stations apart; without this, every train calling at
+    a given station would converge on that station's number and a per-train
+    average would carry no information. Mean-zero for the same reason, and drawn
+    from the train id so one train keeps its character across the whole month.
+    """
+    return int(max(-150, min(150, random.Random(seed ^ (train_id * 2_246_822_519)).gauss(0, 60))))
+
+
+def _raw_date_shock(seed: int, service_date: str) -> float:
+    """One offset shared by every run on a given date, before centring.
+
+    Stands in for that day's network-wide conditions — weather, a signal failure,
+    an engineering possession. It is what makes the four synthetic Fridays differ
+    from each other rather than being four draws from one distribution.
+    """
+    # int(YYYYMMDD), not hash(): str.__hash__ is salted per process unless
+    # PYTHONHASHSEED is set, and "same seed, same data" is a documented promise.
+    key = int(service_date.replace("-", "")) * 2_654_435_761
+    return max(-120.0, min(180.0, random.Random(seed ^ key).gauss(0, 45)))
+
+
+def date_shocks(seed: int, service_dates: list[str]) -> dict[str, int]:
+    """Per-date shocks, centred so each weekday's own shocks sum to zero.
+
+    Centring is not cosmetic. A month holds only four of each weekday, so the mean
+    of four draws at sigma=45 has a standard error of ~22 s — comparable to the
+    gaps in DOW_DELAY_SCALE itself. Uncentred, the noise routinely outranks the
+    signal: on the first real 28-day run the four Sundays happened to average
+    +51 s and the four Saturdays -11.5 s, which flipped Sunday above Saturday and
+    inverted the weekday ordering the seven views exist to show.
+
+    Subtracting each weekday's own mean keeps every date different from its
+    neighbours while making the weekday effect exactly what DOW_DELAY_SCALE says
+    it is. Both properties were asked for; this is what lets them coexist.
+    """
+    by_dow: dict[int, list[str]] = defaultdict(list)
+    for service_date in service_dates:
+        by_dow[date_cls.fromisoformat(service_date).weekday()].append(service_date)
+
+    shocks: dict[str, int] = {}
+    for dates in by_dow.values():
+        raw = {d: _raw_date_shock(seed, d) for d in dates}
+        mean = sum(raw.values()) / len(raw)
+        for service_date, value in raw.items():
+            shocks[service_date] = int(round(value - mean))
+    return shocks
+
+
+def _runs_on(seed: int, train_id: int, dow: int) -> bool:
+    """Whether this train is part of the timetable on this weekday at all.
+
+    Deterministic in (train_id, dow), so a service absent one Saturday is absent
+    every Saturday. See DOW_SERVICE_RATE.
+    """
+    draw = random.Random(seed ^ (train_id * 40_503) ^ (dow * 2_654_435_761)).random()
+    return draw < DOW_SERVICE_RATE[dow]
 
 
 def _profile_for(segment: str | None) -> DelayProfile:
@@ -227,22 +334,27 @@ def seed_synthetic(
         return result
 
     now = int(time.time())
-    service_dates = [
-        (first + timedelta(days=offset)).isoformat() for offset in range((last - first).days + 1)
-    ]
+    # (date, weekday, that day's shared shock) — the weekday and the shock are
+    # properties of the date, so they are resolved once rather than per train.
+    days = [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+    shocks = date_shocks(seed, [day.isoformat() for day in days])
+    calendar = [(day.isoformat(), day.weekday(), shocks[day.isoformat()]) for day in days]
 
     trip_rows: list[dict] = []
     stop_rows: list[dict] = []
 
     for train_id, stops in by_train.items():
         profile = _profile_for(segments.get(train_id))
-        for service_date in service_dates:
+        train_bias = _train_bias(seed, train_id)
+        for service_date, dow, date_shock in calendar:
+            if not _runs_on(seed, train_id, dow):
+                continue
             cancelled_run = rng.random() < profile.cancel_rate
 
             # One base delay per run, then a random walk along it. Independent
             # per-stop draws would make every station's average identical and the
             # station board pointless — a late train is late for a while.
-            base = sample_delay(rng, profile)
+            base = int(sample_delay(rng, profile) * DOW_DELAY_SCALE[dow])
             walk = 0
 
             built: list[dict] = []
@@ -281,7 +393,34 @@ def seed_synthetic(
                 # The clamp below is the only floor, and it is wide enough to bind
                 # rarely.
                 walk += int(rng.gauss(0, 70))
-                delay = base + walk + _station_bias(seed, station_id)
+
+                # A stop nobody managed to read. Drawn per stop rather than per
+                # run because that is what a real gap is — the train ran, one
+                # value went unobserved — and the walk above is advanced first so
+                # the gap does not alter what the following stops look like.
+                if rng.random() < profile.no_data_rate:
+                    built.append(
+                        {
+                            "stop_sequence": seq,
+                            "station_id": station_id,
+                            "station_stop_id": ss_id,
+                            "supposed_arrival_utc": supposed_arr,
+                            "supposed_departure_utc": supposed_dep,
+                            "actual_arrival_utc": None,
+                            "actual_departure_utc": None,
+                            "arr_delay_s": None,
+                            "dep_delay_s": None,
+                            "quality": QUALITY_NO_DATA,
+                            "cancelled": 0,
+                            "arr_cancelled": 0,
+                            "dep_cancelled": 0,
+                            "cancelled_at_utc": None,
+                            "planned_platform": platform,
+                        }
+                    )
+                    continue
+
+                delay = base + walk + _station_bias(seed, station_id) + train_bias + date_shock
                 dep_delay = max(_MIN_DELAY_S, min(_MAX_DELAY_S, delay))
                 # Arriving slightly later than the departure delay: the train makes
                 # up a little of it standing at the platform.
@@ -339,7 +478,9 @@ def seed_synthetic(
                     "max_delay_s": max(delays) if delays else None,
                     "n_stops": len(built),
                     "n_stops_tracked": len(built),
-                    "n_stops_observed": 0 if cancelled_run else len(built),
+                    "n_stops_observed": sum(
+                        1 for row in built if row["quality"] == QUALITY_RECORDED
+                    ),
                     "quality": QUALITY_CANCELLED if cancelled_run else QUALITY_RECORDED,
                     "rule_version": RULE_VERSION,
                     # Stamped so the averages watermark treats these as settled;
@@ -389,7 +530,11 @@ def seed_synthetic(
                     "is_handover": 0,
                     "added": 0,
                     "changed_platform": None,
-                    "last_observed_at": now,
+                    # A gap row is by definition one nothing was ever read for, the
+                    # same shape derive/finalize_tt.py writes. It also keeps such
+                    # rows out of the incremental averaging pass, which watermarks
+                    # on last_observed_at.
+                    "last_observed_at": None if row["quality"] == QUALITY_NO_DATA else now,
                     "read_lag_s": int(rng.random() * 3300) + 300,
                     "supposed_departure_hour": local_hour(departure) if departure else None,
                 }

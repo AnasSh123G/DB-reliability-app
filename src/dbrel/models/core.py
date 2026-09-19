@@ -89,7 +89,8 @@ class Station(Base):
     # INSERTs stations whose natural_key is new and never updates an existing row.
     tracked: Mapped[int] = mapped_column(Integer, default=0)
     # 1 = every sweep, 2 = every other, 3 = every third. Lets a large set keep
-    # high resolution where it matters without exceeding 60 rpm.
+    # high resolution where it matters within the request budget -- see
+    # config.py (TT_RPS_FAST / TT_RPM_PENALTY) for the actual current rate.
     poll_priority: Mapped[int] = mapped_column(Integer, default=1)
     tracked_at: Mapped[int | None] = mapped_column(Integer)
     # 'YYYY-MM-DD:HH' high-water mark for the rolling /plan importer.

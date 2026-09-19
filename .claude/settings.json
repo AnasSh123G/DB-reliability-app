@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 -header -column data/dbrel.sqlite ' *)",
+      "Bash(sqlite3 -header -column data/dbrel.sqlite \"SELECT basis, COUNT\\(*\\) n FROM train_station_delay GROUP BY basis;\")",
+      "Bash(sqlite3 -header -column data/dbrel.sqlite \"SELECT source, COUNT\\(*\\) n FROM trip GROUP BY source;\")"
+    ]
+  }
+}
