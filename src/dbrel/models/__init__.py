@@ -20,7 +20,7 @@ from dbrel.models.core import (
     Trip,
     TripStop,
 )
-from dbrel.models.meta import FeedVersion, Route
+from dbrel.models.meta import FeedVersion, PublicHoliday, Route
 from dbrel.models.timetables import (
     TtMessage,
     TtPlanFetch,
@@ -37,6 +37,7 @@ __all__ = [
     "QUALITY_RECORDED",
     "TRUSTED_QUALITIES",
     "FeedVersion",
+    "PublicHoliday",
     "Route",
     "SearchAlias",
     "ServiceLine",

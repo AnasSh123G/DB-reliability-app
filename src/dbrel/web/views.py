@@ -130,17 +130,30 @@ def line_stations(request, line_id: int):
 
 
 def line_trips_around(request, line_id: int):
+    date_str = request.GET.get("date", "")
     try:
         direction = int(request.GET.get("direction", ""))
         station_id = int(request.GET.get("station", ""))
         clock = datetime.strptime(request.GET.get("time", ""), "%H:%M")
+        datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
         return JsonResponse(
-            {"error": "need direction (0/1), station (id) and time (HH:MM)"}, status=400
+            {
+                "error": "need direction (0/1), station (id), date (YYYY-MM-DD) "
+                "and time (HH:MM)"
+            },
+            status=400,
         )
     time_of_day_s = clock.hour * 3600 + clock.minute * 60
     with read_scope() as session:
-        result = queries.trips_around(session, line_id, direction, station_id, time_of_day_s)
+        day_type = queries.resolve_day_type(session, date_str)
+        if day_type is None:
+            return JsonResponse({"error": f"unusable date {date_str!r}"}, status=400)
+        result = queries.trips_around(
+            session, line_id, direction, station_id, time_of_day_s, day_type=day_type
+        )
     if result is None:
         return JsonResponse({"error": "no such line, direction or station"}, status=404)
+    result["date"] = date_str
+    result["day_type"] = day_type
     return JsonResponse(result)

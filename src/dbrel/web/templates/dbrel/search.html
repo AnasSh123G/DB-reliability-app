@@ -7,9 +7,10 @@
 <section class="browse">
   <h2>Find a train around a time</h2>
   <p class="hint">
-    Pick a line, its direction, a stop along it and a time of day — no date, since
-    the schedule repeats every day. You'll get the last two calls at or before
-    that time and the next one after, each with its scheduled and average timings.
+    Pick a line, its direction, a stop along it, then a date and time. You'll get
+    the last two calls at or before that time and the next one after, each with
+    its scheduled time and its typical lateness — averaged over Sundays and
+    holidays if the date is one, over ordinary weekdays otherwise.
   </p>
 
   <div class="browse-fields">
@@ -34,6 +35,11 @@
       <select id="browse-station" disabled>
         <option value="">Choose a direction first</option>
       </select>
+    </div>
+
+    <div class="field">
+      <label for="browse-date">Date</label>
+      <input id="browse-date" type="date" disabled>
     </div>
 
     <div class="field">

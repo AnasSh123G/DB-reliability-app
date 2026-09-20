@@ -7,9 +7,16 @@
   const lineBox = document.getElementById('browse-line-typeahead');
   const directionSelect = document.getElementById('browse-direction');
   const stationSelect = document.getElementById('browse-station');
+  const dateInput = document.getElementById('browse-date');
   const timeInput = document.getElementById('browse-time');
   const results = document.getElementById('browse-results');
   if (!lineInput || !results) return;
+
+  // Today, in the viewer's own calendar -- a plain default, not a claim about
+  // which day type it is. The date field itself is what decides that.
+  const today = new Date();
+  dateInput.value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-` +
+    `${String(today.getDate()).padStart(2, '0')}`;
 
   let lineId = null;
   let lineList = null;
@@ -44,6 +51,7 @@
     lineInput.value = name;
     lineBox.querySelector('.typeahead-results').hidden = true;
     resetSelect(stationSelect, 'Choose a direction first');
+    dateInput.disabled = true;
     timeInput.disabled = true;
     results.innerHTML = '';
 
@@ -58,6 +66,7 @@
     lineId = null;
     resetSelect(directionSelect, 'Choose a line first');
     resetSelect(stationSelect, 'Choose a direction first');
+    dateInput.disabled = true;
     timeInput.disabled = true;
     results.innerHTML = '';
 
@@ -107,6 +116,7 @@
 
   directionSelect.addEventListener('change', () => {
     resetSelect(stationSelect, 'Choose a direction first');
+    dateInput.disabled = true;
     timeInput.disabled = true;
     results.innerHTML = '';
     const direction = directionSelect.value;
@@ -116,6 +126,7 @@
       .then((r) => r.json())
       .then((data) => {
         fillSelect(stationSelect, data.stations, 'name', 'id');
+        dateInput.disabled = false;
         timeInput.disabled = false;
       })
       .catch(() => resetSelect(stationSelect, 'Could not load stops'));
@@ -130,6 +141,8 @@
   }
 
   function renderTrips(data) {
+    const poolLabel = data.day_type === 'SUNDAY_HOLIDAY'
+      ? 'averaged over Sundays &amp; holidays' : 'averaged over weekdays';
     if (!data.trips.length) {
       results.innerHTML = '<p class="empty">This stop has no scheduled calls in that direction.</p>';
       return;
@@ -150,24 +163,29 @@
         </div>
       </li>`).join('');
     results.innerHTML = `
-      <h3 class="direction-head">${data.station.name} &middot; ${data.line.name}</h3>
+      <h3 class="direction-head">${data.station.name} &middot; ${data.line.name}
+        <span class="n">${poolLabel}</span>
+      </h3>
       <ol class="btrips">${items}</ol>`;
   }
 
   function lookup() {
     const direction = directionSelect.value;
     const station = stationSelect.value;
+    const date = dateInput.value;
     const time = timeInput.value;
-    if (lineId === null || direction === '' || station === '' || !time) return;
+    if (lineId === null || direction === '' || station === '' || !date || !time) return;
 
-    fetch(`/api/line/${lineId}/around?direction=${direction}&station=${station}&time=${time}`)
+    fetch(`/api/line/${lineId}/around?direction=${direction}&station=${station}` +
+      `&date=${date}&time=${time}`)
       .then((r) => r.json())
       .then(renderTrips)
       .catch(() => {
-        results.innerHTML = '<p class="empty">Could not load trips for that stop and time.</p>';
+        results.innerHTML = '<p class="empty">Could not load trips for that stop, date and time.</p>';
       });
   }
 
   stationSelect.addEventListener('change', lookup);
+  dateInput.addEventListener('change', lookup);
   timeInput.addEventListener('change', lookup);
 })();

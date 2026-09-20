@@ -399,7 +399,7 @@ footer {
 
 .browse-fields {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
   gap: 0.8rem;
   margin-top: 1rem;
 }
@@ -486,6 +486,5 @@ footer {
 .bavg.none { font-style: italic; opacity: 0.75; }
 
 @media (max-width: 42rem) {
-  .browse-fields { grid-template-columns: 1fr 1fr; }
   .btrip { grid-template-columns: 1fr; }
 }

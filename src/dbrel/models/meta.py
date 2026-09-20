@@ -63,3 +63,22 @@ class Route(Base):
 
     def __repr__(self) -> str:
         return f"<Route {self.short_name!r} type={self.route_type}>"
+
+
+class PublicHoliday(Base):
+    """One date the timetable treats as a Sunday, whatever day of the week it falls on.
+
+    The table, not holidays_de's computus, is what averaging actually checks: see
+    dbrel.holidays_de.day_type_of. The computus only ever adds NRW's own holidays
+    to this table (ensure_holidays, additive-only) so the real ones stay correct
+    without upkeep; a row can also be added by hand for a day that is not on any
+    calendar but should be graded as one anyway.
+    """
+
+    __tablename__ = "public_holiday"
+
+    date: Mapped[str] = mapped_column(String(10), primary_key=True)  # 'YYYY-MM-DD'
+    name: Mapped[str | None] = mapped_column(String(64))
+
+    def __repr__(self) -> str:
+        return f"<PublicHoliday {self.date} {self.name!r}>"

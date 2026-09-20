@@ -24,6 +24,7 @@ from dbrel.config import (
     TZ,
 )
 from dbrel.gtfs.timeutil import format_gtfs_time, local_date, service_date_anchor
+from dbrel.holidays_de import day_type_of, load_holiday_dates
 from dbrel.identity import prefix_range, search_norm
 from dbrel.models import (
     DAY_TYPE_WEEKDAY,
@@ -716,6 +717,17 @@ def line_stations(session: Session, line_id: int, direction: int) -> list[dict] 
     return [{"id": station_id, "name": names[station_id]} for station_id in ordered_ids]
 
 
+def resolve_day_type(session: Session, service_date: str) -> str | None:
+    """Which average pool a calendar date reads from -- WEEKDAY or SUNDAY_HOLIDAY.
+
+    Checks the public_holiday table (day_type_of), not just the day of the week,
+    so a date entered on the browse widget gets whichever pool the holiday table
+    says it belongs to -- including a date that is a holiday for no reason a
+    calendar rule would know about.
+    """
+    return day_type_of(service_date, load_holiday_dates(session))
+
+
 def trips_around(
     session: Session,
     line_id: int,
@@ -727,9 +739,12 @@ def trips_around(
 ) -> dict | None:
     """The 2 scheduled calls at or before a time, and the 1 right after.
 
-    The schedule is a recurring daily pattern with no date attached -- that is
-    the point of asking for a time rather than a date and time -- so "before" and
-    "after" wrap around midnight rather than running out at either end of the day.
+    The schedule is a recurring daily pattern -- that is the point of asking for
+    a time of day rather than a timestamp -- so "before" and "after" wrap around
+    midnight rather than running out at either end of the day. `day_type` picks
+    which pooled average is attached to each trip; it does not affect which
+    trips are considered, since the underlying timetable pattern is itself
+    dateless. Callers with an actual calendar date use resolve_day_type first.
     """
     line = session.get(ServiceLine, line_id)
     station = session.get(Station, station_id)

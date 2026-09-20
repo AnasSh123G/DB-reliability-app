@@ -10,15 +10,26 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
+from dbrel.db import Base
 from dbrel.holidays_de import (
     day_type_of,
     easter_sunday,
+    ensure_holidays,
     holiday_name,
     is_public_holiday,
+    load_holiday_dates,
     nrw_holidays,
 )
-from dbrel.models import DAY_TYPE_SUNDAY_HOLIDAY, DAY_TYPE_WEEKDAY
+from dbrel.models import DAY_TYPE_SUNDAY_HOLIDAY, DAY_TYPE_WEEKDAY, PublicHoliday
+
+# The set day_type_of is actually asked to check against, standing in for a real
+# public_holiday table loaded via load_holiday_dates. Built from the same NRW
+# rules so the DayType tests below still exercise "is this date a holiday",
+# just decoupled from the database that carries the answer in the real app.
+NRW_2026 = {d.isoformat() for d in nrw_holidays(2026)}
 
 
 @pytest.mark.parametrize(
@@ -91,21 +102,21 @@ def test_a_normal_day_is_not_a_holiday():
 class TestDayType:
     def test_plain_weekdays_are_weekdays(self):
         for day in ("2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"):
-            assert day_type_of(day) == DAY_TYPE_WEEKDAY, day
+            assert day_type_of(day, NRW_2026) == DAY_TYPE_WEEKDAY, day
 
     def test_saturday_is_a_weekday(self):
         """A reduced timetable, but a working day — it pools with Mon-Fri."""
         assert date.fromisoformat("2026-09-19").weekday() == 5
-        assert day_type_of("2026-09-19") == DAY_TYPE_WEEKDAY
+        assert day_type_of("2026-09-19", NRW_2026) == DAY_TYPE_WEEKDAY
 
     def test_sunday_is_not(self):
         assert date.fromisoformat("2026-09-20").weekday() == 6
-        assert day_type_of("2026-09-20") == DAY_TYPE_SUNDAY_HOLIDAY
+        assert day_type_of("2026-09-20", NRW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
 
     def test_a_holiday_on_a_saturday_is_still_a_holiday(self):
         """2026-10-03, Tag der Deutschen Einheit, falls on a Saturday."""
         assert date.fromisoformat("2026-10-03").weekday() == 5
-        assert day_type_of("2026-10-03") == DAY_TYPE_SUNDAY_HOLIDAY
+        assert day_type_of("2026-10-03", NRW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
 
     def test_a_holiday_midweek_is_a_holiday(self):
         """2026-05-14, Christi Himmelfahrt, falls on a Thursday.
@@ -114,8 +125,51 @@ class TestDayType:
         it is special, and a weekday-only split would average it into Thursdays.
         """
         assert date.fromisoformat("2026-05-14").weekday() == 3
-        assert day_type_of("2026-05-14") == DAY_TYPE_SUNDAY_HOLIDAY
+        assert day_type_of("2026-05-14", NRW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
+
+    def test_only_consults_the_given_set_not_the_calendar_rules(self):
+        """The table is the source of truth, not a cache of the computus.
+
+        A real NRW holiday absent from the set does not count -- and a date with
+        no calendar significance at all does, once it is in the set. This is
+        what lets a hand-added test date behave exactly like a real holiday.
+        """
+        assert day_type_of("2026-10-03", set()) == DAY_TYPE_WEEKDAY
+        assert day_type_of("2026-08-26", {"2026-08-26"}) == DAY_TYPE_SUNDAY_HOLIDAY
 
     @pytest.mark.parametrize("bad", [None, "", "not-a-date", "2026-13-01"])
     def test_unusable_input_returns_none_rather_than_guessing(self, bad):
-        assert day_type_of(bad) is None
+        assert day_type_of(bad, NRW_2026) is None
+
+
+@pytest.fixture
+def session():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine, future=True) as s:
+        yield s
+
+
+class TestHolidayTable:
+    def test_ensure_holidays_populates_a_years_nrw_dates(self, session):
+        added = ensure_holidays(session, [2026])
+        assert added == 11
+        assert load_holiday_dates(session) == NRW_2026
+
+    def test_ensure_holidays_is_additive_only(self, session):
+        """A hand-added row -- not on any NRW calendar -- must survive a re-run."""
+        session.add(PublicHoliday(date="2026-08-26", name="Betriebsruhetag (test)"))
+        session.flush()
+        ensure_holidays(session, [2026])
+        dates = load_holiday_dates(session)
+        assert "2026-08-26" in dates
+        assert dates == NRW_2026 | {"2026-08-26"}
+
+    def test_ensure_holidays_does_not_duplicate_across_calls(self, session):
+        ensure_holidays(session, [2026])
+        second_pass_added = ensure_holidays(session, [2026])
+        assert second_pass_added == 0
+        assert len(load_holiday_dates(session)) == 11
+
+    def test_load_holiday_dates_on_an_empty_table_is_an_empty_set(self, session):
+        assert load_holiday_dates(session) == set()

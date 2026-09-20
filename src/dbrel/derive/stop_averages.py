@@ -46,7 +46,7 @@ from dbrel.derive._common import (
     train_attributes,
 )
 from dbrel.gtfs.timeutil import epoch_to_gtfs_sec
-from dbrel.holidays_de import day_type_of
+from dbrel.holidays_de import day_type_of, ensure_holidays, load_holiday_dates
 from dbrel.models import (
     QUALITY_CANCELLED,
     TRUSTED_QUALITIES,
@@ -133,11 +133,25 @@ def _dirty_pairs(session: Session) -> set[tuple[int, int]]:
     return {(station_id, train_id) for station_id, train_id in rows}
 
 
+def _year_span(session: Session) -> range:
+    """The calendar years trip.service_date actually spans, for ensure_holidays.
+
+    An aggregate over an indexed column, not a scan: cheap enough to run on
+    every call, incremental or full, so the holiday table never falls behind
+    the data it needs to classify.
+    """
+    lo, hi = session.execute(select(func.min(Trip.service_date), func.max(Trip.service_date))).one()
+    if not lo or not hi:
+        return range(0)
+    return range(int(lo[:4]), int(hi[:4]) + 1)
+
+
 def _collect(
     session: Session,
     pairs: set[tuple[int, int]] | None,
     station_ids: list[int] | None,
     since: str | None,
+    holiday_dates: set[str],
 ) -> tuple[dict[tuple, Samples], dict[tuple, _Attrs], int]:
     query = (
         select(
@@ -183,7 +197,7 @@ def _collect(
             continue
         if pairs is not None and (station_id, train_id) not in pairs:
             continue
-        day_type = day_type_of(service_date)
+        day_type = day_type_of(service_date, holiday_dates)
         if day_type is None:
             continue
         scheduled = _sched_sec(service_date, sup_arr, sup_dep)
@@ -227,7 +241,12 @@ def run_stop_averages(
         result.elapsed_s = time.monotonic() - started
         return result
 
-    samples, attrs, result.samples_read = _collect(session, pairs, station_ids, since)
+    ensure_holidays(session, _year_span(session))
+    holiday_dates = load_holiday_dates(session)
+
+    samples, attrs, result.samples_read = _collect(
+        session, pairs, station_ids, since, holiday_dates
+    )
     result.groups_considered = len(pairs) if pairs is not None else len(samples)
     attributes = train_attributes(session, {train_id for _, train_id, _, _ in samples})
 

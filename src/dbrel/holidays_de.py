@@ -16,6 +16,7 @@ dependencies on purpose (see the note on .env parsing in config.py).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, timedelta
 from functools import lru_cache
 
@@ -82,11 +83,16 @@ def holiday_name(day: date) -> str | None:
     return nrw_holidays(day.year).get(day)
 
 
-def day_type_of(service_date: str | None) -> str | None:
+def day_type_of(service_date: str | None, holiday_dates: set[str]) -> str | None:
     """'WEEKDAY' or 'SUNDAY_HOLIDAY' for a 'YYYY-MM-DD' date, None if unusable.
 
     Saturday counts as a weekday here. It runs a reduced timetable, but it is a
     working day and the request was to pool everything except Sundays and holidays.
+
+    `holiday_dates` is the public_holiday table's contents (load_holiday_dates),
+    not a recomputation of the NRW rules: the table is what the app actually
+    checks, so a holiday that only exists as a row -- added by hand, not derived
+    from any calendar rule -- is honoured exactly like a real one.
 
     The caller passes trip.service_date, which is the planned departure date at the
     run's ORIGIN — so an overnight run keeps one day type at every station it
@@ -104,6 +110,42 @@ def day_type_of(service_date: str | None) -> str | None:
     # rules can be unit-tested without pulling in SQLAlchemy.
     from dbrel.models import DAY_TYPE_SUNDAY_HOLIDAY, DAY_TYPE_WEEKDAY
 
-    if day.weekday() == 6 or is_public_holiday(day):
+    if day.weekday() == 6 or service_date in holiday_dates:
         return DAY_TYPE_SUNDAY_HOLIDAY
     return DAY_TYPE_WEEKDAY
+
+
+def load_holiday_dates(session) -> set[str]:
+    """The public_holiday table's dates, as the 'YYYY-MM-DD' strings it stores them in.
+
+    One query per averaging run rather than one per row: day_type_of is called
+    once per trip_stop, and a full pass is hundreds of thousands of rows.
+    """
+    from sqlalchemy import select
+
+    from dbrel.models import PublicHoliday
+
+    return set(session.execute(select(PublicHoliday.date)).scalars())
+
+
+def ensure_holidays(session, years: Iterable[int]) -> int:
+    """Insert this module's NRW holidays for `years` into public_holiday.
+
+    Additive only -- it never updates or deletes a row that is already there, so
+    a holiday added by hand (a Betriebsruhetag, a one-off test date, anything not
+    on the NRW calendar) is never overwritten by the next automated run. Returns
+    how many rows were added.
+    """
+    from dbrel.models import PublicHoliday
+
+    existing = load_holiday_dates(session)
+    added = 0
+    for year in years:
+        for day, name in nrw_holidays(year).items():
+            iso = day.isoformat()
+            if iso in existing:
+                continue
+            session.add(PublicHoliday(date=iso, name=name))
+            existing.add(iso)
+            added += 1
+    return added

@@ -15,7 +15,9 @@ from sqlalchemy.orm import Session
 from dbrel.db import Base
 from dbrel.identity import SOURCE_TT
 from dbrel.models import (
+    DAY_TYPE_SUNDAY_HOLIDAY,
     DAY_TYPE_WEEKDAY,
+    PublicHoliday,
     ServiceLine,
     Station,
     StationStop,
@@ -199,3 +201,51 @@ def test_a_stop_with_no_calls_in_that_direction_is_empty_not_none(session):
     result = queries.trips_around(session, LINE_ID, 0, UNCALLED_STATION_ID, 12 * 3600)
     assert result is not None
     assert result["trips"] == []
+
+
+class TestResolveDayType:
+    """The date field on the browse widget, resolved through the holiday table.
+
+    Not the day-of-week alone: a date only counts as Sunday/holiday pooling if
+    resolve_day_type says so, and it checks public_holiday -- the same table
+    day_type_of checks everywhere else in the app.
+    """
+
+    def test_an_ordinary_weekday_resolves_to_weekday(self, session):
+        assert queries.resolve_day_type(session, "2026-09-15") == DAY_TYPE_WEEKDAY
+
+    def test_a_sunday_resolves_to_sunday_holiday_with_no_table_rows_at_all(self, session):
+        assert queries.resolve_day_type(session, "2026-09-20") == DAY_TYPE_SUNDAY_HOLIDAY
+
+    def test_a_table_row_turns_a_plain_weekday_into_a_holiday(self, session):
+        session.add(PublicHoliday(date="2026-09-15", name="Betriebsruhetag (test)"))
+        session.flush()
+        assert queries.resolve_day_type(session, "2026-09-15") == DAY_TYPE_SUNDAY_HOLIDAY
+
+    def test_unusable_date_resolves_to_none(self, session):
+        assert queries.resolve_day_type(session, "not-a-date") is None
+
+
+def test_trips_around_switches_pools_with_the_resolved_day_type(session):
+    """What the view does: resolve_day_type's result feeds straight into trips_around."""
+    session.add(PublicHoliday(date="2026-09-15", name="Betriebsruhetag (test)"))
+    session.add(TrainStopAverage(
+        day_type=DAY_TYPE_WEEKDAY, train_id=11, station_id=2, sched_sec=12 * 3600,
+        sched_kind="DEP", sched_dep_sec=12 * 3600, n_dep=4, n_arr=4, n_runs=4,
+        n_known=4, avg_dep_delay_s=60.0, pct_dep_punctual=0.9,
+        computed_at=1, rule_version=1,
+    ))
+    session.add(TrainStopAverage(
+        day_type=DAY_TYPE_SUNDAY_HOLIDAY, train_id=11, station_id=2, sched_sec=12 * 3600,
+        sched_kind="DEP", sched_dep_sec=12 * 3600, n_dep=9, n_arr=9, n_runs=9,
+        n_known=9, avg_dep_delay_s=900.0, pct_dep_punctual=0.1,
+        computed_at=1, rule_version=1,
+    ))
+    session.flush()
+
+    for chosen_date, expected_n in (("2026-09-16", 4), ("2026-09-15", 9)):
+        day_type = queries.resolve_day_type(session, chosen_date)
+        trips = queries.trips_around(
+            session, LINE_ID, 0, 2, 14 * 3600, day_type=day_type
+        )["trips"]
+        assert next(t for t in trips if t["name"] == "RE 11")["dep_avg"]["n"] == expected_n
