@@ -16,25 +16,8 @@
   {% endif %}
 </p>
 
-{% if detail.runs %}
-<ol class="calls">
-  {% for run in detail.runs %}
-  <li class="call">
-    <div class="times">
-      <span class="t dep">{{ run.departs|default:"--:--" }}</span>
-      <span class="platform">{{ run.n_stops }} stops</span>
-    </div>
-    <div class="who">
-      <a class="train" href="{{ run.url }}">{{ run.name }}</a>
-      <span class="dest">{{ run.origin }} &rarr; {{ run.destination }}</span>
-    </div>
-    <div class="avg {% if not run.n_monitored %}none{% endif %}">
-      {% if run.n_monitored %}{{ run.n_monitored }} stop{{ run.n_monitored|pluralize }} monitored
-      {% else %}&mdash; no monitored stops{% endif %}
-    </div>
-  </li>
-  {% endfor %}
-</ol>
+{% if detail.n_runs %}
+{% include "dbrel/_directions.html" %}
 {% else %}
 <p class="empty">No runs recorded on this line yet.</p>
 {% endif %}

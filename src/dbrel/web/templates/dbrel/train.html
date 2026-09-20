@@ -3,14 +3,6 @@
 {% block title %}{{ route.train.name }} — train reliability{% endblock %}
 
 {% block content %}
-{% if simulated %}
-<div class="banner" role="status">
-  <strong>Simulated data.</strong>
-  Not enough real observations have accumulated yet &mdash; an average needs at
-  least {{ min_samples }} runs of the same train at the same station &mdash; so every
-  figure below is generated.
-</div>
-{% endif %}
 
 <h1 class="station-name">
   <span class="train {{ route.train.segment|lower }}">{{ route.train.name }}</span>
@@ -54,7 +46,7 @@
     <div class="stopavg">
       {% with avg=stop.dep_avg|default:stop.arr_avg %}
       {% if avg %}
-      <span class="avg" data-basis="{{ route.basis }}">
+      <span class="avg">
         <span class="figure">&#8709; {{ avg.avg_min }} min</span>
         <span class="sep">·</span>{{ avg.punctual_pct }}% under 6&nbsp;min
         <span class="sep">·</span><span class="n">{{ avg.n }} sample{{ avg.n|pluralize }}</span>
@@ -74,5 +66,13 @@
   None of this train's stops are in the monitored corridor, so there are no times
   or averages for it &mdash; only the route IRIS publishes.
 </p>
+{% endif %}
+
+{% if detail %}
+<h2 class="section-head">
+  Every run on {{ detail.line.name }}
+  <span class="n">both directions &middot; weekday averages</span>
+</h2>
+{% include "dbrel/_directions.html" %}
 {% endif %}
 {% endblock %}

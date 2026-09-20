@@ -1,14 +1,14 @@
 """How late each train usually is at each station, on each day of the week.
 
-One row per (station, train, basis, dow), computed from trip_stop. Splitting on the
-day of week is what makes the figure usable: the same train number on a Tuesday and
-on a Sunday is a different service with different traffic around it, and one mean
-over both describes neither. The cost is that samples divide by seven, so a single
-week of collection gives one run per row — the rows only start to mean "usually"
-after several weeks.
+One row per (station, train, dow), computed from trip_stop. Splitting on the day of
+week is what makes the figure usable: the same train number on a Tuesday and on a
+Sunday is a different service with different traffic around it, and one mean over
+both describes neither. The cost is that samples divide by seven, so a single week
+of collection gives one run per row — the rows only start to mean "usually" after
+several weeks.
 
-The honesty of the number rests on three further filters, each of which excludes
-rows that would otherwise quietly bias it:
+The honesty of the number rests on two further filters, each of which excludes rows
+that would otherwise quietly bias it:
 
 * **Only RECORDED delays.** NO_DATA and PREDICTION_ONLY are unknowns, not zeros;
   counting them as on time would reward exactly the gaps in our own coverage.
@@ -17,8 +17,6 @@ rows that would otherwise quietly bias it:
 * **is_handover = 0.** Where a run changes number mid-journey the one physical
   stop appears on both sides of the handover, and averaging it twice would weight
   those stations by an accident of numbering.
-* **Real and simulated never share a row.** basis is part of the unique key, so no
-  average is ever a blend of the two.
 
 Whole pairs are recomputed, but only pairs that changed. Means and counts compose
 incrementally; medians and p90 do not, and approximating them with a sketch would
@@ -31,85 +29,36 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date as date_cls
-from typing import Iterable
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from dbrel.config import AVERAGES_RULE_VERSION, PUNCTUAL_S
-from dbrel.identity import SOURCE_GTFS, SOURCE_SYNTH, SOURCE_TT
+from dbrel.derive._common import (
+    WATERMARK_SLACK_S,
+    Samples,
+    metric_row,
+    new_samples,
+    train_attributes,
+)
 from dbrel.models import (
-    BASIS_REAL,
-    BASIS_SYNTH,
     QUALITY_CANCELLED,
     TRUSTED_QUALITIES,
-    Train,
     TrainStationDelay,
     Trip,
     TripStop,
 )
 
-# Which trip.source values feed which basis. gtfs is listed with the real sources
-# because if that reader is ever rebuilt its rows are observations too; today it
-# materialises no trips, so it contributes nothing.
-SOURCES_BY_BASIS: dict[str, tuple[str, ...]] = {
-    BASIS_REAL: (SOURCE_TT, SOURCE_GTFS),
-    BASIS_SYNTH: (SOURCE_SYNTH,),
-}
-
-# One day of slack on the watermark, so a --force re-finalize that rewrites
-# yesterday's grades is still picked up as dirty.
-_WATERMARK_SLACK_S = 86_400
+__all__ = ["DelayAveragesResult", "run_delay_averages"]
 
 
 @dataclass(slots=True)
 class DelayAveragesResult:
-    basis: str = BASIS_REAL
     pairs_considered: int = 0
     pairs_written: int = 0
     pairs_deleted: int = 0
     samples_read: int = 0
     elapsed_s: float = 0.0
-
-
-@dataclass(slots=True)
-class _Samples:
-    """Accumulator for one (station, train, dow) group."""
-
-    arr: list[int]
-    dep: list[int]
-    trips: set[int]
-    cancelled: int = 0
-    known: int = 0
-    first_date: str | None = None
-    last_date: str | None = None
-
-    def observe_date(self, service_date: str | None) -> None:
-        if not service_date:
-            return
-        if self.first_date is None or service_date < self.first_date:
-            self.first_date = service_date
-        if self.last_date is None or service_date > self.last_date:
-            self.last_date = service_date
-
-
-def _percentile(ordered: list[int], fraction: float) -> int | None:
-    """Nearest-rank percentile over an already-sorted list.
-
-    SQLite has no percentile_cont, and sorting each pair's samples in Python is
-    exact, single-pass and needs no extension.
-    """
-    if not ordered:
-        return None
-    index = max(0, min(len(ordered) - 1, int(round(fraction * len(ordered) + 0.5)) - 1))
-    return ordered[index]
-
-
-def _rate(values: list[int], threshold: int) -> float | None:
-    if not values:
-        return None
-    return sum(1 for v in values if v < threshold) / len(values)
 
 
 def _dow(service_date: str | None) -> int | None:
@@ -128,7 +77,7 @@ def _dow(service_date: str | None) -> int | None:
         return None
 
 
-def _dirty_pairs(session: Session, sources: tuple[str, ...], basis: str) -> set[tuple[int, int]]:
+def _dirty_pairs(session: Session) -> set[tuple[int, int]]:
     """(station_id, train_id) pairs whose samples may have changed since last run.
 
     Keyed on trip_stop.last_observed_at, not trip.finalized_at. finalized_at
@@ -139,23 +88,15 @@ def _dirty_pairs(session: Session, sources: tuple[str, ...], basis: str) -> set[
     finalized_at would therefore delay every average by six hours and buy no
     accuracy at all: on a fresh database it would produce nothing whatsoever.
     """
-    watermark = (
-        session.scalar(
-            select(func.max(TrainStationDelay.computed_at)).where(
-                TrainStationDelay.basis == basis
-            )
-        )
-        or 0
-    )
+    watermark = session.scalar(select(func.max(TrainStationDelay.computed_at))) or 0
     # Two columns with .distinct(), not distinct(tuple_(...)): most backends
     # cannot SELECT from a tuple construct, and SQLAlchemy refuses to compile it.
     rows = session.execute(
         select(TripStop.station_id, Trip.train_id)
         .join(Trip, Trip.id == TripStop.trip_id)
         .where(
-            Trip.source.in_(sources),
             TripStop.last_observed_at.isnot(None),
-            TripStop.last_observed_at >= watermark - _WATERMARK_SLACK_S,
+            TripStop.last_observed_at >= watermark - WATERMARK_SLACK_S,
         )
         .distinct()
     ).all()
@@ -164,11 +105,10 @@ def _dirty_pairs(session: Session, sources: tuple[str, ...], basis: str) -> set[
 
 def _collect(
     session: Session,
-    sources: tuple[str, ...],
     pairs: set[tuple[int, int]] | None,
     station_ids: list[int] | None,
     since: str | None,
-) -> tuple[dict[tuple[int, int, int], _Samples], int]:
+) -> tuple[dict[tuple[int, int, int], Samples], int]:
     query = (
         select(
             TripStop.station_id,
@@ -181,7 +121,6 @@ def _collect(
         )
         .join(Trip, Trip.id == TripStop.trip_id)
         .where(
-            Trip.source.in_(sources),
             TripStop.is_handover == 0,
             TripStop.quality.in_((*TRUSTED_QUALITIES, QUALITY_CANCELLED)),
         )
@@ -194,9 +133,7 @@ def _collect(
     # No ORDER BY: there is no index on trip_stop that would serve one, so sorting
     # would force a temp B-tree over the whole scan. Grouping in a dict costs a few
     # tens of MB at this scale and nothing in time.
-    samples: dict[tuple[int, int, int], _Samples] = defaultdict(
-        lambda: _Samples(arr=[], dep=[], trips=set())
-    )
+    samples: dict[tuple[int, int, int], Samples] = defaultdict(new_samples)
     seen = 0
     stream = session.execute(query.execution_options(yield_per=10_000))
     for station_id, train_id, trip_id, service_date, arr, dep, quality in stream:
@@ -223,22 +160,9 @@ def _collect(
     return samples, seen
 
 
-def _attributes(session: Session, train_ids: Iterable[int]) -> dict[int, tuple[int | None, str | None]]:
-    ids = list(train_ids)
-    if not ids:
-        return {}
-    return {
-        train_id: (line_id, segment)
-        for train_id, line_id, segment in session.execute(
-            select(Train.id, Train.line_id, Train.segment).where(Train.id.in_(ids))
-        )
-    }
-
-
 def run_delay_averages(
     session: Session,
     *,
-    basis: str = BASIS_REAL,
     since: str | None = None,
     full: bool = False,
     station_ids: list[int] | None = None,
@@ -247,53 +171,29 @@ def run_delay_averages(
 ) -> DelayAveragesResult:
     started = time.monotonic()
     now = now or int(time.time())
-    result = DelayAveragesResult(basis=basis)
+    result = DelayAveragesResult()
 
-    sources = SOURCES_BY_BASIS.get(basis)
-    if sources is None:
-        raise ValueError(f"unknown basis {basis!r}; expected one of {sorted(SOURCES_BY_BASIS)}")
-
-    pairs = None if full else _dirty_pairs(session, sources, basis)
+    pairs = None if full else _dirty_pairs(session)
     if pairs is not None and not pairs:
         progress("  nothing to recompute")
         result.elapsed_s = time.monotonic() - started
         return result
 
-    samples, result.samples_read = _collect(session, sources, pairs, station_ids, since)
+    samples, result.samples_read = _collect(session, pairs, station_ids, since)
     result.pairs_considered = len(pairs) if pairs is not None else len(samples)
-    attributes = _attributes(session, {train_id for _, train_id, _ in samples})
+    attributes = train_attributes(session, {train_id for _, train_id, _ in samples})
 
     rows = []
     for (station_id, train_id, dow), bucket in samples.items():
-        arr = sorted(bucket.arr)
-        dep = sorted(bucket.dep)
         line_id, segment = attributes.get(train_id, (None, None))
         rows.append(
             {
                 "station_id": station_id,
                 "train_id": train_id,
-                "basis": basis,
                 "dow": dow,
                 "line_id": line_id,
                 "segment": segment,
-                "n_arr": len(arr),
-                "n_dep": len(dep),
-                "n_runs": len(bucket.trips),
-                "n_cancelled": bucket.cancelled,
-                "n_known": bucket.known,
-                "avg_arr_delay_s": sum(arr) / len(arr) if arr else None,
-                "avg_dep_delay_s": sum(dep) / len(dep) if dep else None,
-                "p50_arr_delay_s": _percentile(arr, 0.5),
-                "p50_dep_delay_s": _percentile(dep, 0.5),
-                "p90_arr_delay_s": _percentile(arr, 0.9),
-                "p90_dep_delay_s": _percentile(dep, 0.9),
-                "max_dep_delay_s": dep[-1] if dep else None,
-                "pct_arr_punctual": _rate(arr, PUNCTUAL_S),
-                "pct_dep_punctual": _rate(dep, PUNCTUAL_S),
-                "first_service_date": bucket.first_date,
-                "last_service_date": bucket.last_date,
-                "computed_at": now,
-                "rule_version": AVERAGES_RULE_VERSION,
+                **metric_row(bucket, now),
             }
         )
 
@@ -301,11 +201,11 @@ def run_delay_averages(
         statement = sqlite_insert(TrainStationDelay)
         session.execute(
             statement.on_conflict_do_update(
-                index_elements=["station_id", "train_id", "basis", "dow"],
+                index_elements=["station_id", "train_id", "dow"],
                 set_={
                     column: statement.excluded[column]
                     for column in rows[0]
-                    if column not in ("station_id", "train_id", "basis", "dow")
+                    if column not in ("station_id", "train_id", "dow")
                 },
             ),
             rows,
@@ -325,9 +225,7 @@ def run_delay_averages(
     # whose samples have vanished entirely leaves no trace to mark it dirty, so
     # it survives until a --full pass, which reconciles against the stored rows.
     stored = session.execute(
-        select(
-            TrainStationDelay.station_id, TrainStationDelay.train_id, TrainStationDelay.dow
-        ).where(TrainStationDelay.basis == basis)
+        select(TrainStationDelay.station_id, TrainStationDelay.train_id, TrainStationDelay.dow)
     ).all()
     if pairs is None:
         stale_scope = {(station_id, train_id, dow) for station_id, train_id, dow in stored}
@@ -344,7 +242,6 @@ def run_delay_averages(
             batch = empty[chunk : chunk + 500]
             session.execute(
                 delete(TrainStationDelay).where(
-                    TrainStationDelay.basis == basis,
                     or_(
                         *[
                             and_(

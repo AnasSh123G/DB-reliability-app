@@ -9,12 +9,14 @@
 <body>
 <header class="masthead">
   <a class="wordmark" href="/">Train&nbsp;reliability</a>
+  {% block masthead_search %}
   <form class="search" role="search" autocomplete="off" onsubmit="return false">
     <input id="q" type="search" placeholder="Search a station, line or train — try Bochum, RE1, NX 26811"
            aria-label="Search a station, line or train" aria-expanded="false"
            aria-controls="results" role="combobox">
     <ul id="results" role="listbox" hidden></ul>
   </form>
+  {% endblock %}
 </header>
 
 <main>

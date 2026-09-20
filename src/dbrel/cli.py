@@ -22,12 +22,9 @@ from dbrel.config import (
 )
 from dbrel.db import create_all, session_scope
 from dbrel.gtfs.download import fetch_static
-from dbrel.identity import SOURCE_SYNTH
 from dbrel.timetables.parser import parse_stations
 from dbrel.gtfs.static_import import import_feed
 from dbrel.models import (
-    BASIS_REAL,
-    BASIS_SYNTH,
     TRUSTED_QUALITIES,
     FeedVersion,
     Route,
@@ -37,6 +34,7 @@ from dbrel.models import (
     StationStop,
     Train,
     TrainStationDelay,
+    TrainStopAverage,
     Trip,
     TripStop,
     TtMessage,
@@ -134,6 +132,7 @@ def stats() -> None:
             ("tt_poll", TtPoll),
             ("search_alias", SearchAlias),
             ("train_station_delay", TrainStationDelay),
+            ("train_stop_average", TrainStopAverage),
             ("route", Route),
             ("feed_version", FeedVersion),
         ]:
@@ -191,21 +190,8 @@ def stats() -> None:
                     f"  fetch={p.fetch_ms or 0}ms store={p.store_ms or 0}ms"
                 )
 
-        # Every figure below is about the real railway, so seeded runs are excluded
-        # throughout: they exist to fill the UI, and letting them reach the headline
-        # punctuality number would make it fiction.
-        real_trips = select(Trip.id).where(Trip.source != SOURCE_SYNTH)
-        real_only = TripStop.trip_id.in_(real_trips)
-
-        n_synthetic = session.scalar(
-            select(func.count()).select_from(Trip).where(Trip.source == SOURCE_SYNTH)
-        )
-        if n_synthetic:
-            typer.echo(f"\nsynthetic runs: {n_synthetic:,} (excluded from every figure below)")
-
         quality = session.execute(
             select(TripStop.quality, func.count())
-            .where(real_only)
             .group_by(TripStop.quality)
             .order_by(func.count().desc())
         ).all()
@@ -220,7 +206,6 @@ def stats() -> None:
         trusted = (
             TripStop.dep_delay_s.isnot(None),
             TripStop.quality.in_(TRUSTED_QUALITIES),
-            real_only,
         )
         delays = session.execute(
             select(
@@ -243,9 +228,7 @@ def stats() -> None:
             typer.echo(f"  within 6 min (DB's punctuality threshold): {on_time / delays[0]:.1%}")
 
         window = session.execute(
-            select(func.min(Trip.service_date), func.max(Trip.service_date)).where(
-                Trip.source != SOURCE_SYNTH
-            )
+            select(func.min(Trip.service_date), func.max(Trip.service_date))
         ).one()
         if window[0]:
             typer.echo(f"\nscheduled runs span {window[0]} .. {window[1]}")
@@ -732,92 +715,83 @@ def build_aliases() -> None:
 
 @app.command("compute-averages")
 def compute_averages(
-    basis: str = typer.Option("real", help="real | synth | all"),
     since: str = typer.Option(None, help="only service dates from this YYYY-MM-DD"),
     full: bool = typer.Option(False, help="rebuild every pair, ignoring the watermark"),
 ) -> None:
     """Average each train's delay at each station, into train_station_delay."""
     from dbrel.derive.delay_averages import run_delay_averages
 
-    wanted = {"real": [BASIS_REAL], "synth": [BASIS_SYNTH], "all": [BASIS_REAL, BASIS_SYNTH]}
-    if basis.lower() not in wanted:
-        raise typer.BadParameter("basis must be real, synth or all")
-
     with session_scope() as session:
         _require_schema(session)
-        for which in wanted[basis.lower()]:
-            result = run_delay_averages(
-                session, basis=which, since=since, full=full, progress=typer.echo
-            )
-            typer.echo(
-                f"  {which}: {result.pairs_written:,} pairs written, "
-                f"{result.pairs_deleted:,} dropped, {result.samples_read:,} samples, "
-                f"{result.elapsed_s:.1f}s"
-            )
+        result = run_delay_averages(session, since=since, full=full, progress=typer.echo)
+        typer.echo(
+            f"  {result.pairs_written:,} pairs written, "
+            f"{result.pairs_deleted:,} dropped, {result.samples_read:,} samples, "
+            f"{result.elapsed_s:.1f}s"
+        )
 
         rows = session.execute(
             select(
-                TrainStationDelay.basis,
                 TrainStationDelay.segment,
                 func.count(),
                 func.avg(TrainStationDelay.avg_dep_delay_s),
                 func.avg(TrainStationDelay.pct_dep_punctual),
             )
             .where(TrainStationDelay.n_dep > 0)
-            .group_by(TrainStationDelay.basis, TrainStationDelay.segment)
-            .order_by(TrainStationDelay.basis, TrainStationDelay.segment)
+            .group_by(TrainStationDelay.segment)
+            .order_by(TrainStationDelay.segment)
         ).all()
         if rows:
-            typer.echo("\nbasis  segment  pairs     mean delay   under 6 min")
-            for which, segment, count, mean, punctual in rows:
+            typer.echo("\nsegment  pairs     mean delay   under 6 min")
+            for segment, count, mean, punctual in rows:
                 typer.echo(
-                    f"  {which:<6} {segment or '-':<7} {count:>6,}   "
+                    f"  {segment or '-':<7} {count:>6,}   "
                     f"{(mean or 0) / 60:>6.2f} min   {(punctual or 0):>7.1%}"
                 )
 
 
-@app.command("seed-demo")
-def seed_demo(
-    days: int = typer.Option(28, help="how many service dates to invent"),
-    seed: int = typer.Option(20260914, help="rng seed; same seed, same data"),
-    clear: bool = typer.Option(False, help="remove seeded rows instead of writing them"),
-    averages: bool = typer.Option(
-        False, help="also compute synthetic averages (off by default: seeding writes facts only)"
-    ),
+@app.command("compute-stop-averages")
+def compute_stop_averages(
+    since: str = typer.Option(None, help="only service dates from this YYYY-MM-DD"),
+    full: bool = typer.Option(False, help="rebuild every row, ignoring the watermark"),
 ) -> None:
-    """Invent plausible past runs so the UI has something to show.
+    """Average each train's delay at each of its stops, into train_stop_average.
 
-    Seeded runs are tagged trip.source='synth' and sit on dates strictly before the
-    earliest real run, so they can never be confused with or collide against one.
-
-    Writes trip and trip_stop only. Averages are a separate, explicit step so the
-    averaging logic is always exercised against facts it did not produce.
+    Unlike compute-averages this pools Monday to Saturday into one figure and keeps
+    Sundays and public holidays apart, and it keys on the scheduled time at the stop
+    so one train number running two different timetables stays two rows. Read it
+    through the avg_weekday and avg_sunday_holiday views.
     """
-    from dbrel.derive.delay_averages import run_delay_averages
-    from dbrel.seed import clear_synthetic, seed_synthetic
+    from dbrel.derive.stop_averages import run_stop_averages
 
     with session_scope() as session:
         _require_schema(session)
-        if clear:
-            result = clear_synthetic(session)
-            typer.echo(
-                f"  removed {result.trips_deleted:,} trips, {result.stops_deleted:,} stops, "
-                f"{result.averages_deleted:,} averages"
-            )
-            return
-
-        result = seed_synthetic(session, days=days, seed=seed, progress=typer.echo)
-        if not result.trips_written:
-            return
+        result = run_stop_averages(session, since=since, full=full, progress=typer.echo)
         typer.echo(
-            f"  {result.trips_written:,} runs, {result.stops_written:,} stops "
-            f"({result.first_date} .. {result.last_date}, {result.elapsed_s:.1f}s)"
+            f"  {result.rows_written:,} rows written, "
+            f"{result.rows_deleted:,} dropped, {result.samples_read:,} samples, "
+            f"{result.elapsed_s:.1f}s"
         )
-        if not averages:
-            typer.echo("  averages not computed (pass --averages to compute them)")
-            return
-        computed = run_delay_averages(session, basis=BASIS_SYNTH, full=True, progress=typer.echo)
-        typer.echo(f"  {computed.pairs_written:,} synthetic averages computed")
+
+        rows = session.execute(
+            select(
+                TrainStopAverage.day_type,
+                func.count(),
+                func.avg(TrainStopAverage.n_dep),
+                func.avg(TrainStopAverage.avg_dep_delay_s),
+                func.avg(TrainStopAverage.pct_dep_punctual),
+            )
+            .where(TrainStopAverage.n_dep > 0)
+            .group_by(TrainStopAverage.day_type)
+            .order_by(TrainStopAverage.day_type)
+        ).all()
+        if rows:
+            typer.echo("\nday type         stops   samples/stop   mean delay   under 6 min")
+            for day_type, count, per_stop, mean, punctual in rows:
+                typer.echo(
+                    f"  {day_type:<16} {count:>6,}   {(per_stop or 0):>10.1f}   "
+                    f"{(mean or 0) / 60:>6.2f} min   {(punctual or 0):>7.1%}"
+                )
 
 
 @app.command("serve")
@@ -1023,11 +997,6 @@ def show_train(
         ).all()
 
         if fmt == "tsv":
-            # A seeded run must never reach a training script unannounced. The
-            # comment is the only channel available in a bare TSV, and it survives
-            # a naive `grep -v '^#'` filter being absent rather than a silent lie.
-            if trip.source == SOURCE_SYNTH:
-                typer.echo("# WARNING: synthetic run — invented delays, not observations")
             typer.echo("\t".join(_TSV_STOP_COLUMNS))
             for stop, station_name in stops:
                 typer.echo(_stop_tsv(stop, station_name))
@@ -1035,7 +1004,7 @@ def show_train(
 
         typer.echo(
             f"\n{train_row.display_name or train_row.long_name}  ·  {date}"
-            f"  ·  {'SYNTHETIC ' if trip.source == SOURCE_SYNTH else ''}{trip.status}"
+            f"  ·  {trip.status}"
             f"  ·  {trip.n_stops_tracked or 0} of {trip.n_stops or 0} stops tracked"
         )
         if trip.final_delay_s is not None:
@@ -1060,7 +1029,6 @@ def show_station(
     date: str = typer.Option(..., "--date", help="local calendar date, YYYY-MM-DD"),
     fmt: str = typer.Option("table", "--format", help="table | tsv"),
     limit: int = typer.Option(200),
-    include_synthetic: bool = typer.Option(False, help="also show seeded demo runs"),
 ) -> None:
     """Everything that called at one station on one day."""
     from sqlalchemy import and_, or_
@@ -1074,20 +1042,12 @@ def show_station(
         station_row = session.get(Station, station_id)
         lo, hi = _day_window(date)
         ordering = func.coalesce(TripStop.supposed_departure_utc, TripStop.supposed_arrival_utc)
-        # Seeded runs are hidden unless asked for: this output feeds --format tsv,
-        # and invented delays must not reach a training set by default.
-        source_filter = (
-            (Trip.source.isnot(None),)
-            if include_synthetic
-            else (Trip.source != SOURCE_SYNTH,)
-        )
         rows = session.execute(
             select(TripStop, Train)
             .join(Trip, Trip.id == TripStop.trip_id)
             .join(Train, Train.id == Trip.train_id)
             .where(
                 TripStop.station_id == station_id,
-                *source_filter,
                 or_(
                     and_(
                         TripStop.supposed_departure_utc >= lo,

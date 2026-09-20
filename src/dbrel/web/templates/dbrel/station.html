@@ -3,15 +3,6 @@
 {% block title %}{{ board.station.name }} — train reliability{% endblock %}
 
 {% block content %}
-{% if simulated %}
-<div class="banner" role="status">
-  <strong>Simulated data.</strong>
-  Not enough real observations have accumulated yet &mdash; an average needs at
-  least {{ min_samples }} runs of the same train at the same station &mdash; so every
-  figure below is generated. Keep <code>dbrel tt-poll</code> running and the page
-  switches to measured data on its own.
-</div>
-{% endif %}
 
 <h1 class="station-name">
   {{ board.station.name }}
@@ -26,7 +17,7 @@
 </p>
 
 {% if board.calls %}
-<ol class="calls" data-basis="{{ board.basis }}">
+<ol class="calls">
   {% for call in board.calls %}
   <li class="call">
     <div class="times">
@@ -36,14 +27,14 @@
     </div>
 
     <div class="who">
-      <span class="train {{ call.segment|lower }}">{{ call.train }}</span>
+      <a class="train {{ call.segment|lower }}" href="/train/{{ call.train_id }}/">{{ call.train }}</a>
       {% if call.headline %}<span class="dest">{{ call.headline }}</span>{% endif %}
       {% if call.terminates %}<span class="ends">ends here</span>{% endif %}
     </div>
 
     {% with avg=call.dep_avg|default:call.arr_avg %}
     {% if avg %}
-    <div class="avg" data-basis="{{ board.basis }}">
+    <div class="avg">
       <span class="figure">&#8709; {{ avg.avg_min }} min late</span>
       <span class="sep">·</span>
       <span>{{ avg.punctual_pct }}% under 6&nbsp;min</span>

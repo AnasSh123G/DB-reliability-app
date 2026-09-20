@@ -40,7 +40,7 @@ from dbrel.config import (
     TT_SWEEP_LOCK,
     TZ,
 )
-from dbrel.models import BASIS_REAL, Station, TtPlanFetch
+from dbrel.models import Station, TtPlanFetch
 
 Progress = Callable[[str], None]
 
@@ -625,6 +625,7 @@ def run_cycle(
 ) -> CycleResult:
     from dbrel.db import session_scope
     from dbrel.derive.delay_averages import run_delay_averages
+    from dbrel.derive.stop_averages import run_stop_averages
     from dbrel.derive.finalize_tt import run_finalize_tt
     from dbrel.timetables.changes_poller import run_tt_poll
     from dbrel.timetables.client import TimetablesClient
@@ -707,11 +708,23 @@ def run_cycle(
 
     def do_averages() -> str:
         with session_scope() as session:
-            r = run_delay_averages(session, basis=BASIS_REAL, progress=lambda m: None)
+            r = run_delay_averages(session, progress=lambda m: None)
         return f"{r.pairs_written} pairs written, {r.samples_read} samples"
 
     result.phases.append(_run_phase("averages", do_averages))
     progress(f"  averages  {result.phases[-1].summary or result.phases[-1].error}")
+
+    # The per-stop aggregate, pooled Mon-Sat with Sundays and holidays apart. Its
+    # own phase rather than a second call inside do_averages: a failure in one
+    # aggregate must not leave the other unwritten, and _run_phase gives each its
+    # own session_scope and error handling.
+    def do_stop_averages() -> str:
+        with session_scope() as session:
+            r = run_stop_averages(session, progress=lambda m: None)
+        return f"{r.rows_written} rows written, {r.samples_read} samples"
+
+    result.phases.append(_run_phase("stop-avgs", do_stop_averages))
+    progress(f"  stop-avgs {result.phases[-1].summary or result.phases[-1].error}")
 
     result.elapsed_s = time.monotonic() - started
     return result

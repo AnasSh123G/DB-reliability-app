@@ -3,7 +3,27 @@
     "allow": [
       "Bash(sqlite3 -header -column data/dbrel.sqlite ' *)",
       "Bash(sqlite3 -header -column data/dbrel.sqlite \"SELECT basis, COUNT\\(*\\) n FROM train_station_delay GROUP BY basis;\")",
-      "Bash(sqlite3 -header -column data/dbrel.sqlite \"SELECT source, COUNT\\(*\\) n FROM trip GROUP BY source;\")"
+      "Bash(sqlite3 -header -column data/dbrel.sqlite \"SELECT source, COUNT\\(*\\) n FROM trip GROUP BY source;\")",
+      "Bash(sed -i 's/_Samples\\\\]/Samples]/g; s/, _Samples\\\\]/, Samples]/g; s/\\\\b_attributes\\(/train_attributes\\(/g' src/dbrel/derive/delay_averages.py)",
+      "Bash(sed -i 's/dict\\\\[tuple\\\\[int, int, int\\\\], _Samples\\\\]/dict[tuple[int, int, int], Samples]/g' src/dbrel/derive/delay_averages.py)",
+      "Bash(sqlite3 data/dbrel.sqlite \"SELECT type||': '||name FROM sqlite_master WHERE name IN \\('train_stop_average','avg_weekday','avg_sunday_holiday'\\);\")",
+      "Bash(sqlite3 data/dbrel.sqlite \"SELECT \\(SELECT COUNT\\(*\\) FROM avg_weekday\\)+\\(SELECT COUNT\\(*\\) FROM avg_sunday_holiday\\)-\\(SELECT COUNT\\(*\\) FROM train_stop_average\\);\")",
+      "Bash(sqlite3 -header -column data/dbrel.sqlite \"SELECT basis, day_type, COUNT\\(*\\) n FROM train_stop_average GROUP BY basis, day_type;\")",
+      "Bash(sed -i 's/ data-basis=\"{{ board.basis }}\"//' src/dbrel/web/templates/dbrel/station.html)",
+      "Bash(sed -i 's/ data-basis=\"{{ route.basis }}\"//' src/dbrel/web/templates/dbrel/train.html)",
+      "Bash(sqlite3 data/dbrel.sqlite \".schema train_station_delay\")",
+      "Bash(sqlite3 data/dbrel.sqlite \".schema train_stop_average\")",
+      "Bash(sqlite3 data/dbrel.sqlite \"DROP TABLE train_station_delay; DROP TABLE train_stop_average;\")",
+      "Bash(DBREL_DB=/tmp/dbrel_check2.sqlite uv run dbrel init-db)",
+      "Bash(sqlite3 /tmp/dbrel_check2.sqlite \".schema\")",
+      "Bash(disown)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://127.0.0.1:8000/)",
+      "Bash(sqlite3 data/dbrel.sqlite \"SELECT id, name FROM station WHERE tracked=1 LIMIT 1;\")",
+      "Bash(curl -s http://127.0.0.1:8000/api/station/42/board)",
+      "Bash(python3 -m json.tool)",
+      "Bash(sqlite3 data/dbrel.sqlite \"SELECT train_id FROM train_station_delay WHERE station_id=42 AND n_dep>0 LIMIT 1;\")",
+      "Bash(curl -s http://127.0.0.1:8000/api/train/84784/route)",
+      "Bash(curl -s http://127.0.0.1:8000/train/84784/ -o /tmp/train_page.html -w \"HTTP %{http_code}\\\\n\")"
     ]
   }
 }

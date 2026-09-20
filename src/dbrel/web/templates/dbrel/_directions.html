@@ -1,0 +1,48 @@
+{# Both directions of a line, side by side. Each half is one direction of travel,
+   so a short working that covers only part of the line still sits in the half it
+   travels rather than in a group of its own. #}
+<div class="directions">
+  {% for direction in detail.directions %}
+  <section class="direction">
+    <h2 class="direction-head">
+      {{ direction.label }}
+      <span class="n">{{ direction.n_runs }} run{{ direction.n_runs|pluralize }}</span>
+    </h2>
+
+    {% if direction.runs %}
+    <ol class="runs">
+      {% for run in direction.runs %}
+      <li class="run{% if run.current %} current{% endif %}">
+        <div class="runtime">
+          {{ run.departs|default:"--:--" }}
+          {% if run.partial %}<span class="partial">part of route</span>{% endif %}
+        </div>
+
+        <div class="runwho">
+          <a class="train {{ run.segment|lower }}" href="{{ run.url }}">{{ run.name }}</a>
+          <span class="dest">&rarr; {{ run.destination }}</span>
+          {% if run.current %}<span class="ends">this run</span>{% endif %}
+        </div>
+
+        {% if run.avg %}
+        <div class="runavg">
+          <span class="figure">&#8709; {{ run.avg.avg_min }} min</span>
+          {% if run.avg.punctual_pct is not None %}
+          <span class="sep">·</span>{{ run.avg.punctual_pct }}% under 6&nbsp;min
+          {% endif %}
+          <span class="sep">·</span>
+          <span class="n">{{ run.avg.n_runs }} day{{ run.avg.n_runs|pluralize }}</span>
+          {% if run.avg.provisional %}<span class="provisional-tag">provisional</span>{% endif %}
+        </div>
+        {% else %}
+        <div class="runavg none">&mdash; no observations yet</div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="empty">Nothing runs this way.</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>

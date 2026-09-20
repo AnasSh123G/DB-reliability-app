@@ -14,11 +14,10 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from dbrel.db import Base
-from dbrel.derive.delay_averages import _percentile, run_delay_averages
-from dbrel.identity import SOURCE_SYNTH, SOURCE_TT
+from dbrel.derive._common import percentile as _percentile
+from dbrel.derive.delay_averages import run_delay_averages
+from dbrel.identity import SOURCE_TT
 from dbrel.models import (
-    BASIS_REAL,
-    BASIS_SYNTH,
     QUALITY_CANCELLED,
     QUALITY_NO_DATA,
     QUALITY_PREDICTION_ONLY,
@@ -84,11 +83,9 @@ def add_run_on_date(session, service_date: str, *, key: str | None = None,
     return trip
 
 
-def averages(session, basis=BASIS_REAL) -> TrainStationDelay | None:
-    run_delay_averages(session, basis=basis, full=True)
-    return session.scalar(
-        select(TrainStationDelay).where(TrainStationDelay.basis == basis)
-    )
+def averages(session) -> TrainStationDelay | None:
+    run_delay_averages(session, full=True)
+    return session.scalar(select(TrainStationDelay))
 
 
 def test_mean_over_recorded_stops(session):
@@ -130,17 +127,6 @@ def test_handover_stops_are_excluded(session):
     assert row.avg_dep_delay_s == pytest.approx(60.0)
 
 
-def test_real_and_synthetic_never_share_a_row(session):
-    add_run(session, 1, dep_delay=60, arr_delay=60)
-    add_run(session, 2, source=SOURCE_SYNTH, dep_delay=3000, arr_delay=3000)
-
-    real = averages(session, BASIS_REAL)
-    synth = averages(session, BASIS_SYNTH)
-    assert real.avg_dep_delay_s == pytest.approx(60.0)
-    assert synth.avg_dep_delay_s == pytest.approx(3000.0)
-    assert real.id != synth.id
-
-
 def test_punctuality_uses_the_six_minute_threshold(session):
     # 359s is on time, 361s is not.
     for day, delay in enumerate([359, 361, 361, 361], start=1):
@@ -155,13 +141,8 @@ def test_each_weekday_gets_its_own_row(session):
     add_run_on_date(session, "2026-09-08", dep_delay=120, arr_delay=120)  # Tuesday
     add_run_on_date(session, "2026-09-02", dep_delay=600, arr_delay=600)  # Wednesday
 
-    run_delay_averages(session, basis=BASIS_REAL, full=True)
-    rows = {
-        row.dow: row
-        for row in session.scalars(
-            select(TrainStationDelay).where(TrainStationDelay.basis == BASIS_REAL)
-        )
-    }
+    run_delay_averages(session, full=True)
+    rows = {row.dow: row for row in session.scalars(select(TrainStationDelay))}
     assert sorted(rows) == [1, 2], "one row per weekday seen, Monday=0"
     assert rows[1].n_dep == 2
     assert rows[1].avg_dep_delay_s == pytest.approx(90.0), "the two Tuesdays only"
@@ -172,15 +153,15 @@ def test_each_weekday_gets_its_own_row(session):
 def test_dow_matches_pythons_weekday_not_sqlites(session):
     """strftime('%w') is 0=Sunday; the dow column is 0=Monday. Pin the difference."""
     add_run_on_date(session, "2026-09-06")  # a Sunday
-    run_delay_averages(session, basis=BASIS_REAL, full=True)
-    row = session.scalar(select(TrainStationDelay).where(TrainStationDelay.basis == BASIS_REAL))
+    run_delay_averages(session, full=True)
+    row = session.scalar(select(TrainStationDelay))
     assert row.dow == 6, "Sunday is 6 here, even though SQLite would call it 0"
 
 
 def test_a_weekday_that_loses_its_samples_loses_only_its_own_row(session):
     add_run_on_date(session, "2026-09-01", dep_delay=60, arr_delay=60)    # Tuesday
     add_run_on_date(session, "2026-09-02", dep_delay=600, arr_delay=600)  # Wednesday
-    run_delay_averages(session, basis=BASIS_REAL, full=True)
+    run_delay_averages(session, full=True)
     assert session.scalar(select(func.count()).select_from(TrainStationDelay)) == 2
 
     # Ungrade only the Wednesday stop, leaving a dirty marker behind.
@@ -192,7 +173,7 @@ def test_a_weekday_that_loses_its_samples_loses_only_its_own_row(session):
     )
     session.flush()
 
-    run_delay_averages(session, basis=BASIS_REAL, full=False)
+    run_delay_averages(session, full=False)
     rows = list(session.scalars(select(TrainStationDelay)))
     assert [r.dow for r in rows] == [1], "Tuesday survives; only Wednesday is dropped"
 
@@ -205,12 +186,12 @@ def test_full_pass_reconciles_pairs_whose_samples_vanished(session):
     session.execute(TripStop.__table__.delete())
     session.flush()
 
-    run_delay_averages(session, basis=BASIS_REAL, full=False)
+    run_delay_averages(session, full=False)
     assert session.scalar(select(TrainStationDelay)) is not None, (
         "the incremental pass has no signal that these samples ever existed"
     )
 
-    run_delay_averages(session, basis=BASIS_REAL, full=True)
+    run_delay_averages(session, full=True)
     assert session.scalar(select(TrainStationDelay)) is None, (
         "an average must not outlive the samples behind it"
     )
@@ -227,7 +208,7 @@ def test_incremental_pass_drops_a_pair_that_lost_its_last_good_sample(session):
     )
     session.flush()
 
-    run_delay_averages(session, basis=BASIS_REAL, full=False)
+    run_delay_averages(session, full=False)
     assert session.scalar(select(TrainStationDelay)) is None
 
 

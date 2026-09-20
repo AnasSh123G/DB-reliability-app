@@ -22,10 +22,6 @@ import unicodedata
 
 SOURCE_TT = "tts"
 SOURCE_GTFS = "gtfs"
-# Seeded demonstration runs. A trip.source value, not a boolean on the row: the
-# column already discriminates sources, and one more string keeps every query
-# that filters by provenance working unchanged.
-SOURCE_SYNTH = "synth"
 
 IDENTITY_NUMBERED = "NUMBERED"
 IDENTITY_PATTERN = "PATTERN"

@@ -7,6 +7,7 @@ into two different answers to the same question.
 
 from __future__ import annotations
 
+import bisect
 import time
 from datetime import date as date_cls
 from datetime import datetime, timedelta
@@ -25,8 +26,7 @@ from dbrel.config import (
 from dbrel.gtfs.timeutil import format_gtfs_time, local_date, service_date_anchor
 from dbrel.identity import prefix_range, search_norm
 from dbrel.models import (
-    BASIS_REAL,
-    BASIS_SYNTH,
+    DAY_TYPE_WEEKDAY,
     FeedVersion,
     SearchAlias,
     ServiceLine,
@@ -34,6 +34,7 @@ from dbrel.models import (
     StationStop,
     Train,
     TrainStationDelay,
+    TrainStopAverage,
 )
 
 TT_FEED_KIND = "tt"
@@ -51,31 +52,6 @@ def tt_feed_version_id(session: Session) -> int | None:
     feed_version row on a database that has never been imported.
     """
     return session.scalar(select(FeedVersion.id).where(FeedVersion.kind == TT_FEED_KIND))
-
-
-def resolve_basis(session: Session, requested: str | None = None) -> str:
-    """Whether the site is showing measured or simulated figures.
-
-    Resolved once per request, for the whole page. The alternative — a badge on
-    each row — is something a reader can miss; a page-level answer cannot be.
-
-    Prefers REAL as soon as any real row exists at all — _average now shows a
-    figure from the first sample (marked provisional below AVG_MIN_SAMPLES)
-    rather than hiding it, so there is no longer a "too little to show"
-    threshold to wait past. SYNTH is only ever chosen when synthetic rows
-    genuinely exist, so a database that was never seeded (dbrel seed-demo) can
-    no longer show the "Simulated data" banner over a board with nothing
-    simulated on it.
-    """
-    if requested:
-        upper = requested.upper()
-        if upper in (BASIS_REAL, BASIS_SYNTH):
-            return upper
-    has_real = session.scalar(select(TrainStationDelay.id).where(TrainStationDelay.basis == BASIS_REAL).limit(1))
-    if has_real:
-        return BASIS_REAL
-    has_synth = session.scalar(select(TrainStationDelay.id).where(TrainStationDelay.basis == BASIS_SYNTH).limit(1))
-    return BASIS_SYNTH if has_synth else BASIS_REAL
 
 
 def _hhmm(sec: int | None) -> str | None:
@@ -96,17 +72,32 @@ def _hhmm(sec: int | None) -> str | None:
 _KIND_RANK = {"station": 0, "line": 1, "train": 2, "station_untracked": 3}
 
 
-def suggest(session: Session, term: str, *, limit: int = 8) -> list[dict]:
+_SUGGEST_KIND_COLUMN = {
+    "station": SearchAlias.station_id,
+    "line": SearchAlias.line_id,
+    "train": SearchAlias.train_id,
+}
+
+
+def suggest(
+    session: Session, term: str, *, limit: int = 8, only: str | None = None
+) -> list[dict]:
     """Stations, lines and trains whose name starts with `term`.
 
     One prefix scan serves all three: search_alias already holds a row per
     searchable form of every entity, and ix_alias_lookup turns the half-open
-    range into a seek.
+    range into a seek. `only` narrows the scan to one kind, for a picker that
+    only ever wants lines, say, rather than filtering the general result client
+    side and hoping a line survives the top `limit` matches.
     """
     normalised = search_norm(term or "")
     if len(normalised) < MIN_QUERY_LEN:
         return []
     lo, hi = prefix_range(normalised)
+
+    conditions = [SearchAlias.alias_norm >= lo, SearchAlias.alias_norm < hi]
+    if only is not None:
+        conditions.append(_SUGGEST_KIND_COLUMN[only].is_not(None))
 
     rows = session.execute(
         select(
@@ -117,7 +108,7 @@ def suggest(session: Session, term: str, *, limit: int = 8) -> list[dict]:
             SearchAlias.line_id,
             SearchAlias.train_id,
         )
-        .where(SearchAlias.alias_norm >= lo, SearchAlias.alias_norm < hi)
+        .where(*conditions)
         .order_by(
             (SearchAlias.alias_norm == normalised).desc(),
             SearchAlias.weight.desc(),
@@ -253,24 +244,6 @@ def suggest(session: Session, term: str, *, limit: int = 8) -> list[dict]:
     return results[:limit]
 
 
-def tracked_stations(session: Session) -> list[dict]:
-    """The stations that actually have a timetable pattern, for the landing page.
-
-    Only tracked stations are polled, so only they have a board. Out of ~7,900
-    known stations that is a small handful, and leaving a visitor to guess which
-    ones is the difference between a usable page and a dead end.
-    """
-    rows = session.execute(
-        select(Station.id, Station.name, Station.eva)
-        .where(Station.tracked == 1)
-        .order_by(Station.name)
-    ).all()
-    return [
-        {"id": station_id, "name": name, "eva": eva, "url": f"/station/{station_id}/"}
-        for station_id, name, eva in rows
-    ]
-
-
 def board_slices(now_epoch: int, back_s: int, fwd_s: int) -> list[tuple[date_cls, int, int]]:
     """(service_date, lo_sec, hi_sec) slices covering [now-back, now+fwd].
 
@@ -306,11 +279,11 @@ def board_slices(now_epoch: int, back_s: int, fwd_s: int) -> list[tuple[date_cls
 def _average(row, prefix: str) -> dict | None:
     """The delay summary for one call, or None when there is nothing to say at all.
 
-    Shown from the first sample rather than hidden below AVG_MIN_SAMPLES: with
-    no synthetic data seeded, hiding it would mean every board reads "not
-    enough observations" for roughly the first five service days. The count
-    is always printed alongside it, and "provisional" marks it below the
-    threshold, so a reader is never misled into treating one run as settled.
+    Shown from the first sample rather than hidden below AVG_MIN_SAMPLES: hiding
+    it would mean every board reads "not enough observations" for roughly the
+    first five service days. The count is always printed alongside it, and
+    "provisional" marks it below the threshold, so a reader is never misled into
+    treating one run as settled.
     """
     if row is None:
         return None
@@ -349,7 +322,6 @@ def station_board(
     session: Session,
     station_id: int,
     *,
-    basis: str | None = None,
     now: int | None = None,
     back_s: int = BOARD_BACK_S,
     fwd_s: int = BOARD_FWD_S,
@@ -361,7 +333,6 @@ def station_board(
         return None
 
     now = now or int(time.time())
-    basis = resolve_basis(session, basis)
     fv_id = tt_feed_version_id(session)
 
     payload = {
@@ -371,7 +342,6 @@ def station_board(
             "eva": station.eva,
             "tracked": bool(station.tracked),
         },
-        "basis": basis,
         "window": {
             "from": _clock(now - back_s),
             "to": _clock(now + fwd_s),
@@ -398,7 +368,6 @@ def station_board(
                     TrainStationDelay,
                     (TrainStationDelay.station_id == StationStop.station_id)
                     & (TrainStationDelay.train_id == StationStop.train_id)
-                    & (TrainStationDelay.basis == basis)
                     # Averages are per day of week, so the board shows the figure for
                     # the day being looked at -- a Sunday board quoting a Tuesday's
                     # delays would be wrong, and joining without this would return
@@ -467,46 +436,47 @@ def station_board(
 
 
 def train_route(
-    session: Session, train_id: int, *, basis: str | None = None, dow: int | None = None
+    session: Session, train_id: int, *, day_type: str = DAY_TYPE_WEEKDAY
 ) -> dict | None:
     """One train's whole journey, with scheduled times and typical lateness.
 
     The full route comes from train.route_path — IRIS's own ppth, every stop the
     service makes. Times and averages come from station_stop and
-    train_station_delay, which exist only for the stations we actually poll, so
+    train_stop_average, which exist only for the stations we actually poll, so
     most rows carry a name and nothing else. Showing the whole journey and
     marking which parts are measured is more honest than showing only the three
     stops we happen to watch and letting it read like the entire route.
 
-    `dow` picks which day of the week the averages describe, defaulting to today:
-    the route itself is undated, but every average now belongs to one weekday, and
-    joining without choosing would return the same stop seven times.
+    Averages are the Monday-to-Saturday pool, not one weekday: a run happens once
+    a day, so splitting by weekday leaves a single sample per row and the page
+    reads "no observations yet" for every stop on any day we have not collected.
+    `day_type` switches to the Sunday and public-holiday pool instead.
     """
     train = session.get(Train, train_id)
     if train is None:
         return None
 
-    basis = resolve_basis(session, basis)
     fv_id = tt_feed_version_id(session)
-    if dow is None:
-        dow = datetime.now(TZ).date().weekday()
 
     measured: dict[int, tuple] = {}
     if fv_id is not None:
         for stop, station, delay in session.execute(
-            select(StationStop, Station, TrainStationDelay)
+            select(StationStop, Station, TrainStopAverage)
             .join(Station, Station.id == StationStop.station_id)
             .outerjoin(
-                TrainStationDelay,
-                (TrainStationDelay.station_id == StationStop.station_id)
-                & (TrainStationDelay.train_id == StationStop.train_id)
-                & (TrainStationDelay.basis == basis)
-                & (TrainStationDelay.dow == dow),
+                TrainStopAverage,
+                (TrainStopAverage.station_id == StationStop.station_id)
+                & (TrainStopAverage.train_id == StationStop.train_id)
+                & (TrainStopAverage.day_type == day_type),
             )
             .where(
                 StationStop.train_id == train_id,
                 StationStop.feed_version_id == fv_id,
             )
+            # A handful of (train, station) pairs carry two scheduled times, one
+            # per timetable variant. Ordering puts the better-observed one last,
+            # so it is the one that survives into `measured`.
+            .order_by(TrainStopAverage.n_dep)
         ).all():
             measured[stop.stop_sequence] = (stop, station, delay)
 
@@ -565,7 +535,6 @@ def train_route(
             "line": {"id": line.id, "name": line.display_name} if line else None,
             "replacement_bus": (train.category or "").upper() == "BUS",
         },
-        "basis": basis,
         "n_monitored": sum(1 for s in stops if s["monitored"]),
         # A journey-level headline, averaged over the stops we can actually see.
         # Provisional whenever any contributing stop is -- a headline resting on
@@ -579,8 +548,288 @@ def train_route(
     }
 
 
-def line_detail(session: Session, line_id: int, *, limit: int = 300) -> dict | None:
-    """A line and every numbered run on it, earliest departure first."""
+def _canonical_order(trains) -> list[str]:
+    """The longest route on the line, taken as the axis every run travels along."""
+    best: list[str] = []
+    for train in trains:
+        names = [part for part in (train.route_path or "").split("|") if part]
+        if len(names) > len(best):
+            best = names
+    return best
+
+
+def _direction_of(train, index: dict[str, int]) -> int:
+    """0 if the run travels the canonical way along the line, 1 if it runs back.
+
+    Endpoints alone cannot answer this. RB33's short workings terminate at
+    Mönchengladbach and Herzogenrath rather than at either end of the line, so its
+    six origin/destination pairs describe only two directions. Position along the
+    longest route does answer it, and the short workings sort into the right half
+    without anyone having to enumerate them.
+    """
+    seen = [index[name] for name in (train.route_path or "").split("|") if name in index]
+    if len(seen) < 2:
+        ends = (index.get(train.origin_name), index.get(train.dest_name))
+        seen = [position for position in ends if position is not None]
+    if len(seen) < 2 or seen[-1] == seen[0]:
+        return 0
+    return 0 if seen[-1] > seen[0] else 1
+
+
+def _run_averages(session: Session, line_id: int, day_type: str) -> dict[int, dict]:
+    """One lateness figure per run, pooled over every stop of it we measure."""
+    rows = session.execute(
+        select(
+            TrainStopAverage.train_id,
+            func.sum(TrainStopAverage.n_dep),
+            func.sum(TrainStopAverage.avg_dep_delay_s * TrainStopAverage.n_dep),
+            func.sum(TrainStopAverage.pct_dep_punctual * TrainStopAverage.n_dep),
+            func.max(TrainStopAverage.n_runs),
+        )
+        .join(Train, Train.id == TrainStopAverage.train_id)
+        .where(
+            Train.line_id == line_id,
+            TrainStopAverage.day_type == day_type,
+            TrainStopAverage.n_dep > 0,
+            TrainStopAverage.avg_dep_delay_s.is_not(None),
+        )
+        .group_by(TrainStopAverage.train_id)
+    ).all()
+
+    averages: dict[int, dict] = {}
+    for train_id, n_dep, delay_sum, punctual_sum, n_runs in rows:
+        if not n_dep:
+            continue
+        averages[train_id] = {
+            "avg_min": round(delay_sum / n_dep / 60, 1),
+            "punctual_pct": (
+                round(punctual_sum / n_dep * 100) if punctual_sum is not None else None
+            ),
+            # Counted in runs rather than stops: one day's run calling at ten
+            # measured stops is one observation of that run, not ten.
+            "n_runs": n_runs or 0,
+            "provisional": (n_runs or 0) < AVG_MIN_SAMPLES,
+        }
+    return averages
+
+
+def _line_trains_by_direction(
+    session: Session, line_id: int, *, limit: int = 300
+) -> tuple[list[str], list[list[Train]]]:
+    """Every numbered run on a line, split into its two directions of travel.
+
+    Shared by every view that needs "the runs going this way": the line page, the
+    direction/station pickers, and the around-this-time lookup all have to agree
+    on which train goes which way, so the split lives here once.
+    """
+    trains = session.execute(
+        select(Train)
+        .where(Train.line_id == line_id)
+        .order_by(Train.first_departure_sec, Train.train_number)
+        .limit(limit)
+    ).scalars().all()
+
+    canonical = _canonical_order(trains)
+    index = {name: position for position, name in enumerate(canonical)}
+    halves: list[list[Train]] = [[], []]
+    for t in trains:
+        halves[_direction_of(t, index)].append(t)
+    return canonical, halves
+
+
+def _direction_label(canonical: list[str], direction: int) -> str:
+    if not canonical:
+        return "all runs"
+    return f"towards {canonical[-1 if direction == 0 else 0]}"
+
+
+def line_directions(session: Session, line_id: int) -> dict | None:
+    """The line's two directions, for a picker to show once a line is chosen."""
+    line = session.get(ServiceLine, line_id)
+    if line is None:
+        return None
+
+    canonical, halves = _line_trains_by_direction(session, line_id)
+    return {
+        "line": {"id": line.id, "name": line.display_name or line.identity_key},
+        "directions": [
+            {"direction": direction, "label": _direction_label(canonical, direction),
+             "n_runs": len(trains)}
+            for direction, trains in enumerate(halves)
+            if trains
+        ],
+    }
+
+
+def line_stations(session: Session, line_id: int, direction: int) -> list[dict] | None:
+    """Monitored stations a direction of a line calls at, in travel order.
+
+    Only stations with a station_stop row can go on here: that is exactly the set
+    with a scheduled time to compare against, which is the entire point of the
+    next step.
+
+    Ordering by matching Station.name against the text in train.route_path was
+    the first attempt, and it silently scrambled the list: IRIS's ppth and our
+    own station names disagree on plenty of stops (route_path says
+    "Krefeld-Uerdingen", the station row says "Krefeld Uerdingen Bf"), which is
+    exactly the mismatch train_route already routes around by joining on
+    station_id instead. This does the same -- order by stop_sequence on whichever
+    train in this direction covers the most stations, id-to-id throughout.
+    """
+    line = session.get(ServiceLine, line_id)
+    if line is None or direction not in (0, 1):
+        return None
+
+    _, halves = _line_trains_by_direction(session, line_id)
+    train_ids = [t.id for t in halves[direction]]
+    fv_id = tt_feed_version_id(session)
+    if not train_ids or fv_id is None:
+        return []
+
+    rows = session.execute(
+        select(StationStop.train_id, StationStop.station_id, StationStop.stop_sequence, Station.name)
+        .join(Station, Station.id == StationStop.station_id)
+        .where(StationStop.train_id.in_(train_ids), StationStop.feed_version_id == fv_id)
+    ).all()
+    if not rows:
+        return []
+
+    coverage: dict[int, int] = {}
+    for train_id, _station_id, _seq, _name in rows:
+        coverage[train_id] = coverage.get(train_id, 0) + 1
+    reference_id = max(coverage, key=coverage.get)
+
+    position = {
+        station_id: seq
+        for train_id, station_id, seq, _name in rows
+        if train_id == reference_id
+    }
+    names: dict[int, str] = {}
+    for _train_id, station_id, _seq, name in rows:
+        names.setdefault(station_id, name)
+
+    # A station only a non-reference train serves (a short working's own extra
+    # stop, say) has no position from the reference train -- keep it, just after
+    # everything the reference train does cover, rather than dropping it.
+    fallback = max(position.values(), default=0) + 1
+    ordered_ids = sorted(names, key=lambda sid: position.get(sid, fallback))
+    return [{"id": station_id, "name": names[station_id]} for station_id in ordered_ids]
+
+
+def trips_around(
+    session: Session,
+    line_id: int,
+    direction: int,
+    station_id: int,
+    time_of_day_s: int,
+    *,
+    day_type: str = DAY_TYPE_WEEKDAY,
+) -> dict | None:
+    """The 2 scheduled calls at or before a time, and the 1 right after.
+
+    The schedule is a recurring daily pattern with no date attached -- that is
+    the point of asking for a time rather than a date and time -- so "before" and
+    "after" wrap around midnight rather than running out at either end of the day.
+    """
+    line = session.get(ServiceLine, line_id)
+    station = session.get(Station, station_id)
+    if line is None or station is None or direction not in (0, 1):
+        return None
+
+    _, halves = _line_trains_by_direction(session, line_id)
+    trains_by_id = {t.id: t for t in halves[direction]}
+    fv_id = tt_feed_version_id(session)
+
+    payload = {
+        "line": {"id": line.id, "name": line.display_name or line.identity_key},
+        "direction": direction,
+        "station": {"id": station.id, "name": station.name},
+        "trips": [],
+    }
+    if not trains_by_id or fv_id is None:
+        return payload
+
+    rows = session.execute(
+        select(StationStop, TrainStopAverage)
+        .outerjoin(
+            TrainStopAverage,
+            (TrainStopAverage.station_id == StationStop.station_id)
+            & (TrainStopAverage.train_id == StationStop.train_id)
+            & (TrainStopAverage.day_type == day_type),
+        )
+        .where(
+            StationStop.station_id == station_id,
+            StationStop.train_id.in_(list(trains_by_id)),
+            StationStop.feed_version_id == fv_id,
+        )
+    ).all()
+
+    candidates = []
+    for stop, avg in rows:
+        sched = stop.planned_departure_sec
+        if sched is None:
+            sched = stop.planned_arrival_sec
+        candidates.append((sched % 86400, stop, avg))
+    candidates.sort(key=lambda c: c[0])
+
+    n = len(candidates)
+    if n == 0:
+        return payload
+
+    times = [c[0] for c in candidates]
+    after_idx = bisect.bisect_right(times, time_of_day_s)
+
+    # The two before/at and the one after, wrapping through index 0 when the
+    # chosen time is near either edge of the day. With fewer than 3 runs total
+    # the same stop is picked more than once; dedup on the way out rather than
+    # pretending three distinct trips exist when they do not.
+    # Position in this 3-slot picture, not a fresh tod comparison: wrapping past
+    # midnight can put the "next" call earlier in the day than the chosen time
+    # (23:00 -> next is 06:00), and it must still read as "after", not "before".
+    picks = [
+        (i % n, "before" if slot < 2 else "after")
+        for slot, i in enumerate(((after_idx - 2), (after_idx - 1), after_idx))
+    ]
+
+    seen: set[int] = set()
+    trips = []
+    for i, relation in picks:
+        _tod, stop, avg = candidates[i]
+        if stop.id in seen:
+            continue
+        seen.add(stop.id)
+        train = trains_by_id[stop.train_id]
+        trips.append(
+            {
+                "train_id": train.id,
+                "name": train.display_name or f"#{train.id}",
+                "url": f"/train/{train.id}/",
+                "sched_arr": _hhmm(stop.planned_arrival_sec),
+                "sched_dep": _hhmm(stop.planned_departure_sec),
+                "arr_avg": _average(avg, "arr"),
+                "dep_avg": _average(avg, "dep"),
+                "relation": relation,
+            }
+        )
+    payload["trips"] = trips
+    return payload
+
+
+def line_detail(
+    session: Session,
+    line_id: int,
+    *,
+    limit: int = 300,
+    current_train_id: int | None = None,
+    day_type: str = DAY_TYPE_WEEKDAY,
+) -> dict | None:
+    """A line and every numbered run on it, split by direction of travel.
+
+    Both directions of a line share a name but never a train: each direction gets
+    its own train numbers, so it already has its own train_id and its own averages.
+    Listing them interleaved by departure time -- which is what a line page did
+    before -- hides that, and reads as one service running twice as often.
+    """
     line = session.get(ServiceLine, line_id)
     if line is None:
         return None
@@ -599,12 +848,30 @@ def line_detail(session: Session, line_id: int, *, limit: int = 300) -> dict | N
         else {}
     )
 
-    trains = session.execute(
-        select(Train)
-        .where(Train.line_id == line_id)
-        .order_by(Train.first_departure_sec, Train.train_number)
-        .limit(limit)
-    ).scalars().all()
+    canonical, halves = _line_trains_by_direction(session, line_id, limit=limit)
+    averages = _run_averages(session, line_id, day_type)
+
+    result_halves: list[list[dict]] = [[], []]
+    for direction, trains in enumerate(halves):
+        for t in trains:
+            result_halves[direction].append(
+                {
+                    "id": t.id,
+                    "name": t.display_name or f"#{t.id}",
+                    "number": t.train_number,
+                    "segment": t.segment,
+                    "origin": t.origin_name,
+                    "destination": t.dest_name,
+                    "departs": _hhmm(t.first_departure_sec),
+                    "n_stops": t.n_stops,
+                    "n_monitored": monitored.get(t.id, 0),
+                    "url": f"/train/{t.id}/",
+                    # A short working: runs part of the line rather than all of it.
+                    "partial": bool(canonical) and (t.n_stops or 0) < len(canonical),
+                    "current": t.id == current_train_id,
+                    "avg": averages.get(t.id),
+                }
+            )
 
     return {
         "line": {
@@ -614,19 +881,13 @@ def line_detail(session: Session, line_id: int, *, limit: int = 300) -> dict | N
             "operator": line.operator,
             "replacement_bus": (line.category or "").upper() == "BUS",
         },
-        "n_runs": len(trains),
-        "runs": [
+        "n_runs": sum(len(runs) for runs in result_halves),
+        "directions": [
             {
-                "id": t.id,
-                "name": t.display_name or f"#{t.id}",
-                "number": t.train_number,
-                "origin": t.origin_name,
-                "destination": t.dest_name,
-                "departs": _hhmm(t.first_departure_sec),
-                "n_stops": t.n_stops,
-                "n_monitored": monitored.get(t.id, 0),
-                "url": f"/train/{t.id}/",
+                "label": _direction_label(canonical, direction),
+                "n_runs": len(runs),
+                "runs": runs,
             }
-            for t in trains
+            for direction, runs in enumerate(result_halves)
         ],
     }

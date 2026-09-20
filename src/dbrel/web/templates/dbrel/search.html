@@ -1,33 +1,51 @@
 {% extends "dbrel/base.html" %}
+{% load static %}
+
+{% block masthead_search %}{% endblock %}
 
 {% block content %}
-<section class="hero">
-  <h1>How late is it, usually?</h1>
-  <p>
-    Search a <strong>station</strong> to see everything arriving and departing with the
-    average delay each train runs there &mdash; or search a <strong>line</strong> or
-    <strong>train</strong> to see its whole route with scheduled times and typical lateness
-    at every stop.
-  </p>
-  <p class="hint">Start typing above — a few letters is enough.</p>
-</section>
-
-{% if stations %}
-<section class="monitored">
-  <h2>Currently monitored</h2>
+<section class="browse">
+  <h2>Find a train around a time</h2>
   <p class="hint">
-    Delays are only recorded at these {{ stations|length }} station{{ stations|pluralize }};
-    everything else is searchable but has no board.
+    Pick a line, its direction, a stop along it and a time of day — no date, since
+    the schedule repeats every day. You'll get the last two calls at or before
+    that time and the next one after, each with its scheduled and average timings.
   </p>
-  <ul class="chips">
-    {% for station in stations %}
-    <li><a href="{{ station.url }}">{{ station.name }}</a></li>
-    {% endfor %}
-  </ul>
+
+  <div class="browse-fields">
+    <div class="field">
+      <label for="browse-line">Line</label>
+      <div class="typeahead" id="browse-line-typeahead">
+        <input id="browse-line" type="text" autocomplete="off"
+               placeholder="RE1, S1, RB33…" aria-expanded="false" role="combobox">
+        <ul class="typeahead-results" hidden></ul>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="browse-direction">Direction</label>
+      <select id="browse-direction" disabled>
+        <option value="">Choose a line first</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="browse-station">Stop</label>
+      <select id="browse-station" disabled>
+        <option value="">Choose a direction first</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="browse-time">Time</label>
+      <input id="browse-time" type="time" disabled>
+    </div>
+  </div>
+
+  <div id="browse-results" class="browse-results"></div>
 </section>
-{% endif %}
 {% endblock %}
 
 {% block scripts %}
-<script>document.getElementById('q').focus();</script>
+<script src="{% static 'dbrel/browse.js' %}"></script>
 {% endblock %}

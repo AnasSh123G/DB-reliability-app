@@ -66,8 +66,6 @@ uv run dbrel search "Bochum"                          # trains, lines and statio
 ### The web UI
 
 ```bash
-uv run dbrel seed-demo          # optional: plausible past runs, so there is something to show
-                                 # before dbrel collect has accumulated any of its own
 uv run dbrel serve              # http://127.0.0.1:8000
 ```
 
@@ -85,10 +83,7 @@ Three pages:
 An average is shown from its very first sample, not hidden until there are several — a
 real number, even a noisy one, beats a page of em-dashes for the first few days of a fresh
 collection. Below 5 samples it is marked **provisional**; that marking clears on its own as
-`dbrel collect` accumulates more runs. `seed-demo` is entirely optional and untouched by any
-of this: it exists only to make the UI demonstrable before real data exists, seeds strictly
-before the earliest real day so it can never mix with or displace it, and `dbrel seed-demo
---clear` removes it cleanly.
+`dbrel collect` accumulates more runs.
 
 Django owns no database. `DATABASES = {}` leaves it on the dummy backend, so it cannot
 write a table into `dbrel.sqlite` even by accident; all reads go through the SQLAlchemy
@@ -191,8 +186,8 @@ corridor the two jobs together cost under 5% of the 72,000/day request budget.
 | `collect [--every 15m --for 7d] [--stations FILE] [--once]` | Run daily backfill → plan → poll → finalize → averages on a timer; cold-starts an empty database |
 | `reset-db [--yes]` | Delete the database; keeps `data/feeds` and `data/probe` |
 | `build-aliases` | Index every station for search; run once after `import-static` |
-| `compute-averages [--basis real\|synth\|all] [--full]` | Average each train's delay at each station into `train_station_delay` |
-| `seed-demo [--days N] [--clear]` | Invent plausible past runs so the UI has something to show |
+| `compute-averages [--full]` | Average each train's delay at each station into `train_station_delay` |
+| `compute-stop-averages [--full]` | Average each train's delay at each of its stops into `train_stop_average` |
 | `serve [--host H --port P]` | Run the web UI |
 | `show-train <number> --date D [--format tsv]` | Every stop of one run, scheduled against actual |
 | `show-station <name> --date D [--format tsv]` | Everything that called at one station on one day |
@@ -260,18 +255,21 @@ service_line ──< train                    'RE 4', 'S1'
 - **`train_station_delay`** — a derived rollup: mean, median, p90 and punctuality for one
   train at one station **on one day of the week**. Rebuildable from `trip_stop` at any
   time, which is why it lives in `models/aggregates.py` rather than beside the domain.
-  Keyed on `(station, train, basis, dow)`:
-  - `basis` is `REAL` or `SYNTH` — measured and simulated samples never share a row, so
-    no figure is ever a blend of the two.
-  - `dow` is `0`=Monday..`6`=Sunday, taken from `trip.service_date` (the departure date at
-    the run's *origin*, so an overnight run keeps one weekday end to end). A weekday and a
-    Sunday are different railways; one mean over both describes neither. The cost is that
-    samples divide by seven, so a single week gives one run per row — these only start to
-    mean "usually" after several weeks.
+  Keyed on `(station, train, dow)`, where `dow` is `0`=Monday..`6`=Sunday, taken from
+  `trip.service_date` (the departure date at the run's *origin*, so an overnight run keeps
+  one weekday end to end). A weekday and a Sunday are different railways; one mean over
+  both describes neither. The cost is that samples divide by seven, so a single week gives
+  one run per row — these only start to mean "usually" after several weeks.
 
   Not keyed on `service_line`: `upsert_line` only mints a line when both category and line
   are present, and no long-distance stop carries `dp@l` (§11), so every ICE and IC would
   be dropped.
+- **`train_stop_average`** — the same idea keyed differently: `(day_type, train, station,
+  scheduled time)`, where `day_type` is `WEEKDAY` (Mon–Sat, excluding public holidays) or
+  `SUNDAY_HOLIDAY`. Pooling the working days rather than splitting them by weekday means a
+  figure means "usually" after weeks rather than months; keying on the scheduled time
+  keeps a train that runs a different timetable on Saturday from being averaged against
+  itself. Read through the `avg_weekday` / `avg_sunday_holiday` views.
 - **`tt_message`** — delay causes attached to a stop. The most useful label in the
   database for training.
 
@@ -350,7 +348,7 @@ SELECT m.category, COUNT(*) FROM tt_message m GROUP BY 1 ORDER BY 2 DESC LIMIT 2
 -- worst trains at one station, straight off the rollup
 SELECT tr.display_name, d.n_dep, d.avg_dep_delay_s/60.0 mean_min, d.pct_dep_punctual
 FROM train_station_delay d JOIN train tr ON tr.id = d.train_id
-WHERE d.station_id = ? AND d.basis = 'REAL' AND d.n_dep >= 5
+WHERE d.station_id = ? AND d.n_dep >= 5
 ORDER BY d.avg_dep_delay_s DESC LIMIT 20;
 ```
 
@@ -358,8 +356,7 @@ The first query is what `compute-averages` precomputes into `train_station_delay
 per train per station, so the web board does not recompute it per request.
 
 `show-train` and `show-station` both take `--format tsv` for piping straight into a
-training script. Seeded runs are excluded from `show-station` unless you pass
-`--include-synthetic`, and a synthetic `show-train` TSV carries a `#` warning line.
+training script.
 
 ## Probes
 
