@@ -1,10 +1,10 @@
-{% load static %}<!doctype html>
+{% load versioned_static %}<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Train reliability{% endblock %}</title>
-<link rel="stylesheet" href="{% static 'dbrel/app.css' %}">
+<link rel="stylesheet" href="{% versioned 'dbrel/app.css' %}">
 </head>
 <body>
 <header class="masthead">
@@ -28,7 +28,7 @@
   Punctuality uses DB&rsquo;s own threshold: under six minutes counts as on time.
 </footer>
 
-<script src="{% static 'dbrel/app.js' %}"></script>
+<script src="{% versioned 'dbrel/app.js' %}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

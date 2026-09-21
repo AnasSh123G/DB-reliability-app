@@ -9,9 +9,10 @@ trusted.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from dbrel.collect import (
@@ -29,6 +30,7 @@ from dbrel.collect import (
 )
 from dbrel.config import TZ
 from dbrel.db import Base
+from dbrel.gtfs.static_import import station_natural_key
 from dbrel.models import Station, TtPlanFetch
 
 # --------------------------------------------------------------------------
@@ -323,6 +325,59 @@ def test_apply_station_seed_happy_path_sets_every_field(session):
     assert station.eva_source == "seed"
     assert station.tracked == 1
     assert station.poll_priority == 2
+
+
+def test_seed_with_coordinates_creates_a_station_that_does_not_exist(session):
+    """IRIS serves ~1,700 stations gtfs.de has no row for; the national seed
+    carries their coordinates so they can be created rather than reported missing."""
+    seed = [SeedStation(name="Nowhere Hbf", eva=8000041, ds100="XNW",
+                        natural_key=None, lat=51.5, lon=7.25)]
+
+    result = apply_station_seed(session, seed)
+
+    assert result.created == ["Nowhere Hbf"]
+    assert result.missing == []
+    assert result.tracked == 1
+    station = session.execute(select(Station).where(Station.eva == 8000041)).scalar_one()
+    assert (station.name, station.lat, station.lon) == ("Nowhere Hbf", 51.5, 7.25)
+    assert station.natural_key == station_natural_key("Nowhere Hbf", 51.5, 7.25)
+    assert station.tracked == 1
+
+
+def test_seed_with_coordinates_reuses_a_row_sharing_the_derived_key(session):
+    """StaDa and gtfs.de disagree by ~56 m, and the key rounds to ~110 m, so an
+    entry can derive the key of a row its name never matched. Creating a second
+    row there would split one platform's history in two."""
+    key = station_natural_key("X Hbf", 51.5, 7.25)
+    session.add(Station(id=1, natural_key=key, name="X Hbf", lat=51.5, lon=7.25))
+    session.flush()
+    seed = [SeedStation(name="X Hbf", eva=8000041, ds100=None,
+                        natural_key="stale-key-from-an-older-feed", lat=51.5004, lon=7.2504)]
+
+    result = apply_station_seed(session, seed)
+
+    assert result.created == []
+    assert session.execute(select(func.count()).select_from(Station)).scalar_one() == 1
+    assert session.get(Station, 1).eva == 8000041
+
+
+def test_national_seed_file_is_well_formed():
+    from dbrel.collect import load_station_seed
+    from dbrel.config import RAIL_EVA_RANGE
+
+    seed = load_station_seed(Path("config/germany_stations.toml"))
+    assert len(seed) > 5_000, "the national seed should cover thousands of stations"
+
+    evas = [s.eva for s in seed]
+    assert len(evas) == len(set(evas)), "duplicate eva in the national seed"
+    for s in seed:
+        assert s.eva in RAIL_EVA_RANGE, f"{s.name}: eva {s.eva} outside RAIL_EVA_RANGE"
+        assert s.lat is not None and s.lon is not None, f"{s.name}: needs coordinates to be creatable"
+
+    # Two entries landing on one key is the Berlin Hbf trap: the second is refused
+    # as a conflict, and if the first is the dead eva the station is lost entirely.
+    keys = [s.natural_key or station_natural_key(s.name, s.lat, s.lon) for s in seed]
+    assert len(keys) == len(set(keys)), "two seed entries would claim the same station row"
 
 
 def test_default_station_seed_file_is_well_formed():

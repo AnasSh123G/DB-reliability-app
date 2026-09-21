@@ -14,14 +14,8 @@ from sqlalchemy.orm import Session
 
 from dbrel.db import Base
 from dbrel.identity import SOURCE_TT
-from dbrel.models import (
-    DAY_TYPE_SUNDAY_HOLIDAY,
-    DAY_TYPE_WEEKDAY,
-    ServiceLine,
-    Station,
-    Train,
-    TrainStopAverage,
-)
+from dbrel.models import ServiceLine, Station, StationStop, Train
+from dbrel.timetables.runs import tt_feed_version
 from dbrel.web import queries
 
 LINE_ID = 33
@@ -60,6 +54,12 @@ def session():
                           lat=51.0 + index, lon=7.0, tracked=1))
         for train_id, number, path in RUNS:
             s.add(train_row(train_id, number, path))
+        s.flush()
+        # One monitored stop per run, so _run_forecasts has something to score.
+        fv_id = tt_feed_version(s)
+        for train_id, _number, _path in RUNS:
+            s.add(StationStop(feed_version_id=fv_id, train_id=train_id, stop_sequence=1,
+                              station_id=1, planned_departure_sec=6 * 3600))
         s.flush()
         yield s
 
@@ -122,61 +122,37 @@ def test_the_current_run_is_flagged_and_only_it(session):
     assert flagged == ["RB 10324"]
 
 
-def add_average(session, train_id: int, station_id: int, *, n_dep: int,
-                avg_s: float, punctual: float, day_type: str = DAY_TYPE_WEEKDAY) -> None:
-    session.add(TrainStopAverage(
-        day_type=day_type, train_id=train_id, station_id=station_id,
-        sched_sec=station_id * 600, sched_kind="DEP", sched_dep_sec=station_id * 600,
-        line_id=LINE_ID, n_dep=n_dep, n_arr=n_dep, n_runs=n_dep, n_known=n_dep,
-        avg_dep_delay_s=avg_s, pct_dep_punctual=punctual,
-        computed_at=1, rule_version=1,
-    ))
-    session.flush()
-
-
 def run_named(session, name: str, **kwargs) -> dict:
     detail = queries.line_detail(session, LINE_ID, **kwargs)
     return next(r for d in detail["directions"] for r in d["runs"] if r["name"] == name)
 
 
-def test_a_runs_figure_is_weighted_by_how_much_each_stop_saw(session):
-    add_average(session, 601, 1, n_dep=10, avg_s=60.0, punctual=0.9)
-    add_average(session, 601, 2, n_dep=20, avg_s=120.0, punctual=0.6)
-    # (60*10 + 120*20) / 30 = 100s, not the 90s an unweighted mean would give.
-    assert run_named(session, "RB 10324")["avg"]["avg_min"] == 1.7
-    assert run_named(session, "RB 10324")["avg"]["punctual_pct"] == 70
+def test_no_forecast_without_an_activated_model(session):
+    assert run_named(session, "RB 10324")["pred"] is None
 
 
-def test_a_run_with_no_observations_carries_no_figure(session):
-    assert run_named(session, "RB 10323")["avg"] is None
+def test_every_run_gets_a_forecast_from_its_earliest_monitored_stop(session, stub_ml_model):
+    assert run_named(session, "RB 10324")["pred"]["p50_min"] == 2.0
+    assert run_named(session, "RB 10323")["pred"]["p50_min"] == 2.0
 
 
-def test_stops_with_no_departures_do_not_drag_the_figure_down(session):
-    add_average(session, 601, 1, n_dep=10, avg_s=60.0, punctual=0.9)
-    add_average(session, 601, 2, n_dep=0, avg_s=None, punctual=None)
-    assert run_named(session, "RB 10324")["avg"]["avg_min"] == 1.0
+def test_forecasting_the_line_is_one_booster_call_for_all_its_runs(session, stub_ml_model):
+    """Four runs on this line, one round of inference -- not one call each."""
+    _manifest, boosters = stub_ml_model
+    queries.line_detail(session, LINE_ID)
+    assert all(booster.calls == [4] for booster in boosters.values())
 
 
-def test_the_sunday_pool_is_not_mixed_into_the_weekday_figure(session):
-    add_average(session, 601, 1, n_dep=10, avg_s=60.0, punctual=0.9)
-    add_average(session, 601, 2, n_dep=10, avg_s=600.0, punctual=0.1,
-                day_type=DAY_TYPE_SUNDAY_HOLIDAY)
-    assert run_named(session, "RB 10324")["avg"]["avg_min"] == 1.0
-    sunday = run_named(session, "RB 10324", day_type=DAY_TYPE_SUNDAY_HOLIDAY)
-    assert sunday["avg"]["avg_min"] == 10.0
-
-
-def test_another_lines_averages_do_not_leak_in(session):
-    """The line comes from the train, not from the aggregate's own line_id.
-
-    add_average() stamps every row with RB33 whatever train it belongs to, so a
-    query trusting that denormalised column would pull this one in.
-    """
+def test_another_lines_runs_are_not_scored_by_this_lookup(session, stub_ml_model):
+    """The line comes from _line_trains_by_direction's own scope, not a global scan."""
     session.add(ServiceLine(id=99, identity_key="RB/RB99", category="RB", line="RB99",
                             display_name="RB99", search_name="rb99", operator="RRX"))
     other = train_row(700, 99001, ROUTE)
     other.line_id = 99
     session.add(other)
     session.flush()
-    add_average(session, 700, 1, n_dep=10, avg_s=6000.0, punctual=0.0)
-    assert run_named(session, "RB 10324")["avg"] is None
+
+    _manifest, boosters = stub_ml_model
+    queries.line_detail(session, LINE_ID)
+    # Still 4, not 5 -- the other line's train never enters the request batch.
+    assert all(booster.calls == [4] for booster in boosters.values())

@@ -16,11 +16,6 @@
   {{ route.train.origin }} &rarr; {{ route.train.destination }}
   &middot; {{ route.train.n_stops }} stops, {{ route.n_monitored }} monitored
   {% if route.train.operator %}&middot; {{ route.train.operator }}{% endif %}
-  {% if route.avg_delay_min %}
-  <br><strong>Typically {{ route.avg_delay_min }} min late</strong>
-  across {{ route.avg_delay_n_stops }} stop{{ route.avg_delay_n_stops|pluralize }} we measure
-  {% if route.avg_delay_provisional %}<span class="provisional-tag">provisional</span>{% endif %}
-  {% endif %}
 </p>
 
 <ol class="route">
@@ -44,18 +39,16 @@
     </div>
 
     <div class="stopavg">
-      {% with avg=stop.dep_avg|default:stop.arr_avg %}
-      {% if avg %}
-      <span class="avg">
-        <span class="figure">&#8709; {{ avg.avg_min }} min</span>
-        <span class="sep">·</span>{{ avg.punctual_pct }}% under 6&nbsp;min
-        <span class="sep">·</span><span class="n">{{ avg.n }} sample{{ avg.n|pluralize }}</span>
-        {% if avg.provisional %}<span class="provisional-tag">provisional</span>{% endif %}
+      {% if stop.dep_pred %}
+      <span class="pred" title="model forecast, 50% conformal interval">
+        <span class="pred-tag">forecast</span>
+        {{ stop.dep_pred.p50_min }} min
+        <span class="pred-range-label">Range of expected delay:</span>
+        <span class="pred-range">{{ stop.dep_pred.lo_min }} to {{ stop.dep_pred.hi_min }} min</span>
       </span>
       {% elif stop.monitored %}
-      <span class="avg none">&mdash; no observations yet</span>
+      <span class="pred none">&mdash; no forecast for this call</span>
       {% endif %}
-      {% endwith %}
     </div>
   </li>
   {% endfor %}
@@ -64,14 +57,14 @@
 {% if route.n_monitored == 0 %}
 <p class="empty">
   None of this train's stops are in the monitored corridor, so there are no times
-  or averages for it &mdash; only the route IRIS publishes.
+  or forecasts for it &mdash; only the route IRIS publishes.
 </p>
 {% endif %}
 
 {% if detail %}
 <h2 class="section-head">
   Every run on {{ detail.line.name }}
-  <span class="n">both directions &middot; weekday averages</span>
+  <span class="n">both directions &middot; weekday forecast</span>
 </h2>
 {% include "dbrel/_directions.html" %}
 {% endif %}

@@ -33,8 +33,6 @@ from dbrel.models import (
     Station,
     StationStop,
     Train,
-    TrainStationDelay,
-    TrainStopAverage,
     Trip,
     TripStop,
     TtMessage,
@@ -131,8 +129,6 @@ def stats() -> None:
             ("tt_unmatched", TtUnmatched),
             ("tt_poll", TtPoll),
             ("search_alias", SearchAlias),
-            ("train_station_delay", TrainStationDelay),
-            ("train_stop_average", TrainStopAverage),
             ("route", Route),
             ("feed_version", FeedVersion),
         ]:
@@ -713,85 +709,84 @@ def build_aliases() -> None:
     )
 
 
-@app.command("compute-averages")
-def compute_averages(
+def _needs_ml() -> None:
+    """Same shape as serve's Django check: the extra is optional, so say so."""
+    try:
+        import lightgbm  # noqa: F401
+    except ImportError:
+        typer.echo("lightgbm is not installed — run 'uv sync --extra ml'")
+        raise typer.Exit(1)
+
+
+@app.command("train-delay-model")
+def train_delay_model(
     since: str = typer.Option(None, help="only service dates from this YYYY-MM-DD"),
-    full: bool = typer.Option(False, help="rebuild every pair, ignoring the watermark"),
+    until: str = typer.Option(None, help="only service dates up to this YYYY-MM-DD"),
+    seed: int = typer.Option(0, help="fixed so the same data gives the same model"),
+    dry_run: bool = typer.Option(False, help="score it but write nothing"),
 ) -> None:
-    """Average each train's delay at each station, into train_station_delay."""
-    from dbrel.derive.delay_averages import run_delay_averages
+    """Fit the delay model and score it against the historical average.
 
-    with session_scope() as session:
-        _require_schema(session)
-        result = run_delay_averages(session, since=since, full=full, progress=typer.echo)
-        typer.echo(
-            f"  {result.pairs_written:,} pairs written, "
-            f"{result.pairs_deleted:,} dropped, {result.samples_read:,} samples, "
-            f"{result.elapsed_s:.1f}s"
-        )
-
-        rows = session.execute(
-            select(
-                TrainStationDelay.segment,
-                func.count(),
-                func.avg(TrainStationDelay.avg_dep_delay_s),
-                func.avg(TrainStationDelay.pct_dep_punctual),
-            )
-            .where(TrainStationDelay.n_dep > 0)
-            .group_by(TrainStationDelay.segment)
-            .order_by(TrainStationDelay.segment)
-        ).all()
-        if rows:
-            typer.echo("\nsegment  pairs     mean delay   under 6 min")
-            for segment, count, mean, punctual in rows:
-                typer.echo(
-                    f"  {segment or '-':<7} {count:>6,}   "
-                    f"{(mean or 0) / 60:>6.2f} min   {(punctual or 0):>7.1%}"
-                )
-
-
-@app.command("compute-stop-averages")
-def compute_stop_averages(
-    since: str = typer.Option(None, help="only service dates from this YYYY-MM-DD"),
-    full: bool = typer.Option(False, help="rebuild every row, ignoring the watermark"),
-) -> None:
-    """Average each train's delay at each of its stops, into train_stop_average.
-
-    Unlike compute-averages this pools Monday to Saturday into one figure and keeps
-    Sundays and public holidays apart, and it keys on the scheduled time at the stop
-    so one train number running two different timetables stays two rows. Read it
-    through the avg_weekday and avg_sunday_holiday views.
+    Trains three quantile models on the oldest 60% of service dates, calibrates a
+    band with conformal prediction on the next 20%, and reports against the
+    newest 20% — which it has not seen. The model is only activated if it beats
+    the average this app already ships; the literature is clear that baseline is
+    hard to beat, so losing is a normal outcome and is reported plainly.
     """
-    from dbrel.derive.stop_averages import run_stop_averages
+    _needs_ml()
+    from dbrel.ml._common import QUANTILES
+    from dbrel.ml.train import run_train
+
+    nominal = QUANTILES[-1] - QUANTILES[0]
 
     with session_scope() as session:
         _require_schema(session)
-        result = run_stop_averages(session, since=since, full=full, progress=typer.echo)
-        typer.echo(
-            f"  {result.rows_written:,} rows written, "
-            f"{result.rows_deleted:,} dropped, {result.samples_read:,} samples, "
-            f"{result.elapsed_s:.1f}s"
+        result = run_train(
+            session, since=since, until=until, seed=seed, dry_run=dry_run,
+            progress=typer.echo,
         )
 
-        rows = session.execute(
-            select(
-                TrainStopAverage.day_type,
-                func.count(),
-                func.avg(TrainStopAverage.n_dep),
-                func.avg(TrainStopAverage.avg_dep_delay_s),
-                func.avg(TrainStopAverage.pct_dep_punctual),
-            )
-            .where(TrainStopAverage.n_dep > 0)
-            .group_by(TrainStopAverage.day_type)
-            .order_by(TrainStopAverage.day_type)
-        ).all()
-        if rows:
-            typer.echo("\nday type         stops   samples/stop   mean delay   under 6 min")
-            for day_type, count, per_stop, mean, punctual in rows:
-                typer.echo(
-                    f"  {day_type:<16} {count:>6,}   {(per_stop or 0):>10.1f}   "
-                    f"{(mean or 0) / 60:>6.2f} min   {(punctual or 0):>7.1%}"
-                )
+    if result.evaluation is None:
+        typer.echo(f"  {result.reason}")
+        raise typer.Exit(1)
+
+    e = result.evaluation
+    typer.echo(
+        f"\n  {result.rows:,} observations   "
+        f"fit {result.n_fit:,} / calibrate {result.n_calibrate:,} / test {result.n_test:,}   "
+        f"{result.elapsed_s:.1f}s"
+    )
+    typer.echo(
+        f"  fit {result.fit_dates[0]}..{result.fit_dates[-1]}   "
+        f"calibrate {result.calibrate_dates[0]}..{result.calibrate_dates[-1]}   "
+        f"test {result.test_dates[0]}..{result.test_dates[-1]}"
+    )
+
+    typer.echo("\nmetric              baseline      model          change")
+    for label, base, model in (
+        ("MAE (s)", e.baseline_mae, e.model_mae),
+        ("pinball p50 (s)", e.baseline_pinball, e.model_pinball),
+    ):
+        delta = (base - model) / base if base else 0.0
+        typer.echo(f"  {label:<16} {base:>9.1f}  {model:>9.1f}  {delta:>+13.1%}")
+    typer.echo(f"  {'naive median (s)':<16} {e.naive_mae:>9.1f}")
+    typer.echo(
+        f"\n  band coverage {e.band_coverage:.1%} (nominal "
+        f"{nominal:.0%}), mean width {e.band_width:.0f}s"
+    )
+    typer.echo(f"  cold-start calls in test: {e.cold_start_share:.1%}")
+
+    typer.echo("\ntop features by gain")
+    for name, gain in result.importances[:8]:
+        typer.echo(f"  {name:<24} {gain:>12,}")
+
+    typer.echo(f"\n  activated: {'yes' if result.activated else 'no'} — {result.reason}")
+    if result.directory:
+        typer.echo(f"  {result.directory}")
+    typer.echo(
+        "\n  scoring happens live in the web process (dbrel.ml.live) — "
+        "nothing left to precompute"
+    )
 
 
 @app.command("serve")
@@ -800,7 +795,13 @@ def serve(
     port: int = typer.Option(8000),
     debug: bool = typer.Option(False),
 ) -> None:
-    """Run the web UI."""
+    """Run the web UI.
+
+    Forecasts on the browse widget and train pages run the model live, per
+    request (dbrel.ml.live) — install the `ml` extra too if you want to see
+    them; without it the board just shows historical averages, same as before
+    that extra existed.
+    """
     import os
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "dbrel.web.settings")

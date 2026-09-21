@@ -176,33 +176,6 @@ main, .masthead, footer { max-width: 60rem; margin-inline: auto; padding-inline:
   color: var(--muted);
 }
 
-.avg {
-  font-size: 0.85rem;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-  align-items: baseline;
-}
-
-.avg .figure { color: var(--ink); font-weight: 600; }
-.avg .sep { opacity: 0.4; }
-.avg.none { font-style: italic; opacity: 0.75; }
-
-/* A real average resting on fewer than AVG_MIN_SAMPLES runs -- shown, not
-   hidden, but visibly not settled yet. */
-.provisional-tag {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 0.04rem 0.32rem;
-  border-radius: 3px;
-  background: var(--warn-bg);
-  color: var(--warn-ink);
-  border: 1px solid var(--warn-line);
-}
-
 footer {
   padding-block: 1.5rem 3rem;
   color: var(--muted);
@@ -378,8 +351,6 @@ footer {
   align-items: baseline;
 }
 
-.runavg .figure { color: var(--ink); font-weight: 600; }
-.runavg .sep { opacity: 0.4; }
 .runavg.none { font-style: italic; opacity: 0.7; }
 
 @media (max-width: 52rem) {
@@ -474,17 +445,43 @@ footer {
 .btimes .t { color: var(--muted); font-size: 0.9rem; }
 .btimes .t.dep { color: var(--ink); font-weight: 600; }
 
-.bavgs { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.35rem; }
+@media (max-width: 42rem) {
+  .btrip { grid-template-columns: 1fr; }
+}
 
-.bavg {
+/* --- model forecast: the only lateness figure the app shows ------------- */
+
+.pred {
+  display: flex;
+  gap: 0.35rem;
+  align-items: baseline;
+  flex-wrap: wrap;
   font-size: 0.82rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  margin-top: 0.35rem;
 }
 
-.bavg .figure { color: var(--ink); font-weight: 600; }
-.bavg.none { font-style: italic; opacity: 0.75; }
+.pred.none { font-style: italic; opacity: 0.75; }
 
-@media (max-width: 42rem) {
-  .btrip { grid-template-columns: 1fr; }
+/* flex-basis: 100% forces this onto its own line within the wrapping .pred
+   row, so the range never reads as a continuation of the headline number. */
+.pred-range-label {
+  flex-basis: 100%;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
+.pred-range { font-variant-numeric: tabular-nums; }
+
+/* Quiet rather than alarming: a forecast is a distribution, not a fact, and
+   should not read with the confidence of something that already happened. */
+.pred-tag {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.04rem 0.32rem;
+  border-radius: 3px;
+  border: 1px dashed var(--line);
+  color: var(--muted);
 }

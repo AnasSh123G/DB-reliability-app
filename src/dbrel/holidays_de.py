@@ -96,8 +96,7 @@ def day_type_of(service_date: str | None, holiday_dates: set[str]) -> str | None
 
     The caller passes trip.service_date, which is the planned departure date at the
     run's ORIGIN — so an overnight run keeps one day type at every station it
-    reaches, instead of splitting itself across midnight. Same reasoning as the
-    `_dow` docstring in derive/delay_averages.py.
+    reaches, instead of splitting itself across midnight.
     """
     if not service_date:
         return None

@@ -24,18 +24,15 @@
           {% if run.current %}<span class="ends">this run</span>{% endif %}
         </div>
 
-        {% if run.avg %}
-        <div class="runavg">
-          <span class="figure">&#8709; {{ run.avg.avg_min }} min</span>
-          {% if run.avg.punctual_pct is not None %}
-          <span class="sep">·</span>{{ run.avg.punctual_pct }}% under 6&nbsp;min
-          {% endif %}
-          <span class="sep">·</span>
-          <span class="n">{{ run.avg.n_runs }} day{{ run.avg.n_runs|pluralize }}</span>
-          {% if run.avg.provisional %}<span class="provisional-tag">provisional</span>{% endif %}
+        {% if run.pred %}
+        <div class="runavg pred" title="model forecast, 50% conformal interval">
+          <span class="pred-tag">forecast</span>
+          {{ run.pred.p50_min }} min
+          <span class="pred-range-label">Range of expected delay:</span>
+          <span class="pred-range">{{ run.pred.lo_min }} to {{ run.pred.hi_min }} min</span>
         </div>
         {% else %}
-        <div class="runavg none">&mdash; no observations yet</div>
+        <div class="runavg none">&mdash; no forecast for this run</div>
         {% endif %}
       </li>
       {% endfor %}

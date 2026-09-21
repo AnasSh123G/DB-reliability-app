@@ -16,13 +16,11 @@ from dbrel.db import Base
 from dbrel.identity import SOURCE_TT
 from dbrel.models import (
     DAY_TYPE_SUNDAY_HOLIDAY,
-    DAY_TYPE_WEEKDAY,
     SearchAlias,
     ServiceLine,
     Station,
     StationStop,
     Train,
-    TrainStopAverage,
 )
 from dbrel.timetables.runs import tt_feed_version
 from dbrel.web import queries
@@ -30,7 +28,7 @@ from dbrel.web import queries
 ROUTE = ["Aachen Hbf", "Köln Hbf", "Duisburg Hbf", "Bochum Hbf", "Hamm(Westf)Hbf"]
 TRAIN_ID = 500
 
-# The scheduled departure at Bochum, which is what the average there is keyed on.
+# The scheduled departure at Bochum.
 BOCHUM_DEP_SEC = 10 * 3600 + 60
 
 
@@ -58,15 +56,7 @@ def session():
                           planned_departure_sec=9 * 3600 + 2280, platform_code="12"))
         s.add(StationStop(feed_version_id=fv_id, train_id=TRAIN_ID, stop_sequence=4,
                           station_id=4, planned_arrival_sec=10 * 3600,
-                          planned_departure_sec=10 * 3600 + 60, platform_code="3"))
-        s.add(TrainStopAverage(day_type=DAY_TYPE_WEEKDAY, station_id=4,
-                               train_id=TRAIN_ID, sched_sec=BOCHUM_DEP_SEC,
-                               sched_kind="DEP", sched_dep_sec=BOCHUM_DEP_SEC,
-                               line_id=9,
-                               n_arr=20, n_dep=20, n_runs=20, n_known=20,
-                               avg_dep_delay_s=180.0, p50_dep_delay_s=120,
-                               p90_dep_delay_s=480, pct_dep_punctual=0.85,
-                               computed_at=1, rule_version=1))
+                          planned_departure_sec=BOCHUM_DEP_SEC, platform_code="3"))
         s.flush()
         yield s
 
@@ -88,37 +78,42 @@ def test_times_land_on_the_right_stop(session):
     assert stops["Aachen Hbf"]["dep"] is None
 
 
-def test_average_attaches_only_where_there_is_one(session):
+def test_no_forecast_without_an_activated_model(session):
+    """The default fixture state: ml installed or not, no model means no figure."""
     stops = {s["name"]: s for s in queries.train_route(session, TRAIN_ID)["stops"]}
-    assert stops["Bochum Hbf"]["dep_avg"]["avg_min"] == 3.0
-    assert stops["Bochum Hbf"]["dep_avg"]["punctual_pct"] == 85
-    # Monitored but no averages row computed yet.
-    assert stops["Duisburg Hbf"]["dep_avg"] is None
-    assert stops["Hamm(Westf)Hbf"]["dep_avg"] is None
+    assert stops["Bochum Hbf"]["dep_pred"] is None
+    assert stops["Duisburg Hbf"]["dep_pred"] is None
 
 
-def test_weekday_average_is_the_default(session):
-    """A run happens once a day, so the page pools Mon-Sat rather than splitting.
-
-    Asking per weekday left one sample per row and every stop reading "no
-    observations yet" on any day not yet collected.
-    """
+def test_forecast_attaches_to_every_monitored_stop(session, stub_ml_model):
+    """Unlike the old stored average, the live model has no cold-start gap: every
+    monitored stop gets scored, not only the ones history happened to cover."""
     stops = {s["name"]: s for s in queries.train_route(session, TRAIN_ID)["stops"]}
-    assert stops["Bochum Hbf"]["dep_avg"]["n"] == 20
+    assert stops["Bochum Hbf"]["dep_pred"]["p50_min"] == 2.0
+    assert stops["Duisburg Hbf"]["dep_pred"]["p50_min"] == 2.0
+    assert stops["Aachen Hbf"]["dep_pred"] is None
 
 
-def test_sunday_pool_does_not_borrow_the_weekday_figure(session):
-    stops = {
-        s["name"]: s
-        for s in queries.train_route(
-            session, TRAIN_ID, day_type=DAY_TYPE_SUNDAY_HOLIDAY
-        )["stops"]
-    }
-    assert stops["Bochum Hbf"]["dep_avg"] is None
+def test_forecast_batches_into_one_booster_call_for_the_whole_route(session, stub_ml_model):
+    _manifest, boosters = stub_ml_model
+    queries.train_route(session, TRAIN_ID)
+    # Two monitored stops, one round of inference for the whole page.
+    assert all(booster.calls == [2] for booster in boosters.values())
 
 
-def test_headline_average_covers_only_measured_stops(session):
-    assert queries.train_route(session, TRAIN_ID)["avg_delay_min"] == 3.0
+def test_day_type_is_forwarded_to_the_model(session, stub_ml_model, monkeypatch):
+    from dbrel.ml import live
+
+    seen = []
+    original = live.predict_many
+
+    def spying(requests):
+        seen.extend(r["day_type"] for r in requests)
+        return original(requests)
+
+    monkeypatch.setattr("dbrel.web.queries.ml_live.predict_many", spying)
+    queries.train_route(session, TRAIN_ID, day_type=DAY_TYPE_SUNDAY_HOLIDAY)
+    assert seen and all(d == DAY_TYPE_SUNDAY_HOLIDAY for d in seen)
 
 
 def test_unknown_train_returns_none(session):
@@ -143,6 +138,13 @@ def test_line_detail_lists_its_runs(session):
     assert runs[0]["name"] == "NX 26811"
     assert runs[0]["n_monitored"] == 2
     assert runs[0]["url"] == f"/train/{TRAIN_ID}/"
+    assert runs[0]["pred"] is None  # no model in this test
+
+
+def test_line_detail_forecast_comes_from_the_earliest_monitored_stop(session, stub_ml_model):
+    detail = queries.line_detail(session, 9)
+    runs = [run for d in detail["directions"] for run in d["runs"]]
+    assert runs[0]["pred"]["p50_min"] == 2.0
 
 
 def test_replacement_bus_is_flagged(session):

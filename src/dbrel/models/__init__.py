@@ -3,8 +3,6 @@
 from dbrel.models.aggregates import (
     DAY_TYPE_SUNDAY_HOLIDAY,
     DAY_TYPE_WEEKDAY,
-    TrainStationDelay,
-    TrainStopAverage,
 )
 from dbrel.models.core import (
     QUALITY_CANCELLED,
@@ -44,8 +42,6 @@ __all__ = [
     "Station",
     "StationStop",
     "Train",
-    "TrainStationDelay",
-    "TrainStopAverage",
     "Trip",
     "TripStop",
     "TtMessage",

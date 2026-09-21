@@ -16,7 +16,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dbrel.config import (
-    AVG_MIN_SAMPLES,
     BOARD_BACK_S,
     BOARD_FWD_S,
     BOARD_LIMIT,
@@ -26,6 +25,7 @@ from dbrel.config import (
 from dbrel.gtfs.timeutil import format_gtfs_time, local_date, service_date_anchor
 from dbrel.holidays_de import day_type_of, load_holiday_dates
 from dbrel.identity import prefix_range, search_norm
+from dbrel.ml import live as ml_live
 from dbrel.models import (
     DAY_TYPE_WEEKDAY,
     FeedVersion,
@@ -34,8 +34,6 @@ from dbrel.models import (
     Station,
     StationStop,
     Train,
-    TrainStationDelay,
-    TrainStopAverage,
 )
 
 TT_FEED_KIND = "tt"
@@ -277,39 +275,26 @@ def board_slices(now_epoch: int, back_s: int, fwd_s: int) -> list[tuple[date_cls
     return out
 
 
-def _average(row, prefix: str) -> dict | None:
-    """The delay summary for one call, or None when there is nothing to say at all.
+def _prediction(row) -> dict | None:
+    """What the model expects for one call, and how sure it is.
 
-    Shown from the first sample rather than hidden below AVG_MIN_SAMPLES: hiding
-    it would mean every board reads "not enough observations" for roughly the
-    first five service days. The count is always printed alongside it, and
-    "provisional" marks it below the threshold, so a reader is never misled into
-    treating one run as settled.
+    This is the only lateness figure the app shows now — no stored historical
+    average sits beside it. The band is the confidence signal, and deliberately
+    so: a two-minute spread between lo and hi means the model has a firm view of
+    this stop, twenty-five minutes means it does not. That is more honest than a
+    single confidence score, and unlike one it carries a real guarantee — the
+    interval was conformally calibrated to contain the truth a stated share of
+    the time.
     """
-    if row is None:
+    if row is None or row.p50_dep_delay_s is None:
         return None
-    count = row.n_dep if prefix == "dep" else row.n_arr
-    if not count:
-        return None
-    avg = getattr(row, f"avg_{prefix}_delay_s")
-    if avg is None:
-        return None
-    punctual = getattr(row, f"pct_{prefix}_punctual")
-    cancel_rate = (row.n_cancelled / row.n_known) if row.n_known else None
+    lo, hi = row.conformal_lo_s, row.conformal_hi_s
     return {
-        "avg_s": round(avg),
-        "avg_min": round(avg / 60, 1),
-        "p50_min": round((getattr(row, f"p50_{prefix}_delay_s") or 0) / 60, 1),
-        "p90_min": round((getattr(row, f"p90_{prefix}_delay_s") or 0) / 60, 1),
-        "punctual": punctual,
-        # Templates have no percent filter, and a rate the reader has to multiply
-        # in their head is a rate they will misread.
-        "punctual_pct": round(punctual * 100) if punctual is not None else None,
-        "n": count,
-        "n_runs": row.n_runs,
-        "cancel_rate": cancel_rate,
-        "cancel_pct": round(cancel_rate * 100, 1) if cancel_rate else None,
-        "provisional": count < AVG_MIN_SAMPLES,
+        "p50_min": round(row.p50_dep_delay_s / 60),
+        "lo_min": round(lo / 60) if lo is not None else None,
+        "hi_min": round(hi / 60) if hi is not None else None,
+        "width_min": round((hi - lo) / 60) if None not in (lo, hi) else None,
+        "model_id": row.model_id,
     }
 
 
@@ -335,6 +320,7 @@ def station_board(
 
     now = now or int(time.time())
     fv_id = tt_feed_version_id(session)
+    holiday_dates = load_holiday_dates(session)
 
     payload = {
         "station": {
@@ -361,20 +347,11 @@ def station_board(
 
     for service_date, lo, hi in board_slices(now, back_s, fwd_s):
         anchor = service_date_anchor(service_date)
+        day_type = day_type_of(service_date.isoformat(), holiday_dates)
         for column in (StationStop.planned_departure_sec, StationStop.planned_arrival_sec):
             rows = session.execute(
-                select(StationStop, Train, TrainStationDelay)
+                select(StationStop, Train)
                 .join(Train, Train.id == StationStop.train_id)
-                .outerjoin(
-                    TrainStationDelay,
-                    (TrainStationDelay.station_id == StationStop.station_id)
-                    & (TrainStationDelay.train_id == StationStop.train_id)
-                    # Averages are per day of week, so the board shows the figure for
-                    # the day being looked at -- a Sunday board quoting a Tuesday's
-                    # delays would be wrong, and joining without this would return
-                    # seven rows per call and duplicate every entry on the board.
-                    & (TrainStationDelay.dow == service_date.weekday()),
-                )
                 .where(
                     StationStop.station_id == station_id,
                     # Not optional: without it the board mixes in the GTFS skeleton
@@ -388,7 +365,7 @@ def station_board(
                 .limit(limit)
             ).all()
 
-            for stop, train, delay in rows:
+            for stop, train in rows:
                 key = (stop.id, service_date.isoformat())
                 entry = calls.get(key)
                 if entry is None:
@@ -406,6 +383,10 @@ def station_board(
                     # here, and naming its destination would just repeat the
                     # station you are already looking at.
                     terminates = dep_epoch is None and arr_epoch is not None
+                    # No fallback to the arrival time: the model predicts
+                    # departure delay specifically, and a terminating call has
+                    # no departure for that figure to mean anything about.
+                    sched_sec = stop.planned_departure_sec
                     entry = {
                         "station_stop_id": stop.id,
                         "train_id": train.id,
@@ -427,31 +408,53 @@ def station_board(
                         "arr": _clock(arr_epoch),
                         "dep": _clock(dep_epoch),
                         "sort_key": dep_epoch or arr_epoch or 0,
-                        "arr_avg": _average(delay, "arr"),
-                        "dep_avg": _average(delay, "dep"),
+                        "_day_type": day_type,
+                        "_sched_sec": sched_sec,
+                        "_train": train,
                     }
                     calls[key] = entry
 
-    payload["calls"] = sorted(calls.values(), key=lambda c: c["sort_key"])[:limit]
+    ordered = sorted(calls.values(), key=lambda c: c["sort_key"])[:limit]
+
+    # One booster call for the whole board, not one per row: a board is at most
+    # `limit` calls, and that bound is exactly what keeps this "predict what's
+    # being shown" rather than "predict the database".
+    scored = [c for c in ordered if c["_sched_sec"] is not None]
+    predictions = ml_live.predict_many([
+        {
+            "day_type": c["_day_type"],
+            "train": c["_train"],
+            "station": station,
+            "sched_sec": c["_sched_sec"],
+        }
+        for c in scored
+    ])
+    for c, prediction in zip(scored, predictions):
+        c["dep_pred"] = _prediction(prediction)
+    for c in ordered:
+        c.setdefault("dep_pred", None)
+        del c["_day_type"], c["_sched_sec"], c["_train"]
+
+    payload["calls"] = ordered
     return payload
 
 
 def train_route(
     session: Session, train_id: int, *, day_type: str = DAY_TYPE_WEEKDAY
 ) -> dict | None:
-    """One train's whole journey, with scheduled times and typical lateness.
+    """One train's whole journey, with scheduled times and a live forecast.
 
     The full route comes from train.route_path — IRIS's own ppth, every stop the
-    service makes. Times and averages come from station_stop and
-    train_stop_average, which exist only for the stations we actually poll, so
-    most rows carry a name and nothing else. Showing the whole journey and
-    marking which parts are measured is more honest than showing only the three
-    stops we happen to watch and letting it read like the entire route.
+    service makes. Times come from station_stop, which exists only for the
+    stations we actually poll, so most rows carry a name and nothing else.
+    Showing the whole journey and marking which parts are measured is more
+    honest than showing only the stops we happen to watch and letting it read
+    like the entire route.
 
-    Averages are the Monday-to-Saturday pool, not one weekday: a run happens once
-    a day, so splitting by weekday leaves a single sample per row and the page
-    reads "no observations yet" for every stop on any day we have not collected.
-    `day_type` switches to the Sunday and public-holiday pool instead.
+    Every monitored stop's forecast is the model, run fresh for this request —
+    no stored average behind it. `day_type` still matters: it is one of the
+    model's own features, and switches which pool (weekday vs Sunday/holiday)
+    the forecast is conditioned on.
     """
     train = session.get(Train, train_id)
     if train is None:
@@ -461,25 +464,19 @@ def train_route(
 
     measured: dict[int, tuple] = {}
     if fv_id is not None:
-        for stop, station, delay in session.execute(
-            select(StationStop, Station, TrainStopAverage)
+        for stop, station in session.execute(
+            select(StationStop, Station)
             .join(Station, Station.id == StationStop.station_id)
-            .outerjoin(
-                TrainStopAverage,
-                (TrainStopAverage.station_id == StationStop.station_id)
-                & (TrainStopAverage.train_id == StationStop.train_id)
-                & (TrainStopAverage.day_type == day_type),
-            )
             .where(
                 StationStop.train_id == train_id,
                 StationStop.feed_version_id == fv_id,
             )
             # A handful of (train, station) pairs carry two scheduled times, one
-            # per timetable variant. Ordering puts the better-observed one last,
-            # so it is the one that survives into `measured`.
-            .order_by(TrainStopAverage.n_dep)
+            # per timetable variant sharing a stop_sequence; ordering makes which
+            # one survives into `measured` deterministic rather than query-order.
+            .order_by(StationStop.id)
         ).all():
-            measured[stop.stop_sequence] = (stop, station, delay)
+            measured[stop.stop_sequence] = (stop, station)
 
     # stop_sequence is the 1-based index into ppth, so the two line up directly.
     names = [part for part in (train.route_path or "").split("|") if part]
@@ -487,6 +484,7 @@ def train_route(
         names = [""] * max(measured)
 
     stops: list[dict] = []
+    requests: list[dict] = []
     for index, name in enumerate(names, start=1):
         entry = {
             "seq": index,
@@ -496,12 +494,13 @@ def train_route(
             "arr": None,
             "dep": None,
             "platform": None,
-            "arr_avg": None,
-            "dep_avg": None,
+            "dep_pred": None,
         }
         hit = measured.get(index)
         if hit is not None:
-            stop, station, delay = hit
+            stop, station = hit
+            # No fallback to the arrival time here either -- see station_board.
+            sched_sec = stop.planned_departure_sec
             entry.update(
                 {
                     "monitored": True,
@@ -512,14 +511,22 @@ def train_route(
                     "arr": _hhmm(stop.planned_arrival_sec),
                     "dep": _hhmm(stop.planned_departure_sec),
                     "platform": stop.platform_code,
-                    "arr_avg": _average(delay, "arr"),
-                    "dep_avg": _average(delay, "dep"),
                 }
             )
+            if sched_sec is not None:
+                entry["_request"] = len(requests)
+                requests.append({
+                    "day_type": day_type, "train": train, "station": station,
+                    "sched_sec": sched_sec, "platform": stop.platform_code,
+                    "stop_sequence": stop.stop_sequence,
+                })
         stops.append(entry)
 
-    graded = [s["dep_avg"] or s["arr_avg"] for s in stops]
-    graded = [g for g in graded if g]
+    predictions = ml_live.predict_many(requests)
+    for entry in stops:
+        index = entry.pop("_request", None)
+        entry["dep_pred"] = _prediction(predictions[index]) if index is not None else None
+
     line = session.get(ServiceLine, train.line_id) if train.line_id else None
 
     return {
@@ -537,14 +544,6 @@ def train_route(
             "replacement_bus": (train.category or "").upper() == "BUS",
         },
         "n_monitored": sum(1 for s in stops if s["monitored"]),
-        # A journey-level headline, averaged over the stops we can actually see.
-        # Provisional whenever any contributing stop is -- a headline resting on
-        # one-sample stops needs the same caveat those stops carry individually.
-        "avg_delay_min": (
-            round(sum(g["avg_min"] for g in graded) / len(graded), 1) if graded else None
-        ),
-        "avg_delay_n_stops": len(graded),
-        "avg_delay_provisional": any(g["provisional"] for g in graded) if graded else False,
         "stops": stops,
     }
 
@@ -577,41 +576,63 @@ def _direction_of(train, index: dict[str, int]) -> int:
     return 0 if seen[-1] > seen[0] else 1
 
 
-def _run_averages(session: Session, line_id: int, day_type: str) -> dict[int, dict]:
-    """One lateness figure per run, pooled over every stop of it we measure."""
-    rows = session.execute(
+def _run_forecasts(
+    session: Session, line_id: int, day_type: str, trains: dict[int, Train]
+) -> dict[int, dict]:
+    """One forecast per run, from its earliest monitored stop.
+
+    A single reference point rather than pooling every stop: delay is not
+    constant along a route (it tends to grow), so averaging the model's
+    predictions across stops would blur exactly the shape the model exists to
+    capture. All of a line's runs are scored in one batch, whatever their count
+    — the bound here is "however many trains this line has", not the database.
+    """
+    fv_id = tt_feed_version_id(session)
+    if not trains or fv_id is None:
+        return {}
+
+    first_stop = (
         select(
-            TrainStopAverage.train_id,
-            func.sum(TrainStopAverage.n_dep),
-            func.sum(TrainStopAverage.avg_dep_delay_s * TrainStopAverage.n_dep),
-            func.sum(TrainStopAverage.pct_dep_punctual * TrainStopAverage.n_dep),
-            func.max(TrainStopAverage.n_runs),
+            StationStop.train_id.label("train_id"),
+            func.min(StationStop.stop_sequence).label("min_seq"),
         )
-        .join(Train, Train.id == TrainStopAverage.train_id)
-        .where(
-            Train.line_id == line_id,
-            TrainStopAverage.day_type == day_type,
-            TrainStopAverage.n_dep > 0,
-            TrainStopAverage.avg_dep_delay_s.is_not(None),
+        .where(StationStop.train_id.in_(list(trains)), StationStop.feed_version_id == fv_id)
+        .group_by(StationStop.train_id)
+        .subquery()
+    )
+    rows = session.execute(
+        select(StationStop, Station)
+        .join(Station, Station.id == StationStop.station_id)
+        .join(
+            first_stop,
+            (first_stop.c.train_id == StationStop.train_id)
+            & (first_stop.c.min_seq == StationStop.stop_sequence),
         )
-        .group_by(TrainStopAverage.train_id)
+        .where(StationStop.feed_version_id == fv_id)
     ).all()
 
-    averages: dict[int, dict] = {}
-    for train_id, n_dep, delay_sum, punctual_sum, n_runs in rows:
-        if not n_dep:
+    train_ids: list[int] = []
+    requests: list[dict] = []
+    for stop, station in rows:
+        # No fallback to the arrival time -- see station_board. A run's
+        # earliest monitored stop is its origin in practice, which always has
+        # a departure, but a run that starts already mid-route could not.
+        sched_sec = stop.planned_departure_sec
+        if sched_sec is None:
             continue
-        averages[train_id] = {
-            "avg_min": round(delay_sum / n_dep / 60, 1),
-            "punctual_pct": (
-                round(punctual_sum / n_dep * 100) if punctual_sum is not None else None
-            ),
-            # Counted in runs rather than stops: one day's run calling at ten
-            # measured stops is one observation of that run, not ten.
-            "n_runs": n_runs or 0,
-            "provisional": (n_runs or 0) < AVG_MIN_SAMPLES,
-        }
-    return averages
+        train_ids.append(stop.train_id)
+        requests.append({
+            "day_type": day_type, "train": trains[stop.train_id], "station": station,
+            "sched_sec": sched_sec, "platform": stop.platform_code,
+            "stop_sequence": stop.stop_sequence,
+        })
+
+    predictions = ml_live.predict_many(requests)
+    return {
+        train_id: forecast
+        for train_id, prediction in zip(train_ids, predictions)
+        if (forecast := _prediction(prediction)) is not None
+    }
 
 
 def _line_trains_by_direction(
@@ -742,9 +763,10 @@ def trips_around(
     The schedule is a recurring daily pattern -- that is the point of asking for
     a time of day rather than a timestamp -- so "before" and "after" wrap around
     midnight rather than running out at either end of the day. `day_type` picks
-    which pooled average is attached to each trip; it does not affect which
-    trips are considered, since the underlying timetable pattern is itself
-    dateless. Callers with an actual calendar date use resolve_day_type first.
+    which pool the model conditions its forecast on for each trip; it does not
+    affect which trips are considered, since the underlying timetable pattern is
+    itself dateless. Callers with an actual calendar date use resolve_day_type
+    first.
     """
     line = session.get(ServiceLine, line_id)
     station = session.get(Station, station_id)
@@ -765,13 +787,7 @@ def trips_around(
         return payload
 
     rows = session.execute(
-        select(StationStop, TrainStopAverage)
-        .outerjoin(
-            TrainStopAverage,
-            (TrainStopAverage.station_id == StationStop.station_id)
-            & (TrainStopAverage.train_id == StationStop.train_id)
-            & (TrainStopAverage.day_type == day_type),
-        )
+        select(StationStop)
         .where(
             StationStop.station_id == station_id,
             StationStop.train_id.in_(list(trains_by_id)),
@@ -780,11 +796,11 @@ def trips_around(
     ).all()
 
     candidates = []
-    for stop, avg in rows:
+    for (stop,) in rows:
         sched = stop.planned_departure_sec
         if sched is None:
             sched = stop.planned_arrival_sec
-        candidates.append((sched % 86400, stop, avg))
+        candidates.append((sched % 86400, stop))
     candidates.sort(key=lambda c: c[0])
 
     n = len(candidates)
@@ -807,13 +823,40 @@ def trips_around(
     ]
 
     seen: set[int] = set()
-    trips = []
+    picked: list[tuple] = []
     for i, relation in picks:
-        _tod, stop, avg = candidates[i]
+        _tod, stop = candidates[i]
         if stop.id in seen:
             continue
         seen.add(stop.id)
+        picked.append((stop, relation))
+
+    requests = []
+    for stop, _relation in picked:
+        # No fallback to the arrival time -- see station_board. The candidate
+        # list above already used dep-or-arrival to pick *which* stops are
+        # near this time; this is a separate question of what to ask the
+        # model, and it only knows how to predict a departure.
+        sched_sec = stop.planned_departure_sec
+        requests.append(
+            {
+                "day_type": day_type,
+                "train": trains_by_id[stop.train_id],
+                "station": station,
+                "sched_sec": sched_sec,
+                "platform": stop.platform_code,
+                "stop_sequence": stop.stop_sequence,
+            }
+            if sched_sec is not None
+            else None
+        )
+    predictions = ml_live.predict_many([r for r in requests if r is not None])
+    pred_iter = iter(predictions)
+
+    trips = []
+    for (stop, relation), request in zip(picked, requests):
         train = trains_by_id[stop.train_id]
+        forecast = _prediction(next(pred_iter)) if request is not None else None
         trips.append(
             {
                 "train_id": train.id,
@@ -821,8 +864,7 @@ def trips_around(
                 "url": f"/train/{train.id}/",
                 "sched_arr": _hhmm(stop.planned_arrival_sec),
                 "sched_dep": _hhmm(stop.planned_departure_sec),
-                "arr_avg": _average(avg, "arr"),
-                "dep_avg": _average(avg, "dep"),
+                "dep_pred": forecast,
                 "relation": relation,
             }
         )
@@ -864,7 +906,8 @@ def line_detail(
     )
 
     canonical, halves = _line_trains_by_direction(session, line_id, limit=limit)
-    averages = _run_averages(session, line_id, day_type)
+    by_id = {t.id: t for trains in halves for t in trains}
+    forecasts = _run_forecasts(session, line_id, day_type, by_id)
 
     result_halves: list[list[dict]] = [[], []]
     for direction, trains in enumerate(halves):
@@ -884,7 +927,7 @@ def line_detail(
                     # A short working: runs part of the line rather than all of it.
                     "partial": bool(canonical) and (t.n_stops or 0) < len(canonical),
                     "current": t.id == current_train_id,
-                    "avg": averages.get(t.id),
+                    "pred": forecasts.get(t.id),
                 }
             )
 

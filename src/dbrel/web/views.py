@@ -12,7 +12,7 @@ from datetime import datetime
 from django.http import Http404, JsonResponse
 from django.shortcuts import render
 
-from dbrel.config import AVG_MIN_SAMPLES, BOARD_BACK_S, BOARD_FWD_S
+from dbrel.config import BOARD_BACK_S, BOARD_FWD_S
 from dbrel.db import read_scope
 from dbrel.web import queries
 
@@ -52,14 +52,7 @@ def station(request, station_id: int):
         board = queries.station_board(session, station_id, back_s=back_s, fwd_s=fwd_s)
     if board is None:
         raise Http404(f"no station {station_id}")
-    return render(
-        request,
-        "dbrel/station.html",
-        {
-            "board": board,
-            "min_samples": AVG_MIN_SAMPLES,
-        },
-    )
+    return render(request, "dbrel/station.html", {"board": board})
 
 
 def train(request, train_id: int):
@@ -73,15 +66,7 @@ def train(request, train_id: int):
             if line
             else None
         )
-    return render(
-        request,
-        "dbrel/train.html",
-        {
-            "route": route,
-            "detail": detail,
-            "min_samples": AVG_MIN_SAMPLES,
-        },
-    )
+    return render(request, "dbrel/train.html", {"route": route, "detail": detail})
 
 
 def train_route(request, train_id: int):

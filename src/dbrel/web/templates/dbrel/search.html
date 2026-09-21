@@ -1,5 +1,5 @@
 {% extends "dbrel/base.html" %}
-{% load static %}
+{% load versioned_static %}
 
 {% block masthead_search %}{% endblock %}
 
@@ -9,8 +9,9 @@
   <p class="hint">
     Pick a line, its direction, a stop along it, then a date and time. You'll get
     the last two calls at or before that time and the next one after, each with
-    its scheduled time and its typical lateness — averaged over Sundays and
-    holidays if the date is one, over ordinary weekdays otherwise.
+    its scheduled time and a forecast from the trained model, run just now —
+    conditioned on Sundays and holidays if the date is one, on ordinary weekdays
+    otherwise.
   </p>
 
   <div class="browse-fields">
@@ -53,5 +54,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{% static 'dbrel/browse.js' %}"></script>
+<script src="{% versioned 'dbrel/browse.js' %}"></script>
 {% endblock %}

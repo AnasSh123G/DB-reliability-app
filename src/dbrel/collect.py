@@ -204,12 +204,17 @@ class SeedStation:
     eva: int
     ds100: str | None
     natural_key: str | None
+    # Only the national seed carries these. They exist so a station IRIS serves but
+    # gtfs.de has never heard of can still be created; see apply_station_seed.
+    lat: float | None = None
+    lon: float | None = None
 
 
 @dataclass(slots=True)
 class SeedResult:
     applied: list[str] = field(default_factory=list)
     tracked: int = 0
+    created: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     ambiguous: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
@@ -228,6 +233,8 @@ def load_station_seed(path: Path) -> list[SeedStation]:
                 eva=int(entry["eva"]),
                 ds100=entry.get("ds100"),
                 natural_key=entry.get("natural_key"),
+                lat=entry.get("lat"),
+                lon=entry.get("lon"),
             )
         )
     return out
@@ -249,7 +256,14 @@ def apply_station_seed(
     after a reset is exactly the risk this file exists to avoid. The eva range
     check (RAIL_EVA_RANGE) and tt-verify-stations's behavioural ppth check
     afterwards remain the guards against a transposed number.
+
+    An entry that matches nothing is created outright when it carries coordinates,
+    which the national seed does and the Ruhr one does not. IRIS serves ~1,700
+    stations gtfs.de has no row for at all, and before this they were simply
+    reported missing -- correct for a corridor seed drawn from the GTFS feed
+    itself, useless for a seed drawn from IRIS's own catalogue.
     """
+    from dbrel.gtfs.static_import import station_natural_key
     from dbrel.timetables.stations import track_stations
 
     result = SeedResult()
@@ -275,6 +289,23 @@ def apply_station_seed(
                 result.ambiguous.append(f"{entry.name}: {len(matches)} stations share this name")
                 continue
 
+        if station is None and entry.lat is not None and entry.lon is not None:
+            key = station_natural_key(entry.name, entry.lat, entry.lon)
+            # The key is derived from coordinates, and a StaDa point can land within
+            # the same ~110 m cell as a gtfs.de row whose name did not match. Take
+            # the existing row in that case: a second row for one platform would
+            # split its history in two.
+            station = session.execute(
+                select(Station).where(Station.natural_key == key)
+            ).scalar_one_or_none()
+            if station is None:
+                station = Station(
+                    natural_key=key, name=entry.name, lat=entry.lat, lon=entry.lon
+                )
+                session.add(station)
+                session.flush()
+                result.created.append(entry.name)
+
         if station is None:
             result.missing.append(entry.name)
             continue
@@ -294,16 +325,23 @@ def apply_station_seed(
     session.flush()
     result.tracked = track_stations(session, to_track, priority=priority)
 
-    for name in result.applied:
-        progress(f"  seeded {name}")
-    for name in result.missing:
-        progress(f"  ! not found after import-static: {name}")
-    for msg in result.ambiguous:
-        progress(f"  ! ambiguous: {msg}")
-    for msg in result.conflicts:
-        progress(f"  ! conflict, not overwritten: {msg}")
-    for msg in result.rejected:
-        progress(f"  ! rejected: {msg}")
+    # Counts for the bulk, names only for what someone has to act on. A national
+    # seed applies thousands of entries; listing each one buries the handful of
+    # conflicts that actually want reading.
+    progress(f"  seeded {len(result.applied):,} stations ({len(result.created):,} newly created)")
+    for label, items in (
+        ("not found after import-static", result.missing),
+        ("ambiguous", result.ambiguous),
+        ("conflict, not overwritten", result.conflicts),
+        ("rejected", result.rejected),
+    ):
+        if not items:
+            continue
+        progress(f"  ! {label}: {len(items):,}")
+        for msg in items[:20]:
+            progress(f"      {msg}")
+        if len(items) > 20:
+            progress(f"      ... and {len(items) - 20:,} more")
     return result
 
 
@@ -459,20 +497,27 @@ def run_cold_start(
     phase("build-aliases", do_aliases)
 
     def do_verify() -> str:
-        lines = []
+        # Counts, not a line per station. The check only works where GTFS supplied a
+        # route pattern to compare against, and the national seed tracks ~1,800
+        # stations built straight from IRIS that have none -- naming each of those
+        # would bury the low-overlap ones, which are the only actionable result.
+        skipped, low = 0, []
         with TimetablesClient() as client, session_scope() as session:
             client.require_credentials()
             stations = session.execute(select(Station).where(Station.tracked == 1)).scalars().all()
             for station in stations:
                 overlap, note = verify_station(session, client, station)
                 if overlap is None:
-                    lines.append(f"{station.name}: skipped ({note})")
+                    skipped += 1
                     continue
                 station.verify_overlap = overlap
                 station.verified_at = int(time.time())
                 if overlap < 0.6:
-                    lines.append(f"{station.name}: LOW overlap {overlap:.1%} ({note})")
-        return f"{len(stations)} checked" + ("; " + "; ".join(lines) if lines else "")
+                    low.append(f"{station.name} {overlap:.0%}")
+        out = f"{len(stations)} checked, {skipped} not checkable, {len(low)} below 60%"
+        if low:
+            out += ": " + ", ".join(low[:15]) + (f", +{len(low) - 15} more" if len(low) > 15 else "")
+        return out
 
     phase("tt-verify-stations", do_verify)
 
@@ -624,8 +669,6 @@ def run_cycle(
     progress: Progress = lambda msg: None,
 ) -> CycleResult:
     from dbrel.db import session_scope
-    from dbrel.derive.delay_averages import run_delay_averages
-    from dbrel.derive.stop_averages import run_stop_averages
     from dbrel.derive.finalize_tt import run_finalize_tt
     from dbrel.timetables.changes_poller import run_tt_poll
     from dbrel.timetables.client import TimetablesClient
@@ -689,10 +732,10 @@ def run_cycle(
     result.phases.append(_run_phase("poll", do_poll))
     progress(f"  poll      {result.phases[-1].summary or result.phases[-1].error}")
 
-    # finalize and averages are CPU over the accumulated history, not API calls, and
-    # neither can produce anything the poll before them did not already store — so on
-    # a short cycle they are simply repeated work. Every derive_every-th cycle keeps
-    # the derived tables fresh without re-deriving the whole week 96 times a day.
+    # finalize is CPU over the accumulated history, not an API call, and cannot
+    # produce anything the poll before it did not already store — so on a short
+    # cycle it is simply repeated work. Every derive_every-th cycle keeps
+    # finalization fresh without redoing the whole week 96 times a day.
     if index % max(1, derive_every) != 0:
         progress(f"  derive    skipped (every {derive_every} cycles)")
         result.elapsed_s = time.monotonic() - started
@@ -705,26 +748,6 @@ def run_cycle(
 
     result.phases.append(_run_phase("finalize", do_finalize))
     progress(f"  finalize  {result.phases[-1].summary or result.phases[-1].error}")
-
-    def do_averages() -> str:
-        with session_scope() as session:
-            r = run_delay_averages(session, progress=lambda m: None)
-        return f"{r.pairs_written} pairs written, {r.samples_read} samples"
-
-    result.phases.append(_run_phase("averages", do_averages))
-    progress(f"  averages  {result.phases[-1].summary or result.phases[-1].error}")
-
-    # The per-stop aggregate, pooled Mon-Sat with Sundays and holidays apart. Its
-    # own phase rather than a second call inside do_averages: a failure in one
-    # aggregate must not leave the other unwritten, and _run_phase gives each its
-    # own session_scope and error handling.
-    def do_stop_averages() -> str:
-        with session_scope() as session:
-            r = run_stop_averages(session, progress=lambda m: None)
-        return f"{r.rows_written} rows written, {r.samples_read} samples"
-
-    result.phases.append(_run_phase("stop-avgs", do_stop_averages))
-    progress(f"  stop-avgs {result.phases[-1].summary or result.phases[-1].error}")
 
     result.elapsed_s = time.monotonic() - started
     return result

@@ -32,31 +32,16 @@
       {% if call.terminates %}<span class="ends">ends here</span>{% endif %}
     </div>
 
-    {% with avg=call.dep_avg|default:call.arr_avg %}
-    {% if avg %}
-    <div class="avg">
-      <span class="figure">&#8709; {{ avg.avg_min }} min late</span>
-      <span class="sep">·</span>
-      <span>{{ avg.punctual_pct }}% under 6&nbsp;min</span>
-      <span class="sep">·</span>
-      <span class="n">{{ avg.n }} sample{{ avg.n|pluralize }}</span>
-      {% if avg.p90_min %}
-      <span class="sep">·</span>
-      <span class="p90">worst 10%: {{ avg.p90_min }} min</span>
-      {% endif %}
-      {% if avg.cancel_pct %}
-      <span class="sep">·</span>
-      <span class="cancel">{{ avg.cancel_pct }}% cancelled</span>
-      {% endif %}
-      {% if avg.provisional %}
-      <span class="sep">·</span>
-      <span class="provisional-tag">provisional</span>
-      {% endif %}
+    {% if call.dep_pred %}
+    <div class="pred" title="model forecast, 50% conformal interval">
+      <span class="pred-tag">forecast</span>
+      {{ call.dep_pred.p50_min }} min
+      <span class="pred-range-label">Range of expected delay:</span>
+      <span class="pred-range">{{ call.dep_pred.lo_min }} to {{ call.dep_pred.hi_min }} min</span>
     </div>
     {% else %}
-    <div class="avg none">&mdash; no observations yet</div>
+    <div class="pred none">&mdash; no forecast for this call</div>
     {% endif %}
-    {% endwith %}
   </li>
   {% endfor %}
 </ol>

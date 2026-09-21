@@ -111,10 +111,9 @@ def read_scope() -> Iterator[Session]:
 
 def create_all() -> None:
     import dbrel.models  # noqa: F401  (registers every mapper)
-    from dbrel.views import create_average_views, create_day_views
+    from dbrel.views import create_day_views
 
     engine = get_engine()
     Base.metadata.create_all(engine)
     # After the tables, because the views select from them.
     create_day_views(engine)
-    create_average_views(engine)

@@ -132,17 +132,17 @@
       .catch(() => resetSelect(stationSelect, 'Could not load stops'));
   });
 
-  function figure(avg, label) {
-    if (!avg) return `<span class="bavg none">${label}: no observations yet</span>`;
-    const provisional = avg.provisional
-      ? '<span class="provisional-tag">provisional</span>' : '';
-    return `<span class="bavg">${label}: <span class="figure">&#8709; ${avg.avg_min} min</span>` +
-      ` · ${avg.punctual_pct}% under 6 min · n=${avg.n} ${provisional}</span>`;
+  function forecast(pred) {
+    if (!pred) return '<span class="pred none">&mdash; no forecast for this call</span>';
+    return `<span class="pred" title="model forecast, run for this call just now, 50% conformal interval">` +
+      `<span class="pred-tag">forecast</span> ${pred.p50_min} min` +
+      `<span class="pred-range-label">Range of expected delay:</span>` +
+      `<span class="pred-range">${pred.lo_min} to ${pred.hi_min} min</span></span>`;
   }
 
   function renderTrips(data) {
     const poolLabel = data.day_type === 'SUNDAY_HOLIDAY'
-      ? 'averaged over Sundays &amp; holidays' : 'averaged over weekdays';
+      ? 'conditioned on Sundays &amp; holidays' : 'conditioned on weekdays';
     if (!data.trips.length) {
       results.innerHTML = '<p class="empty">This stop has no scheduled calls in that direction.</p>';
       return;
@@ -156,10 +156,7 @@
             ${trip.sched_arr ? `<span class="t"><abbr title="scheduled arrival">arr</abbr> ${trip.sched_arr}</span>` : ''}
             ${trip.sched_dep ? `<span class="t dep"><abbr title="scheduled departure">dep</abbr> ${trip.sched_dep}</span>` : ''}
           </div>
-          <div class="bavgs">
-            ${figure(trip.arr_avg, 'arr')}
-            ${figure(trip.dep_avg, 'dep')}
-          </div>
+          ${forecast(trip.dep_pred)}
         </div>
       </li>`).join('');
     results.innerHTML = `

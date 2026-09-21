@@ -1,13 +1,13 @@
-"""Named views over the facts and over the per-stop averages.
+"""Named views over the raw facts.
 
-Two families live here. The seven day_* views slice the raw facts by weekday; the
-two avg_* views split the aggregate by day type. Both exist for the same reason —
-a join or a filter that every reader would otherwise rewrite gets written once and
-given a name that reads like a table.
+One SQL view per day of the week, over the dated facts. It exists so a join or a
+filter that every reader would otherwise rewrite gets written once and given a
+name that reads like a table.
 
----
-
-One SQL view per day of the week, over the dated facts.
+train_stop_average and train_station_delay used to have a second family of views
+here (avg_weekday, avg_sunday_holiday) splitting the aggregate by day type. Both
+tables were dropped — lateness figures are now scored live by ml/live.py rather
+than read back from a precomputed aggregate — so those views went with them.
 
 trip_stop is where every recorded time lands, and it carries no date of its own —
 it is reached through trip_id, and trip.service_date is what says which day a run
@@ -28,8 +28,6 @@ from __future__ import annotations
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
-
-from dbrel.models import DAY_TYPE_SUNDAY_HOLIDAY, DAY_TYPE_WEEKDAY
 
 # Index is Python's weekday(): 0=Monday..6=Sunday.
 DAY_NAMES = (
@@ -70,33 +68,3 @@ def drop_day_views(engine: Engine) -> None:
     with engine.begin() as connection:
         for name in DAY_NAMES:
             connection.execute(text(f"DROP VIEW IF EXISTS day_{name}"))
-
-
-# --- Per-stop averages, split by day type -----------------------------------
-# train_stop_average keeps both day types in one table so there is one model, one
-# upsert and one reconciliation path. These two views are how it is meant to be
-# read: `SELECT * FROM avg_weekday` behaves exactly like a weekday-only table.
-AVERAGE_VIEWS: tuple[tuple[str, str], ...] = (
-    ("avg_weekday", DAY_TYPE_WEEKDAY),
-    ("avg_sunday_holiday", DAY_TYPE_SUNDAY_HOLIDAY),
-)
-
-
-def average_view_sql(name: str, day_type: str) -> str:
-    return (
-        f"CREATE VIEW IF NOT EXISTS {name} AS "
-        f"SELECT * FROM train_stop_average WHERE day_type = '{day_type}'"
-    )
-
-
-def create_average_views(engine: Engine) -> None:
-    """Create avg_weekday and avg_sunday_holiday. Idempotent."""
-    with engine.begin() as connection:
-        for name, day_type in AVERAGE_VIEWS:
-            connection.execute(text(average_view_sql(name, day_type)))
-
-
-def drop_average_views(engine: Engine) -> None:
-    with engine.begin() as connection:
-        for name, _ in AVERAGE_VIEWS:
-            connection.execute(text(f"DROP VIEW IF EXISTS {name}"))
