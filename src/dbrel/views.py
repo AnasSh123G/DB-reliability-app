@@ -24,6 +24,7 @@ Python's date.weekday() -- which is what train_station_delay.dow stores -- is
 and tests/test_views.py pins them against each other for a known date.
 """
 
+
 from __future__ import annotations
 
 from sqlalchemy import text
