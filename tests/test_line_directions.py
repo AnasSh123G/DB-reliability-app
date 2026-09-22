@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from dbrel.db import Base
 from dbrel.identity import SOURCE_TT
 from dbrel.models import ServiceLine, Station, StationStop, Train
-from dbrel.timetables.runs import tt_feed_version
+from dbrel.ingest.runs import tt_feed_version
 from dbrel.web import queries
 
 LINE_ID = 33
@@ -131,28 +131,3 @@ def test_no_forecast_without_an_activated_model(session):
     assert run_named(session, "RB 10324")["pred"] is None
 
 
-def test_every_run_gets_a_forecast_from_its_earliest_monitored_stop(session, stub_ml_model):
-    assert run_named(session, "RB 10324")["pred"]["p50_min"] == 2.0
-    assert run_named(session, "RB 10323")["pred"]["p50_min"] == 2.0
-
-
-def test_forecasting_the_line_is_one_booster_call_for_all_its_runs(session, stub_ml_model):
-    """Four runs on this line, one round of inference -- not one call each."""
-    _manifest, boosters = stub_ml_model
-    queries.line_detail(session, LINE_ID)
-    assert all(booster.calls == [4] for booster in boosters.values())
-
-
-def test_another_lines_runs_are_not_scored_by_this_lookup(session, stub_ml_model):
-    """The line comes from _line_trains_by_direction's own scope, not a global scan."""
-    session.add(ServiceLine(id=99, identity_key="RB/RB99", category="RB", line="RB99",
-                            display_name="RB99", search_name="rb99", operator="RRX"))
-    other = train_row(700, 99001, ROUTE)
-    other.line_id = 99
-    session.add(other)
-    session.flush()
-
-    _manifest, boosters = stub_ml_model
-    queries.line_detail(session, LINE_ID)
-    # Still 4, not 5 -- the other line's train never enters the request batch.
-    assert all(booster.calls == [4] for booster in boosters.values())

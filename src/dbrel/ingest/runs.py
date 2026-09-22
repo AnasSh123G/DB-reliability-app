@@ -44,7 +44,7 @@ from dbrel.models import (
     Train,
     Trip,
 )
-from dbrel.timetables.parser import TtStop
+from dbrel.ingest.parser import TtStop
 
 TT_FEED_KIND = "tt"
 

@@ -22,7 +22,7 @@ from dbrel.models import (
     StationStop,
     Train,
 )
-from dbrel.timetables.runs import tt_feed_version
+from dbrel.ingest.runs import tt_feed_version
 from dbrel.web import queries
 
 ROUTE = ["Aachen Hbf", "Köln Hbf", "Duisburg Hbf", "Bochum Hbf", "Hamm(Westf)Hbf"]
@@ -85,37 +85,6 @@ def test_no_forecast_without_an_activated_model(session):
     assert stops["Duisburg Hbf"]["dep_pred"] is None
 
 
-def test_forecast_attaches_to_every_monitored_stop(session, stub_ml_model):
-    """Unlike the old stored average, the live model has no cold-start gap: every
-    monitored stop gets scored, not only the ones history happened to cover."""
-    stops = {s["name"]: s for s in queries.train_route(session, TRAIN_ID)["stops"]}
-    assert stops["Bochum Hbf"]["dep_pred"]["p50_min"] == 2.0
-    assert stops["Duisburg Hbf"]["dep_pred"]["p50_min"] == 2.0
-    assert stops["Aachen Hbf"]["dep_pred"] is None
-
-
-def test_forecast_batches_into_one_booster_call_for_the_whole_route(session, stub_ml_model):
-    _manifest, boosters = stub_ml_model
-    queries.train_route(session, TRAIN_ID)
-    # Two monitored stops, one round of inference for the whole page.
-    assert all(booster.calls == [2] for booster in boosters.values())
-
-
-def test_day_type_is_forwarded_to_the_model(session, stub_ml_model, monkeypatch):
-    from dbrel.ml import live
-
-    seen = []
-    original = live.predict_many
-
-    def spying(requests):
-        seen.extend(r["day_type"] for r in requests)
-        return original(requests)
-
-    monkeypatch.setattr("dbrel.web.queries.ml_live.predict_many", spying)
-    queries.train_route(session, TRAIN_ID, day_type=DAY_TYPE_SUNDAY_HOLIDAY)
-    assert seen and all(d == DAY_TYPE_SUNDAY_HOLIDAY for d in seen)
-
-
 def test_unknown_train_returns_none(session):
     assert queries.train_route(session, 999999) is None
 
@@ -139,12 +108,6 @@ def test_line_detail_lists_its_runs(session):
     assert runs[0]["n_monitored"] == 2
     assert runs[0]["url"] == f"/train/{TRAIN_ID}/"
     assert runs[0]["pred"] is None  # no model in this test
-
-
-def test_line_detail_forecast_comes_from_the_earliest_monitored_stop(session, stub_ml_model):
-    detail = queries.line_detail(session, 9)
-    runs = [run for d in detail["directions"] for run in d["runs"]]
-    assert runs[0]["pred"]["p50_min"] == 2.0
 
 
 def test_replacement_bus_is_flagged(session):

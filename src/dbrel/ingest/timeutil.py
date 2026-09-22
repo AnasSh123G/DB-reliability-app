@@ -102,3 +102,28 @@ def date_range(start: date, end: date):
     while current <= end:
         yield current
         current += timedelta(days=1)
+
+
+def sched_sec_of(service_date: str, arr_utc: int | None, dep_utc: int | None) -> tuple | None:
+    """(sched_sec, kind, arr_sec, dep_sec) in service-day seconds, or None.
+
+    Departure preferred, arrival as fallback: keying on the departure alone would
+    leave every terminus with a NULL key, and SQLite treats NULLs in a unique
+    constraint as distinct — each terminus row would insert afresh on every run
+    instead of upserting over itself.
+
+    Converted through epoch_to_gtfs_sec rather than a local clock hour so the value
+    is stable across the two DST days; it may legitimately exceed 86400 for a stop
+    after midnight.
+    """
+    try:
+        day = date.fromisoformat(service_date)
+    except (ValueError, TypeError):
+        return None
+    arr_sec = epoch_to_gtfs_sec(day, arr_utc) if arr_utc is not None else None
+    dep_sec = epoch_to_gtfs_sec(day, dep_utc) if dep_utc is not None else None
+    if dep_sec is not None:
+        return dep_sec, "DEP", arr_sec, dep_sec
+    if arr_sec is not None:
+        return arr_sec, "ARR", arr_sec, dep_sec
+    return None

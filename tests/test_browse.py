@@ -23,7 +23,7 @@ from dbrel.models import (
     StationStop,
     Train,
 )
-from dbrel.timetables.runs import tt_feed_version
+from dbrel.ingest.runs import tt_feed_version
 from dbrel.web import queries
 
 LINE_ID = 1
@@ -181,17 +181,6 @@ def test_no_forecast_without_an_activated_model(session):
     assert all(t["dep_pred"] is None for t in trips)
 
 
-def test_forecast_attaches_to_every_scored_trip(session, stub_ml_model):
-    trips = around(session, "14:00")["trips"]
-    assert all(t["dep_pred"]["p50_min"] == 2.0 for t in trips)
-
-
-def test_the_three_shown_trips_are_one_booster_call_not_one_each(session, stub_ml_model):
-    _manifest, boosters = stub_ml_model
-    around(session, "14:00")
-    assert all(booster.calls == [3] for booster in boosters.values())
-
-
 def test_unknown_line_or_station_is_none(session):
     assert queries.trips_around(session, 999, 0, 2, 0) is None
     assert queries.trips_around(session, LINE_ID, 0, 999, 0) is None
@@ -226,28 +215,3 @@ class TestResolveDayType:
         assert queries.resolve_day_type(session, "not-a-date") is None
 
 
-def test_trips_around_forwards_the_resolved_day_type_to_the_model(session, stub_ml_model, monkeypatch):
-    """What the view does: resolve_day_type's result feeds straight into trips_around,
-    and trips_around passes it on as one of the model's own features."""
-    from dbrel.ml import live
-
-    session.add(PublicHoliday(date="2026-09-15", name="Betriebsruhetag (test)"))
-    session.flush()
-
-    seen = []
-    original = live.predict_many
-
-    def spying(requests):
-        seen.extend(r["day_type"] for r in requests)
-        return original(requests)
-
-    monkeypatch.setattr("dbrel.web.queries.ml_live.predict_many", spying)
-
-    for chosen_date, expected in (
-        ("2026-09-16", DAY_TYPE_WEEKDAY),
-        ("2026-09-15", DAY_TYPE_SUNDAY_HOLIDAY),
-    ):
-        seen.clear()
-        day_type = queries.resolve_day_type(session, chosen_date)
-        queries.trips_around(session, LINE_ID, 0, 2, 14 * 3600, day_type=day_type)
-        assert seen and all(d == expected for d in seen)

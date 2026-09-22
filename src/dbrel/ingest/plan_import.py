@@ -33,9 +33,9 @@ from dbrel.models import (
     Train,
     TtPlanFetch,
 )
-from dbrel.timetables.client import TimetablesClient
-from dbrel.timetables.parser import TtStop, parse_timetable
-from dbrel.timetables.runs import (
+from dbrel.ingest.client import TimetablesClient
+from dbrel.ingest.parser import TtStop, parse_timetable
+from dbrel.ingest.runs import (
     RunContext,
     RunCounters,
     tt_feed_version,

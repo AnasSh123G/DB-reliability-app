@@ -36,7 +36,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from dbrel.config import GRACE_S, SERVICE_DATE_CLOSE_S, SETTLE_S, TT_LINGER_S
-from dbrel.gtfs.timeutil import local_hour
+from dbrel.ingest.timeutil import local_hour
 from dbrel.models import (
     QUALITY_NO_DATA,
     QUALITY_PREDICTION_ONLY,
@@ -46,7 +46,7 @@ from dbrel.models import (
     TripStop,
     TtPoll,
 )
-from dbrel.timetables.runs import epoch_of_sec
+from dbrel.ingest.runs import epoch_of_sec
 
 # rule_version 2: per-station listening record + explicit cancellation.
 RULE_VERSION_TT = 2

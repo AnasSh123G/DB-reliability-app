@@ -22,10 +22,9 @@ from dbrel.config import (
     SERVICE_DAY_MAX_S,
     TZ,
 )
-from dbrel.gtfs.timeutil import format_gtfs_time, local_date, service_date_anchor
+from dbrel.ingest.timeutil import format_gtfs_time, local_date, service_date_anchor
 from dbrel.holidays_de import day_type_of, load_holiday_dates
 from dbrel.identity import prefix_range, search_norm
-from dbrel.ml import live as ml_live
 from dbrel.models import (
     DAY_TYPE_WEEKDAY,
     FeedVersion,
@@ -275,29 +274,6 @@ def board_slices(now_epoch: int, back_s: int, fwd_s: int) -> list[tuple[date_cls
     return out
 
 
-def _prediction(row) -> dict | None:
-    """What the model expects for one call, and how sure it is.
-
-    This is the only lateness figure the app shows now — no stored historical
-    average sits beside it. The band is the confidence signal, and deliberately
-    so: a two-minute spread between lo and hi means the model has a firm view of
-    this stop, twenty-five minutes means it does not. That is more honest than a
-    single confidence score, and unlike one it carries a real guarantee — the
-    interval was conformally calibrated to contain the truth a stated share of
-    the time.
-    """
-    if row is None or row.p50_dep_delay_s is None:
-        return None
-    lo, hi = row.conformal_lo_s, row.conformal_hi_s
-    return {
-        "p50_min": round(row.p50_dep_delay_s / 60),
-        "lo_min": round(lo / 60) if lo is not None else None,
-        "hi_min": round(hi / 60) if hi is not None else None,
-        "width_min": round((hi - lo) / 60) if None not in (lo, hi) else None,
-        "model_id": row.model_id,
-    }
-
-
 def _clock(epoch: int | None) -> str | None:
     if epoch is None:
         return None
@@ -320,7 +296,6 @@ def station_board(
 
     now = now or int(time.time())
     fv_id = tt_feed_version_id(session)
-    holiday_dates = load_holiday_dates(session)
 
     payload = {
         "station": {
@@ -347,7 +322,6 @@ def station_board(
 
     for service_date, lo, hi in board_slices(now, back_s, fwd_s):
         anchor = service_date_anchor(service_date)
-        day_type = day_type_of(service_date.isoformat(), holiday_dates)
         for column in (StationStop.planned_departure_sec, StationStop.planned_arrival_sec):
             rows = session.execute(
                 select(StationStop, Train)
@@ -383,10 +357,6 @@ def station_board(
                     # here, and naming its destination would just repeat the
                     # station you are already looking at.
                     terminates = dep_epoch is None and arr_epoch is not None
-                    # No fallback to the arrival time: the model predicts
-                    # departure delay specifically, and a terminating call has
-                    # no departure for that figure to mean anything about.
-                    sched_sec = stop.planned_departure_sec
                     entry = {
                         "station_stop_id": stop.id,
                         "train_id": train.id,
@@ -408,33 +378,11 @@ def station_board(
                         "arr": _clock(arr_epoch),
                         "dep": _clock(dep_epoch),
                         "sort_key": dep_epoch or arr_epoch or 0,
-                        "_day_type": day_type,
-                        "_sched_sec": sched_sec,
-                        "_train": train,
+                        "dep_pred": None,
                     }
                     calls[key] = entry
 
     ordered = sorted(calls.values(), key=lambda c: c["sort_key"])[:limit]
-
-    # One booster call for the whole board, not one per row: a board is at most
-    # `limit` calls, and that bound is exactly what keeps this "predict what's
-    # being shown" rather than "predict the database".
-    scored = [c for c in ordered if c["_sched_sec"] is not None]
-    predictions = ml_live.predict_many([
-        {
-            "day_type": c["_day_type"],
-            "train": c["_train"],
-            "station": station,
-            "sched_sec": c["_sched_sec"],
-        }
-        for c in scored
-    ])
-    for c, prediction in zip(scored, predictions):
-        c["dep_pred"] = _prediction(prediction)
-    for c in ordered:
-        c.setdefault("dep_pred", None)
-        del c["_day_type"], c["_sched_sec"], c["_train"]
-
     payload["calls"] = ordered
     return payload
 
@@ -442,7 +390,7 @@ def station_board(
 def train_route(
     session: Session, train_id: int, *, day_type: str = DAY_TYPE_WEEKDAY
 ) -> dict | None:
-    """One train's whole journey, with scheduled times and a live forecast.
+    """One train's whole journey, with scheduled times.
 
     The full route comes from train.route_path — IRIS's own ppth, every stop the
     service makes. Times come from station_stop, which exists only for the
@@ -450,11 +398,6 @@ def train_route(
     Showing the whole journey and marking which parts are measured is more
     honest than showing only the stops we happen to watch and letting it read
     like the entire route.
-
-    Every monitored stop's forecast is the model, run fresh for this request —
-    no stored average behind it. `day_type` still matters: it is one of the
-    model's own features, and switches which pool (weekday vs Sunday/holiday)
-    the forecast is conditioned on.
     """
     train = session.get(Train, train_id)
     if train is None:
@@ -484,7 +427,6 @@ def train_route(
         names = [""] * max(measured)
 
     stops: list[dict] = []
-    requests: list[dict] = []
     for index, name in enumerate(names, start=1):
         entry = {
             "seq": index,
@@ -499,8 +441,6 @@ def train_route(
         hit = measured.get(index)
         if hit is not None:
             stop, station = hit
-            # No fallback to the arrival time here either -- see station_board.
-            sched_sec = stop.planned_departure_sec
             entry.update(
                 {
                     "monitored": True,
@@ -513,19 +453,7 @@ def train_route(
                     "platform": stop.platform_code,
                 }
             )
-            if sched_sec is not None:
-                entry["_request"] = len(requests)
-                requests.append({
-                    "day_type": day_type, "train": train, "station": station,
-                    "sched_sec": sched_sec, "platform": stop.platform_code,
-                    "stop_sequence": stop.stop_sequence,
-                })
         stops.append(entry)
-
-    predictions = ml_live.predict_many(requests)
-    for entry in stops:
-        index = entry.pop("_request", None)
-        entry["dep_pred"] = _prediction(predictions[index]) if index is not None else None
 
     line = session.get(ServiceLine, train.line_id) if train.line_id else None
 
@@ -574,65 +502,6 @@ def _direction_of(train, index: dict[str, int]) -> int:
     if len(seen) < 2 or seen[-1] == seen[0]:
         return 0
     return 0 if seen[-1] > seen[0] else 1
-
-
-def _run_forecasts(
-    session: Session, line_id: int, day_type: str, trains: dict[int, Train]
-) -> dict[int, dict]:
-    """One forecast per run, from its earliest monitored stop.
-
-    A single reference point rather than pooling every stop: delay is not
-    constant along a route (it tends to grow), so averaging the model's
-    predictions across stops would blur exactly the shape the model exists to
-    capture. All of a line's runs are scored in one batch, whatever their count
-    — the bound here is "however many trains this line has", not the database.
-    """
-    fv_id = tt_feed_version_id(session)
-    if not trains or fv_id is None:
-        return {}
-
-    first_stop = (
-        select(
-            StationStop.train_id.label("train_id"),
-            func.min(StationStop.stop_sequence).label("min_seq"),
-        )
-        .where(StationStop.train_id.in_(list(trains)), StationStop.feed_version_id == fv_id)
-        .group_by(StationStop.train_id)
-        .subquery()
-    )
-    rows = session.execute(
-        select(StationStop, Station)
-        .join(Station, Station.id == StationStop.station_id)
-        .join(
-            first_stop,
-            (first_stop.c.train_id == StationStop.train_id)
-            & (first_stop.c.min_seq == StationStop.stop_sequence),
-        )
-        .where(StationStop.feed_version_id == fv_id)
-    ).all()
-
-    train_ids: list[int] = []
-    requests: list[dict] = []
-    for stop, station in rows:
-        # No fallback to the arrival time -- see station_board. A run's
-        # earliest monitored stop is its origin in practice, which always has
-        # a departure, but a run that starts already mid-route could not.
-        sched_sec = stop.planned_departure_sec
-        if sched_sec is None:
-            continue
-        train_ids.append(stop.train_id)
-        requests.append({
-            "day_type": day_type, "train": trains[stop.train_id], "station": station,
-            "sched_sec": sched_sec, "platform": stop.platform_code,
-            "stop_sequence": stop.stop_sequence,
-        })
-
-    predictions = ml_live.predict_many(requests)
-    return {
-        train_id: forecast
-        for train_id, prediction in zip(train_ids, predictions)
-        if (forecast := _prediction(prediction)) is not None
-    }
 
 
 def _line_trains_by_direction(
@@ -831,32 +700,9 @@ def trips_around(
         seen.add(stop.id)
         picked.append((stop, relation))
 
-    requests = []
-    for stop, _relation in picked:
-        # No fallback to the arrival time -- see station_board. The candidate
-        # list above already used dep-or-arrival to pick *which* stops are
-        # near this time; this is a separate question of what to ask the
-        # model, and it only knows how to predict a departure.
-        sched_sec = stop.planned_departure_sec
-        requests.append(
-            {
-                "day_type": day_type,
-                "train": trains_by_id[stop.train_id],
-                "station": station,
-                "sched_sec": sched_sec,
-                "platform": stop.platform_code,
-                "stop_sequence": stop.stop_sequence,
-            }
-            if sched_sec is not None
-            else None
-        )
-    predictions = ml_live.predict_many([r for r in requests if r is not None])
-    pred_iter = iter(predictions)
-
     trips = []
-    for (stop, relation), request in zip(picked, requests):
+    for stop, relation in picked:
         train = trains_by_id[stop.train_id]
-        forecast = _prediction(next(pred_iter)) if request is not None else None
         trips.append(
             {
                 "train_id": train.id,
@@ -864,7 +710,7 @@ def trips_around(
                 "url": f"/train/{train.id}/",
                 "sched_arr": _hhmm(stop.planned_arrival_sec),
                 "sched_dep": _hhmm(stop.planned_departure_sec),
-                "dep_pred": forecast,
+                "dep_pred": None,
                 "relation": relation,
             }
         )
@@ -906,8 +752,6 @@ def line_detail(
     )
 
     canonical, halves = _line_trains_by_direction(session, line_id, limit=limit)
-    by_id = {t.id: t for trains in halves for t in trains}
-    forecasts = _run_forecasts(session, line_id, day_type, by_id)
 
     result_halves: list[list[dict]] = [[], []]
     for direction, trains in enumerate(halves):
@@ -927,7 +771,7 @@ def line_detail(
                     # A short working: runs part of the line rather than all of it.
                     "partial": bool(canonical) and (t.n_stops or 0) < len(canonical),
                     "current": t.id == current_train_id,
-                    "pred": forecasts.get(t.id),
+                    "pred": None,
                 }
             )
 

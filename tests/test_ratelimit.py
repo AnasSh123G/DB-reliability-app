@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 
-from dbrel.timetables.ratelimit import TokenBucket
+from dbrel.ingest.ratelimit import TokenBucket
 
 
 def _bucket(tmp_path, rps=1000.0, penalty_rps=50.0, penalty_s=0.3) -> TokenBucket:

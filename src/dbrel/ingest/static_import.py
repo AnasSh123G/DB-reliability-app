@@ -36,7 +36,7 @@ from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from dbrel.config import RAIL_ROUTE_TYPES
-from dbrel.gtfs.timeutil import date_range, parse_gtfs_time, parse_service_date
+from dbrel.ingest.timeutil import date_range, parse_gtfs_time, parse_service_date
 from dbrel.identity import (
     IDENTITY_PATTERN,
     SOURCE_GTFS,

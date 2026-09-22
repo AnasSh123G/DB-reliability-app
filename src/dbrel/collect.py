@@ -263,8 +263,8 @@ def apply_station_seed(
     reported missing -- correct for a corridor seed drawn from the GTFS feed
     itself, useless for a seed drawn from IRIS's own catalogue.
     """
-    from dbrel.gtfs.static_import import station_natural_key
-    from dbrel.timetables.stations import track_stations
+    from dbrel.ingest.static_import import station_natural_key
+    from dbrel.ingest.stations import track_stations
 
     result = SeedResult()
     to_track: list[int] = []
@@ -435,11 +435,11 @@ def run_cold_start(
     one-off full-day /plan backfill (docs/probe-findings.md §24).
     """
     from dbrel.db import create_all, session_scope
-    from dbrel.gtfs.download import fetch_static
-    from dbrel.gtfs.static_import import import_feed
+    from dbrel.ingest.download import fetch_static
+    from dbrel.ingest.static_import import import_feed
     from dbrel.search_index import index_stations
-    from dbrel.timetables.client import TimetablesClient
-    from dbrel.timetables.stations import verify_station
+    from dbrel.ingest.client import TimetablesClient
+    from dbrel.ingest.stations import verify_station
 
     phases: list[PhaseResult] = []
 
@@ -582,8 +582,8 @@ def run_day_backfill(day: str, *, force: bool = False, label: str = "plan-backfi
     )
 
     from dbrel.db import session_scope
-    from dbrel.timetables.client import TimetablesClient
-    from dbrel.timetables.plan_import import import_plan
+    from dbrel.ingest.client import TimetablesClient
+    from dbrel.ingest.plan_import import import_plan
 
     with TimetablesClient() as client, session_scope() as session:
         if not force and not day_needs_backfill(session, day):
@@ -669,10 +669,10 @@ def run_cycle(
     progress: Progress = lambda msg: None,
 ) -> CycleResult:
     from dbrel.db import session_scope
-    from dbrel.derive.finalize_tt import run_finalize_tt
-    from dbrel.timetables.changes_poller import run_tt_poll
-    from dbrel.timetables.client import TimetablesClient
-    from dbrel.timetables.plan_import import import_plan
+    from dbrel.ingest.finalize_tt import run_finalize_tt
+    from dbrel.ingest.changes_poller import run_tt_poll
+    from dbrel.ingest.client import TimetablesClient
+    from dbrel.ingest.plan_import import import_plan
 
     started = time.monotonic()
     result = CycleResult(index=index, started_at=now)

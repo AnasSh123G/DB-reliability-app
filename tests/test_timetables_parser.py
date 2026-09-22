@@ -21,14 +21,14 @@ from dbrel.identity import (
     train_aliases,
     train_identity_key,
 )
-from dbrel.timetables.parser import (
+from dbrel.ingest.parser import (
     parse_timetable,
     parse_ts,
     run_key,
     service_date_of,
     split_stop_id,
 )
-from dbrel.timetables.stations import loose_name, query_variants
+from dbrel.ingest.stations import loose_name, query_variants
 
 # A real /plan response, trimmed. The wings example is verbatim from the probe.
 PLAN_XML = b"""<?xml version="1.0"?>

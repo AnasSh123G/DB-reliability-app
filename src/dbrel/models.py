@@ -1,10 +1,4 @@
-"""The core domain: stations, trains, their planned patterns, and dated runs.
-
-Station / Train / StationStop are the tables behind the original dataclasses in
-main.py. Trip and TripStop add the dated dimension the dataclasses lacked: a train
-is a timetable, a trip is one particular run of it on one particular day, and only
-a run can have an actual time.
-"""
+"""All ORM models and domain constants."""
 
 from __future__ import annotations
 
@@ -22,13 +16,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dbrel.db import Base
 
-# How a trip_stop's actual time came to be. Four grades, and only one of them
-# carries a time. See derive/finalize_tt.py.
-#
-# The GTFS-RT vocabulary that used to live here (OBSERVED, INFERRED_DOWNSTREAM,
-# LAST_SEEN, SKIPPED, MISSING) existed because that feed publishes forecasts, so an
-# actual had to be *inferred* from a value that stopped changing. The archival
-# reader removes the problem at the source rather than grading around it.
+# ---------------------------------------------------------------------------
+# Day-type vocabulary
+# ---------------------------------------------------------------------------
+
+# Two buckets, not seven: a public holiday runs a Sunday timetable, so it
+# belongs with the Sundays, and everything else pools together. Saturday counts
+# as a weekday — it runs a thinner timetable but it is a working day.
+# dbrel/holidays_de.py decides which is which.
+DAY_TYPE_WEEKDAY = "WEEKDAY"
+DAY_TYPE_SUNDAY_HOLIDAY = "SUNDAY_HOLIDAY"
+
+# ---------------------------------------------------------------------------
+# Quality constants
+# ---------------------------------------------------------------------------
 
 # The normal outcome. The event was already in the past when we read it, so ct is
 # DB's recorded actual — the time DB Navigator shows after the train has gone —
@@ -52,6 +53,10 @@ QUALITY_PREDICTION_ONLY = "PREDICTION_ONLY"
 # The grades an aggregate may compute a delay from.
 TRUSTED_QUALITIES = (QUALITY_RECORDED,)
 
+# ---------------------------------------------------------------------------
+# Core domain: stations, trains, their planned patterns, and dated runs
+# ---------------------------------------------------------------------------
+
 
 class Station(Base):
     """A station, stable across feed versions.
@@ -74,31 +79,17 @@ class Station(Base):
     lon: Mapped[float] = mapped_column(Float)
     first_seen_feed_version_id: Mapped[int | None] = mapped_column(ForeignKey("feed_version.id"))
 
-    # IRIS identity. A property of the place, so it lives here rather than on
-    # tracked_station: untracked stations need it too, because it is the only
-    # reliable join between the two sources — station names disagree
-    # systematically between IRIS and DELFI (docs/probe-findings.md §13).
     eva: Mapped[int | None] = mapped_column(Integer)
     ds100: Mapped[str | None] = mapped_column(String(16))
     eva_source: Mapped[str | None] = mapped_column(String(16))  # iris | stada | manual
 
-    # --- polling state ----------------------------------------------------
-    # Formerly a separate tracked_station table. Folded in because it was 21 rows
-    # joined on every poll, and the reason it was split — "static_import would
-    # clobber operational columns" — is not true of the importer, which only ever
-    # INSERTs stations whose natural_key is new and never updates an existing row.
     tracked: Mapped[int] = mapped_column(Integer, default=0)
-    # 1 = every sweep, 2 = every other, 3 = every third. Lets a large set keep
-    # high resolution where it matters within the request budget -- see
-    # config.py (TT_RPS_FAST / TT_RPM_PENALTY) for the actual current rate.
     poll_priority: Mapped[int] = mapped_column(Integer, default=1)
     tracked_at: Mapped[int | None] = mapped_column(Integer)
-    # 'YYYY-MM-DD:HH' high-water mark for the rolling /plan importer.
     last_plan_hour: Mapped[str | None] = mapped_column(String(13))
     last_fchg_at: Mapped[int | None] = mapped_column(Integer)
     n_fchg_polls: Mapped[int] = mapped_column(Integer, default=0)
     n_fchg_errors: Mapped[int] = mapped_column(Integer, default=0)
-    # Share of ppth neighbours that matched the GTFS pattern at verification time.
     verify_overlap: Mapped[float | None] = mapped_column(Float)
     verified_at: Mapped[int | None] = mapped_column(Integer)
 
@@ -115,13 +106,7 @@ class Station(Base):
 
 
 class ServiceLine(Base):
-    """'RE 4', 'S1' — the thing a regional passenger actually names.
-
-    A line has many numbered trains, so it cannot share a table with Train:
-    emitting 's1' as an alias of a train would make that one query return every
-    S1 run ever recorded. The split falls exactly on the FV/RV boundary — every
-    regional stop carries dp@l and no long-distance one does (findings §11).
-    """
+    """'RE 4', 'S1' — the thing a regional passenger actually names."""
 
     __tablename__ = "service_line"
 
@@ -144,67 +129,49 @@ class ServiceLine(Base):
 
 
 class Train(Base):
-    """A train as a recurring service, identified the way the railway identifies it.
-
-    Under GTFS there was no train number in the feed at all, so identity had to be
-    synthesised from the observed station sequence. That scheme cannot survive a
-    station-scoped source: growing the tracked set would change the hash of every
-    train through the new stations and fork the whole history. IRIS supplies the
-    number, and (category, number) had zero collisions over 1,108 pairs, so the
-    path is now an attribute and the number is the identity (findings §10).
-    """
+    """A train as a recurring service, identified the way the railway identifies it."""
 
     __tablename__ = "train"
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # --- identity ---------------------------------------------------------
     source: Mapped[str] = mapped_column(String(8), default="gtfs")
     identity_kind: Mapped[str] = mapped_column(String(12), default="PATTERN")
     identity_key: Mapped[str] = mapped_column(String(255), unique=True)
 
-    # --- the ids the backend keeps ----------------------------------------
     train_number: Mapped[int | None] = mapped_column(Integer)
     train_number_raw: Mapped[str | None] = mapped_column(String(16))
     category: Mapped[str | None] = mapped_column(String(8))
-    operator: Mapped[str | None] = mapped_column(String(16))  # tl@o, attribute not key
-    trip_type: Mapped[str | None] = mapped_column(String(2))  # tl@t verbatim
+    operator: Mapped[str | None] = mapped_column(String(16))
+    trip_type: Mapped[str | None] = mapped_column(String(2))
     segment: Mapped[str | None] = mapped_column(String(4))  # FV | RV | S
     line_id: Mapped[int | None] = mapped_column(ForeignKey("service_line.id"), index=True)
 
-    # --- what a human types and reads -------------------------------------
     display_name: Mapped[str | None] = mapped_column(String(120))  # 'ICE 599'
     search_name: Mapped[str | None] = mapped_column(String(64))  # 'ice599'
-    # IRIS fb: what the passenger is shown. For long distance that is the
-    # number ("ICE 843"), for regional it is the LINE ("RE3"), so it must not
-    # become display_name or a train would answer to its line's name.
     passenger_label: Mapped[str | None] = mapped_column(String(32))
-    long_name: Mapped[str | None] = mapped_column(Text)  # descriptive, GTFS-era
+    long_name: Mapped[str | None] = mapped_column(Text)
 
-    # --- shape: attributes, never identity --------------------------------
     origin_station_id: Mapped[int | None] = mapped_column(ForeignKey("station.id"))
     dest_station_id: Mapped[int | None] = mapped_column(ForeignKey("station.id"))
-    # ppth names often do not resolve to a station row, so keep the text too.
     origin_name: Mapped[str | None] = mapped_column(Text)
     dest_name: Mapped[str | None] = mapped_column(Text)
     route_path: Mapped[str | None] = mapped_column(Text)  # pipe-separated ppth
     path_sha1: Mapped[str | None] = mapped_column(String(40))
     first_departure_sec: Mapped[int | None] = mapped_column(Integer)
     last_arrival_sec: Mapped[int | None] = mapped_column(Integer)
-    n_stops: Mapped[int | None] = mapped_column(Integer)  # true journey length
-    n_stops_tracked: Mapped[int | None] = mapped_column(Integer)  # how many we can see
+    n_stops: Mapped[int | None] = mapped_column(Integer)
+    n_stops_tracked: Mapped[int | None] = mapped_column(Integer)
 
-    # --- lifecycle ---------------------------------------------------------
     first_seen_date: Mapped[str | None] = mapped_column(String(10))
     last_seen_date: Mapped[str | None] = mapped_column(String(10))
     n_runs_seen: Mapped[int] = mapped_column(Integer, default=0)
 
-    # --- GTFS provenance, unchanged ---------------------------------------
     route_id: Mapped[int | None] = mapped_column(ForeignKey("route.id"), index=True)
     first_seen_feed_version_id: Mapped[int | None] = mapped_column(ForeignKey("feed_version.id"))
     last_seen_feed_version_id: Mapped[int | None] = mapped_column(ForeignKey("feed_version.id"))
 
-    route: Mapped["Route | None"] = relationship(back_populates="trains")  # noqa: F821
+    route: Mapped["Route | None"] = relationship(back_populates="trains")
     line: Mapped["ServiceLine | None"] = relationship()
     origin: Mapped["Station | None"] = relationship(foreign_keys=[origin_station_id])
     destination: Mapped["Station | None"] = relationship(foreign_keys=[dest_station_id])
@@ -226,11 +193,7 @@ class Train(Base):
 
 
 class SearchAlias(Base):
-    """Every string form a human might type, for any searchable entity.
-
-    Three nullable FKs plus a CHECK rather than a polymorphic (kind, id) pair,
-    because db.py sets PRAGMA foreign_keys=ON and this keeps deletes cascading.
-    """
+    """Every string form a human might type, for any searchable entity."""
 
     __tablename__ = "search_alias"
 
@@ -259,23 +222,13 @@ class SearchAlias(Base):
 
 
 class StationStop(Base):
-    """One stop in a train's planned pattern: where, in what order, at what time.
-
-    Date-independent, so times are seconds from the service-date anchor rather than
-    absolute instants — that is what makes 25:30:00 representable. Carrying
-    feed_version_id means a schedule change between rebuilds is visible as a new row
-    rather than mistaken for corruption.
-    """
+    """One stop in a train's planned pattern: where, in what order, at what time."""
 
     __tablename__ = "station_stop"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     feed_version_id: Mapped[int] = mapped_column(ForeignKey("feed_version.id"), index=True)
     train_id: Mapped[int] = mapped_column(ForeignKey("train.id"))
-    # For Timetables this is the trip-wide 1-based stopIndex from the stop id, so
-    # sequences are SPARSE (a run may have rows at 3, 11, 24) but true and
-    # consistent across stations. Adding a station later fills a gap rather than
-    # renumbering anything — which is what lets the tracked set grow.
     stop_sequence: Mapped[int] = mapped_column(Integer)
     station_id: Mapped[int] = mapped_column(ForeignKey("station.id"))
     source_stop_id: Mapped[str | None] = mapped_column(String(64))
@@ -290,13 +243,7 @@ class StationStop(Base):
 
     __table_args__ = (
         UniqueConstraint("feed_version_id", "train_id", "stop_sequence", name="uq_ss_fv_train_seq"),
-        # station_id stays leading so a bare station lookup still seeks, but carrying
-        # feed_version_id means a caller can scope to one feed rather than summing
-        # every rebuild's copy of the same pattern.
         Index("ix_ss_station", "station_id", "feed_version_id", "planned_departure_sec"),
-        # A station board is half arrivals, and the departure index cannot serve
-        # them: it seeks (station, feed_version) and then filter-sorts the rest.
-        # Same reasoning that added ix_ts_station_arr to trip_stop.
         Index("ix_ss_station_arr", "station_id", "feed_version_id", "planned_arrival_sec"),
         Index("ix_ss_train", "train_id"),
     )
@@ -306,37 +253,22 @@ class StationStop(Base):
 
 
 class Trip(Base):
-    """One dated run of a train. Links train to its stops and carries journey timing.
-
-    Rows exist for every scheduled run, not only observed ones — a train that never
-    appears in the realtime feed is finalised as MISSING, which is a fact worth
-    recording rather than an absence.
-    """
+    """One dated run of a train."""
 
     __tablename__ = "trip"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     train_id: Mapped[int] = mapped_column(ForeignKey("train.id"))
-    # The planned departure date at the run's ORIGIN, never the local date of the
-    # observed stop. IRIS carries it in every stop id, so the 23:50 overnight case
-    # is unambiguous for the first time.
     service_date: Mapped[str] = mapped_column(String(10))
     source: Mapped[str] = mapped_column(String(8), default="gtfs")
-    # GTFS: trip_id. Timetables: '<dailyTripId>-<YYMMddHHmm>', identical at every
-    # station the run calls at — which is what stitches one run into one row.
     source_run_key: Mapped[str] = mapped_column(String(64))
     daily_trip_id: Mapped[str | None] = mapped_column(String(32))
     feed_version_id: Mapped[int | None] = mapped_column(ForeignKey("feed_version.id"))
 
-    # SCHEDULED | RUNNING | COMPLETED | CANCELLED | MISSING
     status: Mapped[str] = mapped_column(String(16), default="SCHEDULED")
-    # PLANNED | ADDED | CANCELLED — from IRIS ps/cs, so punctuality stats can
-    # exclude runs that were never in the plan.
     schedule_relationship: Mapped[str | None] = mapped_column(String(12))
     cancelled_at_utc: Mapped[int | None] = mapped_column(Integer)
 
-    # For Timetables these are the first/last TRACKED supposed times, not the true
-    # journey endpoints, which are usually at stations we do not watch.
     supposed_departure_utc: Mapped[int | None] = mapped_column(Integer)
     actual_departure_utc: Mapped[int | None] = mapped_column(Integer)
     supposed_arrival_utc: Mapped[int | None] = mapped_column(Integer)
@@ -359,10 +291,7 @@ class Trip(Base):
     )
 
     __table_args__ = (
-        # A numbered train runs once a day. Ingest routes a violation into
-        # train_conflict rather than crashing or silently overwriting.
         UniqueConstraint("train_id", "service_date", name="uq_trip_train_date"),
-        # The resolver's hot path, for both sources.
         UniqueConstraint("source", "source_run_key", "service_date", name="uq_trip_src_run_date"),
         Index("ix_trip_srcid_date", "source_run_key", "service_date"),
         Index("ix_trip_date_status", "service_date", "status"),
@@ -374,20 +303,7 @@ class Trip(Base):
 
 
 class TripStop(Base):
-    """Supposed vs actual, for one run at one station. The fact table.
-
-    Written by two paths that must not fight over a row:
-
-    * `timetables/changes_poller.py` owns every stop it has a recorded value for,
-      and upserts it (ON CONFLICT DO UPDATE). Re-reading the same event on a later
-      poll is a no-op because the value is already final.
-    * `derive/finalize_tt.py` fills the gaps — stops with no value — and never
-      overwrites (ON CONFLICT DO NOTHING), so it cannot downgrade a RECORDED row.
-
-    Supposed times are copied here rather than joined from StationStop: the planned
-    time of a run that already happened is a historical fact, and must not change
-    when next week's feed rebuild alters the pattern.
-    """
+    """Supposed vs actual, for one run at one station. The fact table."""
 
     __tablename__ = "trip_stop"
 
@@ -406,31 +322,18 @@ class TripStop(Base):
 
     quality: Mapped[str] = mapped_column(String(24))
     rule_version: Mapped[int] = mapped_column(Integer)
-    # When we read this value out of /fchg.
     last_observed_at: Mapped[int | None] = mapped_column(Integer)
-    # How far the nearest poll fell outside the window in which the value would
-    # still have been readable. Only meaningful for PREDICTION_ONLY.
     poll_gap_s: Mapped[int | None] = mapped_column(Integer)
-    # Seconds between the event happening and us reading its value. The confidence
-    # measure for QUALITY_RECORDED, where poll_gap_s has nothing to say: a value
-    # read long after passage had longer to stop moving.
     read_lag_s: Mapped[int | None] = mapped_column(Integer)
     cancelled: Mapped[int] = mapped_column(Integer, default=0)
 
-    # --- Timetables specifics --------------------------------------------
-    # A stop can be cancelled on one side only, which an int enum could not say.
     arr_cancelled: Mapped[int] = mapped_column(Integer, default=0)
     dep_cancelled: Mapped[int] = mapped_column(Integer, default=0)
-    # clt: how far in advance the cancellation was published — a new metric.
     cancelled_at_utc: Mapped[int | None] = mapped_column(Integer)
     added: Mapped[int] = mapped_column(Integer, default=0)
     planned_platform: Mapped[str | None] = mapped_column(String(16))
     changed_platform: Mapped[str | None] = mapped_column(String(16))
-    # Where a run changes number, one physical stop appears on both sides; a
-    # station-level average that counts both would double-count it.
     is_handover: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Local hour of the supposed departure, precomputed for hour-of-day aggregation.
     supposed_departure_hour: Mapped[int | None] = mapped_column(Integer)
 
     trip: Mapped["Trip"] = relationship(back_populates="stops")
@@ -438,9 +341,6 @@ class TripStop(Base):
 
     __table_args__ = (
         UniqueConstraint("trip_id", "stop_sequence", name="uq_tripstop_trip_seq"),
-        # Each index ends in the measure so aggregations are answered from the index,
-        # and carries is_handover before it: a station-level average must exclude
-        # handover stops, and reading that flag from the table would defeat the point.
         Index(
             "ix_ts_station_dep",
             "station_id",
@@ -457,10 +357,176 @@ class TripStop(Base):
         ),
         Index("ix_ts_hour_delay", "supposed_departure_hour", "is_handover", "dep_delay_s"),
         Index("ix_ts_quality_delay", "quality", "dep_delay_s"),
-        # Pattern row -> its dated instances. A nullable FK, so unindexed it forced
-        # a full scan of the fact table.
         Index("ix_ts_station_stop", "station_stop_id"),
     )
 
     def __repr__(self) -> str:
         return f"<TripStop trip={self.trip_id} seq={self.stop_sequence} dep_delay={self.dep_delay_s}>"
+
+
+# ---------------------------------------------------------------------------
+# Provenance and lookup tables
+# ---------------------------------------------------------------------------
+
+
+class FeedVersion(Base):
+    """One downloaded static GTFS archive."""
+
+    __tablename__ = "feed_version"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(8))  # fv | rv
+    source_url: Mapped[str] = mapped_column(Text)
+    etag: Mapped[str | None] = mapped_column(Text)
+    last_modified: Mapped[str | None] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    downloaded_at: Mapped[int] = mapped_column(Integer)
+    imported_at: Mapped[int | None] = mapped_column(Integer)
+    feed_start_date: Mapped[str | None] = mapped_column(String(10))
+    feed_end_date: Mapped[str | None] = mapped_column(String(10))
+    n_trips: Mapped[int | None] = mapped_column(Integer)
+    n_stops: Mapped[int | None] = mapped_column(Integer)
+    n_station_stops: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="importing")
+    error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_feed_version_kind_status", "kind", "status"),)
+
+    def __repr__(self) -> str:
+        return f"<FeedVersion {self.id} {self.kind} {self.status} {self.content_sha256[:8]}>"
+
+
+class Route(Base):
+    """A line/service: 'ICE', 'RE 1'. Scoped to a feed version."""
+
+    __tablename__ = "route"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    feed_version_id: Mapped[int] = mapped_column(ForeignKey("feed_version.id"), index=True)
+    gtfs_route_id: Mapped[str] = mapped_column(String(64))
+    agency_id: Mapped[str | None] = mapped_column(String(64))
+    short_name: Mapped[str | None] = mapped_column(String(64))
+    long_name: Mapped[str | None] = mapped_column(Text)
+    route_type: Mapped[int] = mapped_column(Integer)
+
+    trains: Mapped[list["Train"]] = relationship(back_populates="route")
+
+    __table_args__ = (
+        UniqueConstraint("feed_version_id", "gtfs_route_id", name="uq_route_feed_gtfsid"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Route {self.short_name!r} type={self.route_type}>"
+
+
+class PublicHoliday(Base):
+    """One date the timetable treats as a Sunday, whatever day of the week it falls on."""
+
+    __tablename__ = "public_holiday"
+
+    date: Mapped[str] = mapped_column(String(10), primary_key=True)  # 'YYYY-MM-DD'
+    name: Mapped[str | None] = mapped_column(String(64))
+
+    def __repr__(self) -> str:
+        return f"<PublicHoliday {self.date} {self.name!r}>"
+
+
+# ---------------------------------------------------------------------------
+# DB Timetables (IRIS-TTS) specific tables
+# ---------------------------------------------------------------------------
+
+
+class TtPlanFetch(Base):
+    """One /plan station-hour bucket. Idempotency for the rolling importer."""
+
+    __tablename__ = "tt_plan_fetch"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    eva: Mapped[int] = mapped_column(Integer)
+    plan_date: Mapped[str] = mapped_column(String(10))
+    plan_hour: Mapped[int] = mapped_column(Integer)
+    fetched_at: Mapped[int] = mapped_column(Integer)
+    http_status: Mapped[int] = mapped_column(Integer)
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    n_stops: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("eva", "plan_date", "plan_hour", name="uq_planfetch_eva_date_hour"),
+    )
+
+
+class TtPoll(Base):
+    """One /fchg fetch of one station. The per-station listening record."""
+
+    __tablename__ = "tt_poll"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sweep_id: Mapped[int] = mapped_column(Integer, index=True)
+    station_id: Mapped[int | None] = mapped_column(ForeignKey("station.id"))
+    eva: Mapped[int] = mapped_column(Integer)
+    fetched_at: Mapped[int] = mapped_column(Integer)
+    http_status: Mapped[int] = mapped_column(Integer)
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    n_stops: Mapped[int] = mapped_column(Integer, default=0)
+    n_matched: Mapped[int] = mapped_column(Integer, default=0)
+    n_unmatched: Mapped[int] = mapped_column(Integer, default=0)
+    n_changed: Mapped[int] = mapped_column(Integer, default=0)
+    fetch_ms: Mapped[int | None] = mapped_column(Integer)
+    parse_ms: Mapped[int | None] = mapped_column(Integer)
+    store_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_ttpoll_station_time", "station_id", "fetched_at"),)
+
+    def __repr__(self) -> str:
+        return f"<TtPoll {self.id} eva={self.eva} {self.http_status}>"
+
+
+class TtUnmatched(Base):
+    """A /fchg change for a run we have no trip row for."""
+
+    __tablename__ = "tt_unmatched"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    service_date: Mapped[str] = mapped_column(String(10))
+    daily_trip_id: Mapped[str] = mapped_column(String(32))
+    stop_index: Mapped[int] = mapped_column(Integer)
+    eva: Mapped[int] = mapped_column(Integer)
+    category: Mapped[str | None] = mapped_column(String(8))
+    number: Mapped[str | None] = mapped_column(String(16))
+    first_poll_id: Mapped[int | None] = mapped_column(Integer)
+    last_poll_id: Mapped[int | None] = mapped_column(Integer)
+    n_polls: Mapped[int] = mapped_column(Integer, default=1)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "service_date", "daily_trip_id", "stop_index", name="uq_ttunmatched_run_stop"
+        ),
+    )
+
+
+class TtMessage(Base):
+    """A delay cause or disruption note attached to a stop."""
+
+    __tablename__ = "tt_message"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id"))
+    stop_sequence: Mapped[int] = mapped_column(Integer)
+    msg_id: Mapped[str | None] = mapped_column(String(32))
+    msg_type: Mapped[str | None] = mapped_column(String(2))
+    code: Mapped[int | None] = mapped_column(Integer)
+    category: Mapped[str | None] = mapped_column(String(64))
+    ts: Mapped[int | None] = mapped_column(Integer)
+    valid_from: Mapped[int | None] = mapped_column(Integer)
+    valid_to: Mapped[int | None] = mapped_column(Integer)
+    priority: Mapped[int | None] = mapped_column(Integer)
+    deleted: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("trip_id", "stop_sequence", "msg_id", "ts", name="uq_ttmsg"),
+        Index("ix_ttmsg_code", "code"),
+    )

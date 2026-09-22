@@ -30,7 +30,7 @@ from dbrel.collect import (
 )
 from dbrel.config import TZ
 from dbrel.db import Base
-from dbrel.gtfs.static_import import station_natural_key
+from dbrel.ingest.static_import import station_natural_key
 from dbrel.models import Station, TtPlanFetch
 
 # --------------------------------------------------------------------------

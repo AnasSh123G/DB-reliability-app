@@ -22,7 +22,7 @@ from dbrel.config import (
     TT_RATELIMIT_STATE,
     TT_RPS_FAST,
 )
-from dbrel.timetables.ratelimit import TokenBucket
+from dbrel.ingest.ratelimit import TokenBucket
 
 MAX_RETRIES = 4
 

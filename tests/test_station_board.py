@@ -16,10 +16,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from dbrel.db import Base
-from dbrel.gtfs.timeutil import service_date_anchor
+from dbrel.ingest.timeutil import service_date_anchor
 from dbrel.identity import SOURCE_TT
 from dbrel.models import Station, StationStop, Train
-from dbrel.timetables.runs import tt_feed_version
+from dbrel.ingest.runs import tt_feed_version
 from dbrel.web import queries
 
 STATION_ID = 1
@@ -61,19 +61,6 @@ def session():
 
 def board_calls(session, **kwargs):
     return queries.station_board(session, STATION_ID, now=NOW, **kwargs)["calls"]
-
-
-def test_a_terminating_call_gets_no_forecast_even_with_a_model(session, stub_ml_model):
-    """The regression case: no departure exists, so nothing to predict."""
-    calls = {c["train_id"]: c for c in board_calls(session)}
-    assert calls[TERMINUS_TRAIN_ID]["terminates"] is True
-    assert calls[TERMINUS_TRAIN_ID]["dep"] is None
-    assert calls[TERMINUS_TRAIN_ID]["dep_pred"] is None
-
-
-def test_a_through_call_does_get_a_forecast(session, stub_ml_model):
-    calls = {c["train_id"]: c for c in board_calls(session)}
-    assert calls[THROUGH_TRAIN_ID]["dep_pred"]["p50_min"] == 2.0
 
 
 def test_no_forecast_anywhere_without_an_activated_model(session):

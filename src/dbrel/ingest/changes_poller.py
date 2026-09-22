@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from dbrel.identity import SOURCE_TT
 from dbrel.config import GRACE_S
-from dbrel.gtfs.timeutil import local_date, local_hour
+from dbrel.ingest.timeutil import local_date, local_hour
 from dbrel.models import (
     QUALITY_CANCELLED,
     QUALITY_RECORDED,
@@ -45,9 +45,9 @@ from dbrel.models import (
     TtPoll,
     TtUnmatched,
 )
-from dbrel.timetables.client import TimetablesClient
-from dbrel.timetables.parser import TtEvent, TtStop, parse_timetable
-from dbrel.timetables.runs import (
+from dbrel.ingest.client import TimetablesClient
+from dbrel.ingest.parser import TtEvent, TtStop, parse_timetable
+from dbrel.ingest.runs import (
     RunContext,
     RunCounters,
     epoch_of_sec,

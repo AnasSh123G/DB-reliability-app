@@ -30,8 +30,8 @@ from sqlalchemy.orm import Session
 from dbrel.config import RAIL_EVA_RANGE
 from dbrel.identity import normalize_name
 from dbrel.models import Station, StationStop
-from dbrel.timetables.client import TimetablesClient
-from dbrel.timetables.parser import parse_stations, parse_timetable
+from dbrel.ingest.client import TimetablesClient
+from dbrel.ingest.parser import parse_stations, parse_timetable
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 # gtfs.de appends product markers IRIS does not use, and vice versa.

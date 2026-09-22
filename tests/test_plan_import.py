@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 
 from dbrel.db import Base
 from dbrel.models import Station, TtPlanFetch
-from dbrel.timetables.client import Response
-from dbrel.timetables.plan_import import import_plan
+from dbrel.ingest.client import Response
+from dbrel.ingest.plan_import import import_plan
 
 EVA = 8000041
 

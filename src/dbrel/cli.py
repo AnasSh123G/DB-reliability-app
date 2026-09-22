@@ -21,9 +21,9 @@ from dbrel.config import (
     TT_SWEEP_LOCK,
 )
 from dbrel.db import create_all, session_scope
-from dbrel.gtfs.download import fetch_static
-from dbrel.timetables.parser import parse_stations
-from dbrel.gtfs.static_import import import_feed
+from dbrel.ingest.download import fetch_static
+from dbrel.ingest.parser import parse_stations
+from dbrel.ingest.static_import import import_feed
 from dbrel.models import (
     TRUSTED_QUALITIES,
     FeedVersion,
@@ -274,7 +274,7 @@ def tt_check(
     Tries the header combinations separately: one bad header and two bad headers
     both return 401, so only this tells you which half is wrong.
     """
-    from dbrel.timetables.client import TimetablesClient, credential_report
+    from dbrel.ingest.client import TimetablesClient, credential_report
 
     for line in credential_report():
         typer.echo("  " + line)
@@ -366,8 +366,8 @@ def tt_map_stations(
     is auto-accepted — unresolved stations are reported with the queries that
     were tried, for a human to settle with --manual.
     """
-    from dbrel.timetables.client import TimetablesClient
-    from dbrel.timetables.stations import map_stations, track_stations
+    from dbrel.ingest.client import TimetablesClient
+    from dbrel.ingest.stations import map_stations, track_stations
 
     ids = [int(x) for x in (station_ids or "").split(",") if x.strip()]
     pairs = {}
@@ -403,8 +403,8 @@ def tt_map_stations(
 @app.command("tt-verify-stations")
 def tt_verify_stations(min_overlap: float = typer.Option(0.6)) -> None:
     """Check each tracked station behaviourally: do IRIS's neighbours match GTFS's?"""
-    from dbrel.timetables.client import TimetablesClient
-    from dbrel.timetables.stations import verify_station
+    from dbrel.ingest.client import TimetablesClient
+    from dbrel.ingest.stations import verify_station
 
     with TimetablesClient() as client, session_scope() as session:
         client.require_credentials()
@@ -435,8 +435,8 @@ def tt_import_plan(
     """
     from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
 
-    from dbrel.timetables.client import TimetablesClient
-    from dbrel.timetables.plan_import import import_plan
+    from dbrel.ingest.client import TimetablesClient
+    from dbrel.ingest.plan_import import import_plan
 
     hour_list = None
     if hours:
@@ -492,8 +492,8 @@ def tt_poll(
     """Poll /fchg for the tracked stations, recording events that have happened."""
     import time as _time
 
-    from dbrel.timetables.changes_poller import run_tt_poll
-    from dbrel.timetables.client import TimetablesClient
+    from dbrel.ingest.changes_poller import run_tt_poll
+    from dbrel.ingest.client import TimetablesClient
 
     deadline = _time.monotonic() + minutes * 60 if minutes else None
     sweep = 0
@@ -534,7 +534,7 @@ def tt_finalize(
     The actual times themselves are written by tt-poll; this fills the gaps and
     computes the journey-level summary.
     """
-    from dbrel.derive.finalize_tt import run_finalize_tt
+    from dbrel.ingest.finalize_tt import run_finalize_tt
 
     with session_scope() as session:
         result = run_finalize_tt(
@@ -709,99 +709,13 @@ def build_aliases() -> None:
     )
 
 
-def _needs_ml() -> None:
-    """Same shape as serve's Django check: the extra is optional, so say so."""
-    try:
-        import lightgbm  # noqa: F401
-    except ImportError:
-        typer.echo("lightgbm is not installed — run 'uv sync --extra ml'")
-        raise typer.Exit(1)
-
-
-@app.command("train-delay-model")
-def train_delay_model(
-    since: str = typer.Option(None, help="only service dates from this YYYY-MM-DD"),
-    until: str = typer.Option(None, help="only service dates up to this YYYY-MM-DD"),
-    seed: int = typer.Option(0, help="fixed so the same data gives the same model"),
-    dry_run: bool = typer.Option(False, help="score it but write nothing"),
-) -> None:
-    """Fit the delay model and score it against the historical average.
-
-    Trains three quantile models on the oldest 60% of service dates, calibrates a
-    band with conformal prediction on the next 20%, and reports against the
-    newest 20% — which it has not seen. The model is only activated if it beats
-    the average this app already ships; the literature is clear that baseline is
-    hard to beat, so losing is a normal outcome and is reported plainly.
-    """
-    _needs_ml()
-    from dbrel.ml._common import QUANTILES
-    from dbrel.ml.train import run_train
-
-    nominal = QUANTILES[-1] - QUANTILES[0]
-
-    with session_scope() as session:
-        _require_schema(session)
-        result = run_train(
-            session, since=since, until=until, seed=seed, dry_run=dry_run,
-            progress=typer.echo,
-        )
-
-    if result.evaluation is None:
-        typer.echo(f"  {result.reason}")
-        raise typer.Exit(1)
-
-    e = result.evaluation
-    typer.echo(
-        f"\n  {result.rows:,} observations   "
-        f"fit {result.n_fit:,} / calibrate {result.n_calibrate:,} / test {result.n_test:,}   "
-        f"{result.elapsed_s:.1f}s"
-    )
-    typer.echo(
-        f"  fit {result.fit_dates[0]}..{result.fit_dates[-1]}   "
-        f"calibrate {result.calibrate_dates[0]}..{result.calibrate_dates[-1]}   "
-        f"test {result.test_dates[0]}..{result.test_dates[-1]}"
-    )
-
-    typer.echo("\nmetric              baseline      model          change")
-    for label, base, model in (
-        ("MAE (s)", e.baseline_mae, e.model_mae),
-        ("pinball p50 (s)", e.baseline_pinball, e.model_pinball),
-    ):
-        delta = (base - model) / base if base else 0.0
-        typer.echo(f"  {label:<16} {base:>9.1f}  {model:>9.1f}  {delta:>+13.1%}")
-    typer.echo(f"  {'naive median (s)':<16} {e.naive_mae:>9.1f}")
-    typer.echo(
-        f"\n  band coverage {e.band_coverage:.1%} (nominal "
-        f"{nominal:.0%}), mean width {e.band_width:.0f}s"
-    )
-    typer.echo(f"  cold-start calls in test: {e.cold_start_share:.1%}")
-
-    typer.echo("\ntop features by gain")
-    for name, gain in result.importances[:8]:
-        typer.echo(f"  {name:<24} {gain:>12,}")
-
-    typer.echo(f"\n  activated: {'yes' if result.activated else 'no'} — {result.reason}")
-    if result.directory:
-        typer.echo(f"  {result.directory}")
-    typer.echo(
-        "\n  scoring happens live in the web process (dbrel.ml.live) — "
-        "nothing left to precompute"
-    )
-
-
 @app.command("serve")
 def serve(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8000),
     debug: bool = typer.Option(False),
 ) -> None:
-    """Run the web UI.
-
-    Forecasts on the browse widget and train pages run the model live, per
-    request (dbrel.ml.live) — install the `ml` extra too if you want to see
-    them; without it the board just shows historical averages, same as before
-    that extra existed.
-    """
+    """Run the web UI."""
     import os
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "dbrel.web.settings")

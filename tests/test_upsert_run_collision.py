@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 
 from dbrel.db import Base
 from dbrel.models import Station, Trip
-from dbrel.timetables.parser import TtEvent, TtStop
-from dbrel.timetables.runs import RunContext, RunCounters, tt_feed_version, upsert_run
+from dbrel.ingest.parser import TtEvent, TtStop
+from dbrel.ingest.runs import RunContext, RunCounters, tt_feed_version, upsert_run
 
 
 def _stop(*, daily_trip_id: str, start_stamp: str, stop_index: int = 1) -> TtStop:

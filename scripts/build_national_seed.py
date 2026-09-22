@@ -135,7 +135,7 @@ def _resolve_collisions(entries: list[dict]) -> tuple[list[dict], list[dict]]:
     # position. Berlin Hbf's two evas have no gtfs row at all, so grouping only the
     # bound ones left them both in -- and they collide anyway, because identical
     # names at identical coordinates derive an identical key.
-    from dbrel.gtfs.static_import import station_natural_key
+    from dbrel.ingest.static_import import station_natural_key
 
     by_key: dict[str, list[dict]] = {}
     for e in entries:
