@@ -2,10 +2,10 @@ import { ArrowRight, Clock3, MapPin, Route, Search, TrainFront } from "lucide-re
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
-import { useLineDirections, useLineStations, useSuggest, useTripsAround } from "@/hooks/use-dbrel";
+import { useRouteDirections, useRouteStations, useRouteTripsAround, useSuggest } from "@/hooks/use-dbrel";
 import { delayColor, expectedTime } from "@/lib/delay";
 import { copy, type Locale } from "@/lib/i18n";
-import { trainRoute, type SuggestResult } from "@/lib/api";
+import { trainRoute, type RouteRef, type SuggestResult } from "@/lib/api";
 
 interface Props {
   locale: Locale;
@@ -19,7 +19,7 @@ function kindIcon(kind: SuggestResult["kind"]) {
 
 interface SavedSearch {
   query: string;
-  selectedLine: { id: number; name: string } | null;
+  selectedLine: RouteRef | null;
   direction: number | undefined;
   stationId: number | undefined;
   date: string;
@@ -39,9 +39,7 @@ export function TrainSearch({ locale }: Props) {
   const searchFieldRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState(savedSearch?.query ?? "");
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const [selectedLine, setSelectedLine] = useState<{ id: number; name: string } | null>(
-    savedSearch?.selectedLine ?? null,
-  );
+  const [selectedLine, setSelectedLine] = useState<RouteRef | null>(savedSearch?.selectedLine ?? null);
   const [direction, setDirection] = useState<number | undefined>(savedSearch?.direction);
   const [stationId, setStationId] = useState<number | undefined>(savedSearch?.stationId);
   const [date, setDate] = useState(savedSearch?.date ?? "");
@@ -59,14 +57,15 @@ export function TrainSearch({ locale }: Props) {
   const { data: suggestData } = useSuggest(query);
   const matches = suggestData?.results ?? [];
 
-  const { data: directionsData } = useLineDirections(selectedLine?.id);
+  const route = selectedLine ?? undefined;
+  const { data: directionsData } = useRouteDirections(route);
   const directions = directionsData?.directions ?? [];
 
-  const { data: stationsData } = useLineStations(selectedLine?.id, direction as 0 | 1 | undefined);
+  const { data: stationsData } = useRouteStations(route, direction as 0 | 1 | undefined);
   const stations = stationsData?.stations ?? [];
 
-  const { data: aroundData, isLoading: aroundLoading } = useTripsAround(
-    selectedLine?.id,
+  const { data: aroundData, isLoading: aroundLoading } = useRouteTripsAround(
+    route,
     direction as 0 | 1 | undefined,
     stationId,
     date,
@@ -91,9 +90,10 @@ export function TrainSearch({ locale }: Props) {
 
   // A line or a specific train both resolve to the SAME gated flow (pick
   // direction, stop, date, time, then press Prognose) -- picking a train by
-  // name is just a shortcut to its line, never a way to skip the gate.
-  // Only a station is its own, immediate destination (a live board, not a
-  // prediction for a chosen stop/time).
+  // name is just a shortcut to its line (or, for a train with no line, the
+  // route grouped around it), never a way to skip the gate. Only a station
+  // is its own, immediate destination (a live board, not a prediction for a
+  // chosen stop/time).
   const chooseSuggestion = async (result: SuggestResult) => {
     setSuggestionsOpen(false);
     if (result.kind === "station") {
@@ -106,21 +106,25 @@ export function TrainSearch({ locale }: Props) {
     setSubmitted(false);
 
     if (result.kind === "line") {
-      setSelectedLine({ id: result.id, name: result.name });
+      setSelectedLine({ kind: "line", id: result.id });
       setQuery(result.name);
       return;
     }
 
     // result.kind === "train": resolve its line before anything else can be
     // picked -- there is no real "this train's own reverse direction" (the
-    // mock's version of that was fabricated); the line's real two
-    // directions are what "direction" means here.
+    // mock's version of that was fabricated); the line's real two directions
+    // are what "direction" means here. Long-distance trains (ICE, IC, ...)
+    // have no line, so the backend's route grouped around the train is used.
     setQuery(result.name);
     setSelectedLine(null);
-    const route = await trainRoute(result.id).catch(() => null);
-    if (route?.train.line) {
-      setSelectedLine({ id: route.train.line.id, name: route.train.line.name });
-    }
+    const trainInfo = await trainRoute(result.id).catch(() => null);
+    if (!trainInfo) return;
+    setSelectedLine(
+      trainInfo.train.line
+        ? { kind: "line", id: trainInfo.train.line.id }
+        : { kind: "corridor", id: result.id },
+    );
   };
 
   return (

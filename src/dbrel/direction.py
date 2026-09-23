@@ -181,6 +181,57 @@ def line_trains_by_direction(
     return canonical, halves
 
 
+def corridor_trains_by_direction(
+    session: Session, train_id: int
+) -> tuple[list[str], list[list[Train]]] | None:
+    """A line-less train's "route": trains of its kind on the same stretch, by direction.
+
+    Long-distance trains (ICE, IC, EC, ...) have no line to group them, so the
+    group is built around the chosen train itself: every other line-less train
+    of the same category that either runs the whole of this train's stretch
+    (both its end stations are on the other train's route) or runs within it
+    (both of the other train's end stations are on this train's route), in
+    either direction. A whole-network component (`_connected_components`)
+    would not work here -- the ICE network is one connected blob, so its
+    "longest route" axis would say nothing about this train's direction.
+
+    The chosen train's own route is the axis: direction 0 runs the way it
+    does, 1 runs back. Returns None for a train that has a line (use the line
+    instead) or doesn't exist.
+    """
+    anchor = session.get(Train, train_id)
+    if anchor is None or anchor.line_id is not None:
+        return None
+    route = [part for part in (anchor.route_path or "").split("|") if part]
+    if len(route) < 2:
+        return route, [[anchor], []]
+
+    on_route = set(route)
+    members: list[Train] = []
+    for train in session.execute(
+        select(Train).where(
+            Train.line_id.is_(None),
+            Train.category == anchor.category,
+            Train.route_path.is_not(None),
+        )
+    ).scalars():
+        names = [part for part in train.route_path.split("|") if part]
+        if len(names) < 2:
+            continue
+        runs_whole_stretch = route[0] in names and route[-1] in names
+        runs_within_stretch = names[0] in on_route and names[-1] in on_route
+        if runs_whole_stretch or runs_within_stretch:
+            members.append(train)
+
+    index = {name: position for position, name in enumerate(route)}
+    halves: list[list[Train]] = [[], []]
+    for train in members:
+        halves[direction_of(train, index)].append(train)
+    for half in halves:
+        half.sort(key=lambda t: (t.first_departure_sec or 0, t.train_number or 0))
+    return route, halves
+
+
 def direction_by_train_id(session: Session, line_id: int, *, limit: int = 100_000) -> dict[int, int]:
     """train_id -> 0/1 for every train on a line. Used to build a temp table for aggregation.
 

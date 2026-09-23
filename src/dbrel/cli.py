@@ -924,7 +924,8 @@ def build_stop_averages_cmd() -> None:
         _require_schema(session)
         report = build_stop_averages(get_engine(), session)
     typer.echo(
-        f"{report['rows']:,} average rows built from years {report['years']} "
+        f"{report['rows']:,} line average rows + {report['train_rows']:,} per-train rows "
+        f"(trains with no line) built from years {report['years']} "
         f"in {report['elapsed_s']:.1f}s "
         f"({report['excluded_no_start_time']:,} trip_stop rows excluded: no derivable start time)."
     )

@@ -12,6 +12,14 @@ urlpatterns = [
     path("api/line/<int:line_id>/stations", views.line_stations, name="line-stations"),
     path("api/line/<int:line_id>/around", views.line_trips_around, name="line-trips-around"),
     path("api/line/<int:line_id>/detail", views.line_detail, name="line-detail"),
+    # A line-less train's route (ICE, IC, ...): same shape as the line
+    # endpoints above, keyed by the chosen train.
+    path("api/corridor/<int:train_id>/directions", views.corridor_directions,
+         name="corridor-directions"),
+    path("api/corridor/<int:train_id>/stations", views.corridor_stations,
+         name="corridor-stations"),
+    path("api/corridor/<int:train_id>/around", views.corridor_trips_around,
+         name="corridor-trips-around"),
     # Everything else belongs to the bahn-buddy-predict frontend, which dbrel
     # serve runs as its own subprocess -- must stay last, since it matches any
     # path none of the /api/* patterns above already claimed.

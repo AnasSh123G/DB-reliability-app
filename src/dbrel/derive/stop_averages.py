@@ -181,9 +181,46 @@ def build_stop_averages(engine: Engine, session: Session) -> dict:
         n_rows = conn.exec_driver_sql("SELECT COUNT(*) FROM stop_delay_average").fetchone()[0]
         conn.exec_driver_sql("DROP TABLE IF EXISTS train_direction")
 
+        # Trains with no line (ICE, IC, EC, ...) can't be keyed by line and
+        # direction, so they get their own per-train table -- same filters,
+        # thresholds, and time keys as above. See TrainStopDelayAverage.
+        conn.exec_driver_sql("DELETE FROM train_stop_delay_average")
+        conn.exec_driver_sql(
+            f"""
+            INSERT INTO train_stop_delay_average (
+                train_id, station_id, trip_start_time, sched_time, is_holiday,
+                n_arr, mean_arr_delay_s, n_dep, mean_dep_delay_s, built_at
+            )
+            SELECT
+                tr.id,
+                ts.station_id,
+                {_TRIP_START_TTS_SQL} AS trip_start_time,
+                {sched_time_sql} AS sched_time,
+                ts.is_holiday,
+                SUM(CASE WHEN ts.arr_delay_s IS NOT NULL AND ABS(ts.arr_delay_s) <= {MAX_PLAUSIBLE_DELAY_S} THEN 1 ELSE 0 END) AS n_arr,
+                AVG(CASE WHEN ts.arr_delay_s IS NOT NULL AND ABS(ts.arr_delay_s) <= {MAX_PLAUSIBLE_DELAY_S} THEN ts.arr_delay_s END) AS mean_arr_delay_s,
+                SUM(CASE WHEN ts.dep_delay_s IS NOT NULL AND ABS(ts.dep_delay_s) <= {MAX_PLAUSIBLE_DELAY_S} THEN 1 ELSE 0 END) AS n_dep,
+                AVG(CASE WHEN ts.dep_delay_s IS NOT NULL AND ABS(ts.dep_delay_s) <= {MAX_PLAUSIBLE_DELAY_S} THEN ts.dep_delay_s END) AS mean_dep_delay_s,
+                {built_at} AS built_at
+            FROM trip_stop ts
+            JOIN trip t ON t.id = ts.trip_id
+            JOIN train tr ON tr.id = t.train_id
+            WHERE ts.quality = 'RECORDED'
+              AND ts.cancelled = 0
+              AND ts.is_holiday IS NOT NULL
+              AND tr.line_id IS NULL
+              AND ({_TRIP_START_TTS_SQL}) IS NOT NULL
+            GROUP BY tr.id, ts.station_id, trip_start_time, sched_time, ts.is_holiday
+            """
+        )
+        n_train_rows = conn.exec_driver_sql(
+            "SELECT COUNT(*) FROM train_stop_delay_average"
+        ).fetchone()[0]
+
     return {
         "years": years,
         "rows": n_rows,
+        "train_rows": n_train_rows,
         "excluded_no_start_time": excluded_no_start_time,
         "elapsed_s": _time.time() - t0,
     }

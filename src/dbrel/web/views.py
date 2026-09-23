@@ -95,19 +95,43 @@ def line_directions(request, line_id: int):
     return JsonResponse(result)
 
 
-def line_stations(request, line_id: int):
+def corridor_directions(request, train_id: int):
+    with read_scope() as session:
+        result = queries.corridor_directions(session, train_id)
+    if result is None:
+        return JsonResponse({"error": f"no line-less train {train_id}"}, status=404)
+    return JsonResponse(result)
+
+
+def _stations_response(fetch, key_id: int, request):
     try:
         direction = int(request.GET.get("direction", ""))
     except ValueError:
         return JsonResponse({"error": "direction must be 0 or 1"}, status=400)
     with read_scope() as session:
-        stations = queries.line_stations(session, line_id, direction)
+        stations = fetch(session, key_id, direction)
     if stations is None:
-        return JsonResponse({"error": f"no line {line_id} or direction {direction}"}, status=404)
+        return JsonResponse({"error": f"no route {key_id} or direction {direction}"}, status=404)
     return JsonResponse({"stations": stations})
 
 
+def line_stations(request, line_id: int):
+    return _stations_response(queries.line_stations, line_id, request)
+
+
+def corridor_stations(request, train_id: int):
+    return _stations_response(queries.corridor_stations, train_id, request)
+
+
 def line_trips_around(request, line_id: int):
+    return _trips_around_response(queries.trips_around, line_id, request)
+
+
+def corridor_trips_around(request, train_id: int):
+    return _trips_around_response(queries.corridor_trips_around, train_id, request)
+
+
+def _trips_around_response(fetch, key_id: int, request):
     date_str = request.GET.get("date", "")
     try:
         direction = int(request.GET.get("direction", ""))
@@ -130,9 +154,7 @@ def line_trips_around(request, line_id: int):
         day_type = queries.resolve_day_type(session, date_str, station=station)
         if day_type is None:
             return JsonResponse({"error": f"unusable date {date_str!r}"}, status=400)
-        result = queries.trips_around(
-            session, line_id, direction, station_id, time_of_day_s, day_type=day_type
-        )
+        result = fetch(session, key_id, direction, station_id, time_of_day_s, day_type=day_type)
     if result is None:
         return JsonResponse({"error": "no such line, direction or station"}, status=404)
     result["date"] = date_str

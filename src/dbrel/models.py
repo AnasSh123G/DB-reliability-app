@@ -521,6 +521,32 @@ class StopDelayAverage(Base):
         )
 
 
+class TrainStopDelayAverage(Base):
+    """StopDelayAverage's counterpart for trains that have NO line.
+
+    Long-distance trains (ICE, IC, EC, ...) are published without a line
+    number, so `train.line_id` is NULL and they can't be keyed by line and
+    direction. They are keyed by the train itself instead -- one numbered
+    service already implies one direction. Same filters, thresholds, and
+    trip_start_time/sched_time semantics as StopDelayAverage, built by the
+    same full-rebuild job (derive/stop_averages.py).
+    """
+
+    __tablename__ = "train_stop_delay_average"
+
+    train_id: Mapped[int] = mapped_column(ForeignKey("train.id"), primary_key=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("station.id"), primary_key=True)
+    trip_start_time: Mapped[str] = mapped_column(String(5), primary_key=True)  # 'HH:MM'
+    sched_time: Mapped[str] = mapped_column(String(5), primary_key=True)  # 'HH:MM'
+    is_holiday: Mapped[int] = mapped_column(Integer, primary_key=True)  # 0/1
+
+    n_arr: Mapped[int] = mapped_column(Integer, default=0)
+    mean_arr_delay_s: Mapped[float | None] = mapped_column(Float)
+    n_dep: Mapped[int] = mapped_column(Integer, default=0)
+    mean_dep_delay_s: Mapped[float | None] = mapped_column(Float)
+    built_at: Mapped[int] = mapped_column(Integer)
+
+
 # ---------------------------------------------------------------------------
 # DB Timetables (IRIS-TTS) specific tables
 # ---------------------------------------------------------------------------

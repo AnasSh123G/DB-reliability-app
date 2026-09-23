@@ -192,22 +192,34 @@ export function trainRoute(trainId: number) {
   return apiFetch<TrainRoute>(`/api/train/${trainId}/route`);
 }
 
-export function lineDirections(lineId: number) {
-  return apiFetch<LineDirectionsResponse>(`/api/line/${lineId}/directions`);
+// What the direction/stop/Prognose flow runs on: a real line, or -- for a
+// train published without one (ICE, IC, ...) -- the route the backend groups
+// around that train, keyed by the train's id.
+export interface RouteRef {
+  kind: "line" | "corridor";
+  id: number;
 }
 
-export function lineStations(lineId: number, direction: 0 | 1) {
-  return apiFetch<{ stations: LineStation[] }>(`/api/line/${lineId}/stations`, { direction });
+function routeBase(ref: RouteRef) {
+  return `/api/${ref.kind}/${ref.id}`;
 }
 
-export function tripsAround(
-  lineId: number,
+export function routeDirections(ref: RouteRef) {
+  return apiFetch<LineDirectionsResponse>(`${routeBase(ref)}/directions`);
+}
+
+export function routeStations(ref: RouteRef, direction: 0 | 1) {
+  return apiFetch<{ stations: LineStation[] }>(`${routeBase(ref)}/stations`, { direction });
+}
+
+export function routeTripsAround(
+  ref: RouteRef,
   direction: 0 | 1,
   stationId: number,
   date: string,
   time: string,
 ) {
-  return apiFetch<TripsAroundResponse>(`/api/line/${lineId}/around`, {
+  return apiFetch<TripsAroundResponse>(`${routeBase(ref)}/around`, {
     direction,
     station: stationId,
     date,

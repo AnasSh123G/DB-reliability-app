@@ -15,24 +15,24 @@ export function useSuggest(query: string) {
   });
 }
 
-export function useLineDirections(lineId: number | undefined) {
+export function useRouteDirections(ref: api.RouteRef | undefined) {
   return useQuery({
-    queryKey: ["line-directions", lineId],
-    queryFn: () => api.lineDirections(lineId as number),
-    enabled: lineId !== undefined,
+    queryKey: ["route-directions", ref?.kind, ref?.id],
+    queryFn: () => api.routeDirections(ref as api.RouteRef),
+    enabled: ref !== undefined,
   });
 }
 
-export function useLineStations(lineId: number | undefined, direction: 0 | 1 | undefined) {
+export function useRouteStations(ref: api.RouteRef | undefined, direction: 0 | 1 | undefined) {
   return useQuery({
-    queryKey: ["line-stations", lineId, direction],
-    queryFn: () => api.lineStations(lineId as number, direction as 0 | 1),
-    enabled: lineId !== undefined && direction !== undefined,
+    queryKey: ["route-stations", ref?.kind, ref?.id, direction],
+    queryFn: () => api.routeStations(ref as api.RouteRef, direction as 0 | 1),
+    enabled: ref !== undefined && direction !== undefined,
   });
 }
 
-export function useTripsAround(
-  lineId: number | undefined,
+export function useRouteTripsAround(
+  ref: api.RouteRef | undefined,
   direction: 0 | 1 | undefined,
   stationId: number | undefined,
   date: string,
@@ -40,14 +40,14 @@ export function useTripsAround(
   submitted: boolean,
 ) {
   return useQuery({
-    queryKey: ["trips-around", lineId, direction, stationId, date, time],
+    queryKey: ["route-trips-around", ref?.kind, ref?.id, direction, stationId, date, time],
     queryFn: () =>
-      api.tripsAround(lineId as number, direction as 0 | 1, stationId as number, date, time),
+      api.routeTripsAround(ref as api.RouteRef, direction as 0 | 1, stationId as number, date, time),
     // submitted: the request only ever fires from an explicit button press,
     // never just because every field happens to be filled in.
     enabled:
       submitted &&
-      lineId !== undefined &&
+      ref !== undefined &&
       direction !== undefined &&
       stationId !== undefined &&
       Boolean(date) &&

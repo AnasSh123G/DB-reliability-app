@@ -235,3 +235,34 @@ def test_build_is_deterministic(engine):
         for r in _rows(engine)
     }
     assert first == second
+
+
+def test_line_less_train_is_averaged_per_train_not_per_line(engine):
+    """ICE/IC-style trains have no line: they land in train_stop_delay_average."""
+    from dbrel.models import TrainStopDelayAverage
+
+    with Session(engine, future=True) as s:
+        s.add(Train(id=50, identity_key="ice50", line_id=None, route_path="A|B|C",
+                    origin_name="A", dest_name="C", first_departure_sec=7 * 3600))
+        s.flush()
+        for n, (date, dep_delay) in enumerate((("2026-09-15", 120), ("2026-09-22", 240))):
+            s.add(Trip(id=900 + n, train_id=50, service_date=date, source_run_key=f"ice{n}"))
+            y, m, d = (int(x) for x in date.split("-"))
+            s.add(TripStop(
+                id=900 + n, trip_id=900 + n, stop_sequence=2, station_id=STATION_B,
+                supposed_arrival_utc=_epoch(y, m, d, 7, 29),
+                supposed_departure_utc=_epoch(y, m, d, 7, 30),
+                arr_delay_s=60, dep_delay_s=dep_delay,
+                quality="RECORDED", rule_version=1, cancelled=0, is_holiday=0,
+            ))
+        s.commit()
+        report = build_stop_averages(engine, s)
+
+    with Session(engine, future=True) as s:
+        rows = s.execute(select(TrainStopDelayAverage)).scalars().all()
+    assert report["train_rows"] == 1
+    (row,) = rows
+    assert (row.train_id, row.station_id, row.trip_start_time, row.sched_time) == (50, STATION_B, "07:00", "07:30")
+    assert row.n_dep == 2 and row.mean_dep_delay_s == 180
+    # ...and never in the per-line table, which it has no key for.
+    assert all(r.line_id == LINE_ID for r in _rows(engine))

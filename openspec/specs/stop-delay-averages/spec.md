@@ -106,3 +106,18 @@ on every read request.
   written
 - **THEN** both queries return the same value, without recomputing from raw stop data on each
   request
+
+### Requirement: Trains without a line are averaged per train
+A train published without a line (for example ICE, IC, EC) SHALL have its recorded stops
+averaged per train instead of per line and direction, using the same filtering, plausibility
+threshold, trip-start-time, scheduled-time and holiday rules as line averages, and rebuilt by
+the same materialization.
+
+#### Scenario: A line-less train gets its own averages
+- **WHEN** a train with no line has recorded, non-cancelled stops at a station
+- **THEN** an average for that train at that station is produced, keyed by the train, its trip
+  start time, the scheduled time at the station, and the holiday flag
+
+#### Scenario: A line-less train never appears in the per-line averages
+- **WHEN** the averages are rebuilt
+- **THEN** no per-line average row is produced from a train that has no line

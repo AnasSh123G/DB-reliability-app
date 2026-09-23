@@ -25,6 +25,7 @@ from dbrel.config import (
 from dbrel.ingest.timeutil import format_gtfs_time, local_date, service_date_anchor
 from dbrel.direction import (
     canonical_order,
+    corridor_trains_by_direction,
     direction_by_train_id,
     direction_of,
     line_trains_by_direction,
@@ -41,6 +42,7 @@ from dbrel.models import (
     StationStop,
     StopDelayAverage,
     Train,
+    TrainStopDelayAverage,
     Trip,
 )
 
@@ -128,25 +130,36 @@ def _delay_pred(
     sched_time: str | None,
     is_holiday: int,
     side: str,
+    train_id: int | None = None,
 ) -> dict | None:
-    """A stop's historical mean delay from stop_delay_average, or None.
+    """A stop's historical mean delay, or None.
 
-    This is the only "expected"/"predicted" delay figure dbrel has -- there is
-    no live model. None (never a fabricated 0 or an invented interval) means
-    either no matching row, or a row whose relevant side has zero samples --
-    see the web-frontend spec's "No average exists for the stop" requirement.
-    `lo_min`/`hi_min` are set equal to `p50_min`: stop_delay_average has no
-    interval, only a mean, and the JSON shape is kept rather than resurveyed
-    since nothing outside this app depends on it.
+    From stop_delay_average for a train with a line; from the per-train
+    train_stop_delay_average for one without (ICE, IC, ...), which is why
+    `train_id` is passed. This is the only "expected"/"predicted" delay figure
+    dbrel has -- there is no live model. None (never a fabricated 0 or an
+    invented interval) means either no matching row, or a row whose relevant
+    side has zero samples -- see the web-frontend spec's "No average exists
+    for the stop" requirement. `lo_min`/`hi_min` are set equal to `p50_min`:
+    the tables hold a mean, not an interval, and the JSON shape is kept rather
+    than resurveyed since nothing outside this app depends on it.
     """
-    if station_id is None or line_id is None or direction is None:
+    if station_id is None or trip_start_time is None or sched_time is None:
         return None
-    if trip_start_time is None or sched_time is None:
+    if line_id is not None:
+        if direction is None:
+            return None
+        row = session.get(
+            StopDelayAverage,
+            (station_id, line_id, direction, trip_start_time, sched_time, is_holiday),
+        )
+    elif train_id is not None:
+        row = session.get(
+            TrainStopDelayAverage,
+            (train_id, station_id, trip_start_time, sched_time, is_holiday),
+        )
+    else:
         return None
-    row = session.get(
-        StopDelayAverage,
-        (station_id, line_id, direction, trip_start_time, sched_time, is_holiday),
-    )
     if row is None:
         return None
     n = row.n_dep if side == "dep" else row.n_arr
@@ -517,6 +530,7 @@ def station_board(
                         trip_start_time=trip_start_time,
                         sched_time=sched_time,
                         is_holiday=is_holiday_flag,
+                        train_id=train.id,
                     )
 
                     entry = {
@@ -658,6 +672,7 @@ def train_route(
                         ),
                         is_holiday=is_holiday_flag,
                         side="arr",
+                        train_id=train.id,
                     ),
                     "dep_pred": _delay_pred(
                         session,
@@ -670,6 +685,7 @@ def train_route(
                         ),
                         is_holiday=is_holiday_flag,
                         side="dep",
+                        train_id=train.id,
                     ),
                 }
             )
@@ -733,6 +749,15 @@ def _direction_label(canonical: list[str], direction: int) -> str:
     return canonical[-1 if direction == 0 else 0]
 
 
+def _directions_list(canonical: list[str], halves: list[list[Train]]) -> list[dict]:
+    return [
+        {"direction": direction, "label": _direction_label(canonical, direction),
+         "n_runs": len(trains)}
+        for direction, trains in enumerate(halves)
+        if trains
+    ]
+
+
 def line_directions(session: Session, line_id: int) -> dict | None:
     """The line's two directions, for a picker to show once a line is chosen."""
     line = session.get(ServiceLine, line_id)
@@ -742,12 +767,20 @@ def line_directions(session: Session, line_id: int) -> dict | None:
     canonical, halves = _line_trains_by_direction(session, line_id)
     return {
         "line": {"id": line.id, "name": line.display_name or line.identity_key},
-        "directions": [
-            {"direction": direction, "label": _direction_label(canonical, direction),
-             "n_runs": len(trains)}
-            for direction, trains in enumerate(halves)
-            if trains
-        ],
+        "directions": _directions_list(canonical, halves),
+    }
+
+
+def corridor_directions(session: Session, train_id: int) -> dict | None:
+    """line_directions for a line-less train's route (see corridor_trains_by_direction)."""
+    grouped = corridor_trains_by_direction(session, train_id)
+    if grouped is None:
+        return None
+    canonical, halves = grouped
+    anchor = session.get(Train, train_id)
+    return {
+        "line": {"id": anchor.id, "name": anchor.display_name or f"#{anchor.id}"},
+        "directions": _directions_list(canonical, halves),
     }
 
 
@@ -771,7 +804,43 @@ def line_stations(session: Session, line_id: int, direction: int) -> list[dict] 
         return None
 
     _, halves = _line_trains_by_direction(session, line_id)
-    train_ids = [t.id for t in halves[direction]]
+    return _stations_in_travel_order(session, halves[direction])
+
+
+def corridor_stations(session: Session, train_id: int, direction: int) -> list[dict] | None:
+    """line_stations for a line-less train's route."""
+    if direction not in (0, 1):
+        return None
+    grouped = corridor_trains_by_direction(session, train_id)
+    if grouped is None:
+        return None
+    return _stations_in_travel_order(session, grouped[1][direction], main_variant_only=True)
+
+
+def _on_main_variant(trains: list[Train]):
+    """Keep only station_stop rows of each train's main route variant.
+
+    A numbered long-distance train runs different routes on different days
+    (ICE 1610 via Berlin some days, Frankfurt-Köln others), each stored as its
+    own station_stop variant. A route grouped around a line-less train is
+    built from each member's main route (`train.route_path` / `path_sha1`),
+    so its stops and services must come from that same variant -- otherwise
+    another day's detour drags in stations the route never serves.
+    """
+    main = {t.id: t.path_sha1 for t in trains}
+
+    def keep(train_id: int, variant: str | None) -> bool:
+        wanted = main.get(train_id)
+        return wanted is None or variant == wanted
+
+    return keep
+
+
+def _stations_in_travel_order(
+    session: Session, trains: list[Train], *, main_variant_only: bool = False
+) -> list[dict]:
+    """The body of line_stations, for any set of trains running one direction."""
+    train_ids = [t.id for t in trains]
     fv_id = tt_feed_version_id(session)
     if not train_ids or fv_id is None:
         return []
@@ -787,6 +856,9 @@ def line_stations(session: Session, line_id: int, direction: int) -> list[dict] 
         .join(Station, Station.id == StationStop.station_id)
         .where(StationStop.train_id.in_(train_ids), StationStop.feed_version_id == fv_id)
     ).all()
+    if main_variant_only:
+        keep = _on_main_variant(trains)
+        rows = [row for row in rows if keep(row[0], row[1])]
     if not rows:
         return []
 
@@ -882,11 +954,59 @@ def trips_around(
         return None
 
     _, halves = _line_trains_by_direction(session, line_id)
-    trains_by_id = {t.id: t for t in halves[direction]}
+    header = {"id": line.id, "name": line.display_name or line.identity_key}
+    return _trips_around_in(
+        session, header, halves[direction], direction, station, time_of_day_s,
+        day_type=day_type, line_id=line_id,
+    )
+
+
+def corridor_trips_around(
+    session: Session,
+    train_id: int,
+    direction: int,
+    station_id: int,
+    time_of_day_s: int,
+    *,
+    day_type: str = DAY_TYPE_WEEKDAY,
+) -> dict | None:
+    """trips_around for a line-less train's route; averages come per train."""
+    station = session.get(Station, station_id)
+    if station is None or direction not in (0, 1):
+        return None
+    grouped = corridor_trains_by_direction(session, train_id)
+    if grouped is None:
+        return None
+    anchor = session.get(Train, train_id)
+    header = {"id": anchor.id, "name": anchor.display_name or f"#{anchor.id}"}
+    return _trips_around_in(
+        session, header, grouped[1][direction], direction, station, time_of_day_s,
+        day_type=day_type, line_id=None,
+    )
+
+
+def _trips_around_in(
+    session: Session,
+    header: dict,
+    trains: list[Train],
+    direction: int,
+    station: Station,
+    time_of_day_s: int,
+    *,
+    day_type: str,
+    line_id: int | None,
+) -> dict:
+    """The body of trips_around, for any set of trains running one direction.
+
+    `line_id` None means line-less trains: their averages are looked up per
+    train (train_stop_delay_average) rather than per line and direction.
+    """
+    station_id = station.id
+    trains_by_id = {t.id: t for t in trains}
     fv_id = tt_feed_version_id(session)
 
     payload = {
-        "line": {"id": line.id, "name": line.display_name or line.identity_key},
+        "line": header,
         "direction": direction,
         "station": {"id": station.id, "name": station.name},
         "trips": [],
@@ -902,6 +1022,9 @@ def trips_around(
             StationStop.feed_version_id == fv_id,
         )
     ).all()
+    if line_id is None:
+        keep = _on_main_variant(trains)
+        rows = [(stop,) for (stop,) in rows if keep(stop.train_id, stop.path_sha1)]
 
     candidates = []
     for (stop,) in rows:
@@ -951,6 +1074,7 @@ def trips_around(
             trip_start_time=trip_start_time,
             sched_time=_sched_time_key(stop.planned_arrival_sec, stop.planned_departure_sec),
             is_holiday=is_holiday_flag,
+            train_id=train.id,
         )
         trips.append(
             {

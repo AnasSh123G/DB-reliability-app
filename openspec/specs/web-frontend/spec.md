@@ -118,6 +118,12 @@ real directions and stops. Choosing a station SHALL open that station's board.
 - **THEN** the user stays on the search view, the train's name remains in the search field, and
   the direction and stop choices offered are those of the train's line
 
+#### Scenario: Choosing a train that has no line
+- **WHEN** a user chooses a train published without a line (for example an ICE or IC)
+- **THEN** the direction and stop choices are those of the route formed by trains of the same
+  kind covering the same stretch in either direction, and Prognose lists the services on that
+  route around the chosen time, exactly as for a train with a line
+
 #### Scenario: Choosing a station opens its board
 - **WHEN** a user chooses a station from the search suggestions
 - **THEN** that station's board opens
