@@ -170,6 +170,61 @@ generous on its own terms too: a passed event lingers in the `/fchg` horizon for
 hours, so nothing is lost by reading long after the fact. At the current 212-station
 corridor the two jobs together cost under 5% of the 72,000/day request budget.
 
+### Backfilling history from the public archive
+
+`collect` can only record the present — the schedule cannot be prebuilt, so every hour not
+captured is gone. But someone else has been recording the same IRIS responses all along.
+[piebro/deutsche-bahn-data](https://github.com/piebro/deutsche-bahn-data) has archived the
+raw `/plan` and `/fchg` payloads four times a day since 2024-07, and for **every** German
+station since 2025-11. It covers 5,255 of this project's 5,422 seeded EVAs (97%) and 210 of
+the 212 Ruhr corridor stations.
+
+```bash
+uv sync --extra backfill                       # adds pyarrow; nothing else needs it
+uv run dbrel archive-fetch --from 2026-08-24   # download partitions (~112-176 MB/day)
+uv run dbrel backfill --from 2026-08-24        # replay them into the database
+```
+
+Both default to the last 30 days. `archive-fetch` writes nothing to the database and is
+resumable — a partition already held intact is reused. `backfill` records each day it
+finishes, so an interrupted run continues rather than restarting; `--restart` redoes the
+window, `--dry-run` grades and reports without writing.
+
+No API key is needed for either. The replay feeds the archived bytes through the same
+`parse_timetable` → `upsert_run` → `finalize` path as live collection, so backfilled stops
+carry the same `rule_version`, the same four quality grades and the same `tt_message` delay
+causes. Each archived sweep is judged against **the instant it was recorded**, not against
+now, so IRIS's forecasts are still rejected as forecasts — see `read_clock` in
+`ingest/timeutil.py`.
+
+**Only `raw_data/` is used, never the project's `monthly_processed_data/` parquet.** That
+parquet is convenient and wrong in a way that cannot be undone downstream. Its merge falls
+back
+
+```sql
+COALESCE(f.departure_change_time, p.departure_planned_time, ...) AS departure_change_time
+```
+
+so a stop that `/fchg` never reported is published with its *planned* time as its actual,
+and therefore `delay_in_min = 0`. Measured against the raw archive over 161,871 stops that
+had a guaranteed post-event poll, **26.6% of those zeros were never measured at all** —
+and the rate runs from **1.5%** (NWB) to **55.6%** (replacement buses), so no constant
+correction fixes it. §18 is why it is wrong rather than merely pessimistic: `/fchg`
+publishes punctual trains *explicitly*, as `ct == pt`, so silence is absence of data, not
+evidence of punctuality. That is exactly what `NO_DATA` means here, and the distinction
+survives only in the raw responses.
+
+**Expect a lot of `NO_DATA` and `PREDICTION_ONLY`.** The archive polls every ~6 hours
+against `collect`'s 15 minutes. `/fchg` retains passed events for ~15 hours (§20), so most
+events do still get a post-event reading — but poll gaps are far wider, and around a
+quarter of scheduled stops were never reported. `backfill` prints the grade histogram at
+the end so this is visible rather than inferred. Only `RECORDED` rows carry a time, and
+only `RECORDED` should enter an average — the same rule as for live data.
+
+The archive also has real holes: hours 05–07 of 2026-08-28 are simply absent, and upstream
+documents 196 missing hours between 2025-11 and 2026-07. Both commands report the hours
+they could not cover, and a hole becomes a measured `poll_gap_s` rather than a silent zero.
+
 ## Commands
 
 | Command | Does |
@@ -184,6 +239,8 @@ corridor the two jobs together cost under 5% of the 72,000/day request budget.
 | `tt-poll [--interval S --minutes M]` | Read `/fchg` and record every event that has already happened |
 | `tt-finalize [--service-date D] [--force]` | Grade the stops that produced no value; roll each run up |
 | `collect [--every 15m --for 7d] [--stations FILE] [--once]` | Run daily backfill → plan → poll → finalize → averages on a timer; cold-starts an empty database |
+| `archive-fetch [--from D --to D] [--days N]` | Download archived IRIS responses from the public mirror; resumable, no API key |
+| `backfill [--from D --to D] [--dry-run] [--restart]` | Replay downloaded partitions into the database; resumes per day |
 | `reset-db [--yes]` | Delete the database; keeps `data/feeds` and `data/probe` |
 | `build-aliases` | Index every station for search; run once after `import-static` |
 | `compute-averages [--full]` | Average each train's delay at each station into `train_station_delay` |

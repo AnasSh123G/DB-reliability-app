@@ -197,7 +197,8 @@ class TestResolveDayType:
 
     Not the day-of-week alone: a date only counts as Sunday/holiday pooling if
     resolve_day_type says so, and it checks public_holiday -- the same table
-    day_type_of checks everywhere else in the app.
+    the rest of the app checks. Holidays are per-Bundesland, so a case that
+    passes a station also has to pass that station's (resolved) state.
     """
 
     def test_an_ordinary_weekday_resolves_to_weekday(self, session):
@@ -206,10 +207,22 @@ class TestResolveDayType:
     def test_a_sunday_resolves_to_sunday_holiday_with_no_table_rows_at_all(self, session):
         assert queries.resolve_day_type(session, "2026-09-20") == DAY_TYPE_SUNDAY_HOLIDAY
 
-    def test_a_table_row_turns_a_plain_weekday_into_a_holiday(self, session):
-        session.add(PublicHoliday(date="2026-09-15", name="Betriebsruhetag (test)"))
+    def test_a_table_row_turns_a_plain_weekday_into_a_holiday_for_its_own_state(self, session):
+        station = session.get(Station, 2)  # Krefeld Hbf
+        station.state = "DE-NW"
+        session.add(PublicHoliday(date="2026-09-15", state="DE-NW", name="Betriebsruhetag (test)"))
         session.flush()
-        assert queries.resolve_day_type(session, "2026-09-15") == DAY_TYPE_SUNDAY_HOLIDAY
+        assert (
+            queries.resolve_day_type(session, "2026-09-15", station=station)
+            == DAY_TYPE_SUNDAY_HOLIDAY
+        )
+
+    def test_a_state_specific_holiday_does_not_apply_with_no_station_given(self, session):
+        """No station -> only a date observed in all 16 states counts (see
+        holidays_de.is_holiday's docstring on the no-state case)."""
+        session.add(PublicHoliday(date="2026-09-15", state="DE-NW", name="Betriebsruhetag (test)"))
+        session.flush()
+        assert queries.resolve_day_type(session, "2026-09-15") == DAY_TYPE_WEEKDAY
 
     def test_unusable_date_resolves_to_none(self, session):
         assert queries.resolve_day_type(session, "not-a-date") is None

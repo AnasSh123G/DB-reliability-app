@@ -14,6 +14,7 @@ All absolute instants in this project are INTEGER Unix epoch seconds.
 
 from __future__ import annotations
 
+import time as _time
 from datetime import date, datetime, time, timedelta
 
 from dbrel.config import TZ
@@ -73,6 +74,21 @@ def gtfs_sec_to_epoch(service_date: date, seconds: int) -> int:
 def epoch_to_gtfs_sec(service_date: date, epoch: int) -> int:
     """Inverse of gtfs_sec_to_epoch. May exceed 86400, or go negative."""
     return epoch - service_date_anchor(service_date)
+
+
+def read_clock(frozen: int | None) -> int:
+    """The instant an observation should be judged against.
+
+    Live, that is the wall clock, read afresh at each use so a long sweep stamps
+    each station with its own fetch time. Replaying an archived response, it is
+    the instant that response was recorded: the caller freezes it, because a
+    response read months later is still only evidence of what was known then.
+
+    Left at wall clock, a replay would find every archived event long past, so
+    every IRIS forecast would grade RECORDED -- the defect that made the upstream
+    project's processed data unusable. See openspec/changes/add-archive-backfill.
+    """
+    return int(_time.time()) if frozen is None else frozen
 
 
 def local_hour(epoch: int) -> int:

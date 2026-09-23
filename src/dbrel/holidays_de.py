@@ -1,53 +1,51 @@
-"""German public holidays for Nordrhein-Westfalen, and the day-type split.
+"""German public holidays, per Bundesland, and the day-type split.
 
-A public holiday runs a Sunday timetable. Averaging one into the Monday-to-Saturday
-figure would quietly mix two different services, and on a holiday that falls midweek
-— Fronleichnam is always a Thursday, Christi Himmelfahrt always a Thursday — the
-weekday average would be dragged by a day that was never a working day at all.
+A public holiday runs a Sunday timetable. Averaging one into the Monday-to-
+Saturday figure would quietly mix two different services, and a holiday that
+falls midweek -- Fronleichnam is always a Thursday, Christi Himmelfahrt always
+a Thursday -- would drag the weekday average with a day that was never a
+working day at all.
 
-NRW rather than Germany: holidays are set per Bundesland, and the tracked stations
-are all in the Ruhr. Fronleichnam and Allerheiligen are NRW holidays but not
-national ones, so using a federal list would misclassify two days a year.
+Per state, not nationwide: German holidays are set per Bundesland (16 of
+them), not federally. Fronleichnam is a holiday in Bayern but not in Hamburg,
+so a single nationwide list -- what this module used to be, NRW-only, back
+when tracking was Ruhr-only -- misclassifies every non-NRW station once
+tracking goes national (`[[dbrel-national-collection]]`).
 
-Hand-rolled rather than a dependency. The rule set is eleven days, seven of them
-fixed and four derived from one Easter calculation, and the project keeps few
-dependencies on purpose (see the note on .env parsing in config.py).
+Fetched, not hand-rolled. The old NRW ruleset was hand-rolled because eleven
+days, seven fixed and four Easter-relative, is small enough to get right by
+inspection. Sixteen states' worth includes municipality-level exceptions
+(Friedensfest is Augsburg only, inside Bayern) that are easy to get subtly
+wrong by hand; `resources/holidays_by_state.json` is fetched from an external
+per-state source instead and checked into the repo as a static asset, so this
+module only has to load it. `easter_sunday` is kept because Sunday-ness of
+Easter itself is still worth an offline check, not because it derives the
+holiday list anymore.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from datetime import date, timedelta
 from functools import lru_cache
+from importlib import resources
 
-# Fixed-date NRW holidays: (month, day) -> name.
-_FIXED: tuple[tuple[int, int, str], ...] = (
-    (1, 1, "Neujahr"),
-    (5, 1, "Tag der Arbeit"),
-    (10, 3, "Tag der Deutschen Einheit"),
-    (11, 1, "Allerheiligen"),
-    (12, 25, "1. Weihnachtstag"),
-    (12, 26, "2. Weihnachtstag"),
-)
-
-# Easter-relative NRW holidays: offset in days from Easter Sunday -> name.
-# Karfreitag is the Friday before; the rest follow. Fronleichnam at +60 is the
-# Thursday after Trinity, and is the one most likely to be got wrong by hand.
-_EASTER_RELATIVE: tuple[tuple[int, str], ...] = (
-    (-2, "Karfreitag"),
-    (1, "Ostermontag"),
-    (39, "Christi Himmelfahrt"),
-    (50, "Pfingstmontag"),
-    (60, "Fronleichnam"),
+# The 16 Bundesland ISO 3166-2:DE codes, in the order resources/de_states.geojson
+# and resources/holidays_by_state.json both use.
+ALL_STATE_CODES: tuple[str, ...] = (
+    "DE-BW", "DE-BY", "DE-BE", "DE-BB", "DE-HB", "DE-HH", "DE-HE", "DE-MV",
+    "DE-NI", "DE-NW", "DE-RP", "DE-SL", "DE-SN", "DE-ST", "DE-SH", "DE-TH",
 )
 
 
 def easter_sunday(year: int) -> date:
     """Easter Sunday in the Gregorian calendar, by the anonymous computus.
 
-    Meeus/Jones/Butcher. Exact for the whole Gregorian range — no table, no cutoff
-    year — which matters because this is the only part of the module that cannot be
-    checked by reading it.
+    Meeus/Jones/Butcher. Exact for the whole Gregorian range -- no table, no
+    cutoff year -- and checked against published dates in the test suite,
+    since it's the one part of this module that can't be checked by reading
+    it.
     """
     a = year % 19
     b, c = divmod(year, 100)
@@ -62,41 +60,52 @@ def easter_sunday(year: int) -> date:
     return date(year, month, day + 1)
 
 
+@lru_cache(maxsize=1)
+def _raw() -> dict:
+    text = resources.files("dbrel.resources").joinpath("holidays_by_state.json").read_text()
+    return json.loads(text)
+
+
 @lru_cache(maxsize=None)
-def nrw_holidays(year: int) -> dict[date, str]:
-    """Every NRW public holiday in `year`, as date -> German name.
+def holidays_for(state: str, year: int) -> dict[date, tuple[str, bool]]:
+    """Every `public_holiday` entry for `state` in `year`: date -> (name, partial).
 
-    Cached: a full averaging pass classifies one date per trip_stop, which is
-    hundreds of thousands of calls across a handful of distinct years.
+    `partial` means a city/region-only observance within the state (currently
+    only Augsburg's Friedensfest, scope DE-BY-AU) -- true for it, false for an
+    ordinary statewide holiday. Cached: this is read once per (state, year)
+    pair across a whole run, not per row.
     """
-    easter = easter_sunday(year)
-    days = {date(year, month, day): name for month, day, name in _FIXED}
-    days.update({easter + timedelta(days=offset): name for offset, name in _EASTER_RELATIVE})
-    return days
+    out: dict[date, tuple[str, bool]] = {}
+    for entry in _raw()["states"].get(state, []):
+        day = date.fromisoformat(entry["date"])
+        if day.year != year:
+            continue
+        out[day] = (entry["name"], bool(entry.get("partial", False)))
+    return out
 
 
-def is_public_holiday(day: date) -> bool:
-    return day in nrw_holidays(day.year)
-
-
-def holiday_name(day: date) -> str | None:
-    return nrw_holidays(day.year).get(day)
+def tracked_years() -> list[int]:
+    """The years resources/holidays_by_state.json has data for."""
+    return list(_raw().get("years", []))
 
 
 def day_type_of(service_date: str | None, holiday_dates: set[str]) -> str | None:
     """'WEEKDAY' or 'SUNDAY_HOLIDAY' for a 'YYYY-MM-DD' date, None if unusable.
 
     Saturday counts as a weekday here. It runs a reduced timetable, but it is a
-    working day and the request was to pool everything except Sundays and holidays.
+    working day and the request was to pool everything except Sundays and
+    holidays.
 
-    `holiday_dates` is the public_holiday table's contents (load_holiday_dates),
-    not a recomputation of the NRW rules: the table is what the app actually
-    checks, so a holiday that only exists as a row -- added by hand, not derived
-    from any calendar rule -- is honoured exactly like a real one.
+    `holiday_dates` is a plain set of 'YYYY-MM-DD' strings -- already resolved
+    to "this date counts as a holiday for the case the caller cares about"
+    (one state, or "observed in all 16 states" when no station is known; see
+    `resolve_day_type` in web/queries.py). This function does not itself know
+    about states; it only tests Sunday-or-in-the-set, same as before the
+    per-state rewrite.
 
-    The caller passes trip.service_date, which is the planned departure date at the
-    run's ORIGIN — so an overnight run keeps one day type at every station it
-    reaches, instead of splitting itself across midnight.
+    The caller passes trip.service_date, which is the planned departure date at
+    the run's ORIGIN -- so an overnight run keeps one day type at every station
+    it reaches, instead of splitting itself across midnight.
     """
     if not service_date:
         return None
@@ -114,37 +123,79 @@ def day_type_of(service_date: str | None, holiday_dates: set[str]) -> str | None
     return DAY_TYPE_WEEKDAY
 
 
-def load_holiday_dates(session) -> set[str]:
-    """The public_holiday table's dates, as the 'YYYY-MM-DD' strings it stores them in.
+def is_holiday(day: date, state: str | None, holiday_set: set[tuple[str, str]]) -> bool:
+    """Whether `day` is a holiday-timetable day for a station in `state`.
 
-    One query per averaging run rather than one per row: day_type_of is called
-    once per trip_stop, and a full pass is hundreds of thousands of rows.
+    Every Sunday is a holiday everywhere, regardless of state. Otherwise:
+    - `state` given: True iff (day, state) is a non-partial row in `holiday_set`.
+    - `state` is None (station's state unresolved): True only if `day` is a
+      holiday in *all* 16 states -- the one case an unknown station can still
+      be answered for without guessing. This is the rule `resolve_day_type`
+      uses, which has no "unknown" bucket to fall back to; the stricter,
+      three-valued version of this rule (True/False/None) used for labelling
+      `trip_stop.is_holiday` lives in `derive/stop_averages.py` and is computed
+      in SQL, not through this function, since it runs over 14M+ rows.
+
+    `holiday_set` is `load_holiday_dates(session)`'s output: (date, state)
+    pairs for non-partial rows only. Partial (city-only) holidays never make it
+    into this set, so they can never flag a whole state via this function.
+    """
+    if day.weekday() == 6:
+        return True
+    iso = day.isoformat()
+    if state is not None:
+        return (iso, state) in holiday_set
+    return all((iso, code) in holiday_set for code in ALL_STATE_CODES)
+
+
+def load_holiday_dates(session) -> set[tuple[str, str]]:
+    """The public_holiday table's (date, state) pairs for non-partial rows.
+
+    Partial (city-only) rows are excluded here on purpose: nothing in this
+    codebase resolves a station down to city level, only to Bundesland, so a
+    partial holiday can never be correctly attributed to "this station is/isn't
+    observing it" and must never flag a whole state.
+
+    One query per run rather than one per row: `is_holiday`/`day_type_of` are
+    called per trip_stop in the old per-row paths, and a full pass is hundreds
+    of thousands of rows.
     """
     from sqlalchemy import select
 
     from dbrel.models import PublicHoliday
 
-    return set(session.execute(select(PublicHoliday.date)).scalars())
+    rows = session.execute(
+        select(PublicHoliday.date, PublicHoliday.state).where(PublicHoliday.partial == 0)
+    ).all()
+    return {(d, s) for d, s in rows}
 
 
 def ensure_holidays(session, years: Iterable[int]) -> int:
-    """Insert this module's NRW holidays for `years` into public_holiday.
+    """Insert every state's holidays for `years` into public_holiday.
 
-    Additive only -- it never updates or deletes a row that is already there, so
-    a holiday added by hand (a Betriebsruhetag, a one-off test date, anything not
-    on the NRW calendar) is never overwritten by the next automated run. Returns
-    how many rows were added.
+    Additive only -- it never updates or deletes a row that is already there,
+    so a holiday added by hand (a Betriebsruhetag, a one-off test date,
+    anything not in the fetched data) is never overwritten by the next
+    automated run. Returns how many rows were added.
     """
+    from sqlalchemy import select
+
     from dbrel.models import PublicHoliday
 
-    existing = load_holiday_dates(session)
+    existing: set[tuple[str, str]] = set(
+        session.execute(select(PublicHoliday.date, PublicHoliday.state)).all()
+    )
     added = 0
     for year in years:
-        for day, name in nrw_holidays(year).items():
-            iso = day.isoformat()
-            if iso in existing:
-                continue
-            session.add(PublicHoliday(date=iso, name=name))
-            existing.add(iso)
-            added += 1
+        for state in ALL_STATE_CODES:
+            for day, (name, partial) in holidays_for(state, year).items():
+                iso = day.isoformat()
+                key = (iso, state)
+                if key in existing:
+                    continue
+                session.add(
+                    PublicHoliday(date=iso, state=state, name=name, partial=int(partial))
+                )
+                existing.add(key)
+                added += 1
     return added

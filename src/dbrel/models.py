@@ -77,6 +77,11 @@ class Station(Base):
     name: Mapped[str] = mapped_column(Text)
     lat: Mapped[float] = mapped_column(Float)
     lon: Mapped[float] = mapped_column(Float)
+    # ISO 3166-2:DE code ('DE-NW', ...), resolved once from (lat, lon) by
+    # geo_states.state_for. NULL means the point fell outside all 16 state
+    # boundaries (a cross-border stop, or unresolved) -- see holiday-calendar
+    # spec's "station outside Germany" scenario.
+    state: Mapped[str | None] = mapped_column(String(8))
     first_seen_feed_version_id: Mapped[int | None] = mapped_column(ForeignKey("feed_version.id"))
 
     eva: Mapped[int | None] = mapped_column(Integer)
@@ -237,15 +242,26 @@ class StationStop(Base):
     planned_departure_sec: Mapped[int | None] = mapped_column(Integer)
     pickup_type: Mapped[int | None] = mapped_column(Integer)
     drop_off_type: Mapped[int | None] = mapped_column(Integer)
+    # Which route VARIANT this stop belongs to (see Trip.path_sha1). A numbered
+    # TT train's identity is (category, number) alone -- it does not fork when
+    # the same number runs a different physical route on a different day (a
+    # wing/coupled service is the common case), so stop_sequence's meaning is
+    # only stable WITHIN one path_sha1. NULL for pre-migration/GTFS rows, which
+    # keep the old (train_id, stop_sequence) behaviour.
+    path_sha1: Mapped[str | None] = mapped_column(String(40))
 
     train: Mapped["Train"] = relationship(back_populates="path")
     station: Mapped["Station"] = relationship(back_populates="station_stops")
 
     __table_args__ = (
-        UniqueConstraint("feed_version_id", "train_id", "stop_sequence", name="uq_ss_fv_train_seq"),
+        UniqueConstraint(
+            "feed_version_id", "train_id", "path_sha1", "stop_sequence",
+            name="uq_ss_fv_train_variant_seq",
+        ),
         Index("ix_ss_station", "station_id", "feed_version_id", "planned_departure_sec"),
         Index("ix_ss_station_arr", "station_id", "feed_version_id", "planned_arrival_sec"),
         Index("ix_ss_train", "train_id"),
+        Index("ix_ss_train_variant", "train_id", "path_sha1"),
     )
 
     def __repr__(self) -> str:
@@ -284,6 +300,9 @@ class Trip(Base):
     quality: Mapped[str | None] = mapped_column(String(24))
     rule_version: Mapped[int | None] = mapped_column(Integer)
     finalized_at: Mapped[int | None] = mapped_column(Integer)
+    # This run's own path_sha1 (runs.py upsert_run) -- which station_stop
+    # variant its stop_sequence numbers refer to. See StationStop.path_sha1.
+    path_sha1: Mapped[str | None] = mapped_column(String(40))
 
     train: Mapped["Train"] = relationship(back_populates="trips")
     stops: Mapped[list["TripStop"]] = relationship(
@@ -335,6 +354,15 @@ class TripStop(Base):
     changed_platform: Mapped[str | None] = mapped_column(String(16))
     is_handover: Mapped[int] = mapped_column(Integer, default=0)
     supposed_departure_hour: Mapped[int | None] = mapped_column(Integer)
+
+    # 1 if the trip's service_date (its origin date, see day_type_of's
+    # docstring) is a Sunday or a non-partial public holiday in this stop's
+    # own station's state; 0 if neither; NULL if the station's state is
+    # unresolved AND the date is only a state-specific (not all-16) holiday,
+    # so it genuinely can't be decided. Filled by
+    # `derive/stop_averages.py`'s label step, not at ingest time -- see
+    # holiday-calendar spec.
+    is_holiday: Mapped[int | None] = mapped_column(Integer)
 
     trip: Mapped["Trip"] = relationship(back_populates="stops")
     station: Mapped["Station"] = relationship()
@@ -421,15 +449,76 @@ class Route(Base):
 
 
 class PublicHoliday(Base):
-    """One date the timetable treats as a Sunday, whatever day of the week it falls on."""
+    """One date a state's timetable treats as a Sunday.
+
+    Keyed by (date, state) rather than date alone: German holidays are set per
+    Bundesland, so the same date can be a holiday in one state and an ordinary
+    weekday in another (holiday-calendar spec). `partial` marks a city/region-
+    only observance within the state (only Augsburg's Friedensfest today) --
+    such a row is stored for the record but must never flag the whole state as
+    a holiday; see `holidays_de.load_holiday_dates`, which excludes
+    partial rows.
+    """
 
     __tablename__ = "public_holiday"
 
     date: Mapped[str] = mapped_column(String(10), primary_key=True)  # 'YYYY-MM-DD'
+    state: Mapped[str] = mapped_column(String(8), primary_key=True)  # 'DE-NW', ...
     name: Mapped[str | None] = mapped_column(String(64))
+    partial: Mapped[int] = mapped_column(Integer, default=0)
 
     def __repr__(self) -> str:
-        return f"<PublicHoliday {self.date} {self.name!r}>"
+        return f"<PublicHoliday {self.date} {self.state} {self.name!r}>"
+
+
+class StopDelayAverage(Base):
+    """Precomputed mean arrival/departure delay for one station/line/direction/
+    trip-start-time/scheduled-time/holiday-flag combination.
+
+    Full-rebuild table (`derive/stop_averages.py`), not incrementally
+    maintained -- see stop-delay-averages spec's "precomputed, not live"
+    requirement. `sched_time` is the station-local 'HH:MM' of the stop itself
+    (departure, or arrival for a terminating call), not the trip's origin
+    time -- `trip.supposed_departure_utc` moves when a backfill hour is
+    missing (`[[dbrel-aggregates]]` memory), but the scheduled time at the
+    station being averaged is stable.
+
+    `trip_start_time` IS part of the key (moved in from being informational-
+    only): the same line/direction/station/sched_time combination can be
+    reached by two genuinely different daily services -- e.g. RE7's coupled
+    portions, two trains departing their own, different origins at the same
+    minute and splitting/joining en route -- and pooling them would average
+    together two services a passenger would never consider "the same train".
+    It is derived per TRIP, not per train (`train.first_departure_sec` is a
+    per-pattern static field and can't tell two different daily start times
+    of the same numbered service apart), from the IRIS run id embedded in
+    `trip.source_run_key` -- see `derive/stop_averages.py`'s docstring.
+    """
+
+    __tablename__ = "stop_delay_average"
+
+    station_id: Mapped[int] = mapped_column(ForeignKey("station.id"), primary_key=True)
+    line_id: Mapped[int] = mapped_column(ForeignKey("service_line.id"), primary_key=True)
+    direction: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trip_start_time: Mapped[str] = mapped_column(String(5), primary_key=True)  # 'HH:MM'
+    sched_time: Mapped[str] = mapped_column(String(5), primary_key=True)  # 'HH:MM'
+    is_holiday: Mapped[int] = mapped_column(Integer, primary_key=True)  # 0/1
+
+    n_arr: Mapped[int] = mapped_column(Integer, default=0)
+    mean_arr_delay_s: Mapped[float | None] = mapped_column(Float)
+    n_dep: Mapped[int] = mapped_column(Integer, default=0)
+    mean_dep_delay_s: Mapped[float | None] = mapped_column(Float)
+    built_at: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index("ix_sda_station_line", "station_id", "line_id", "direction"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<StopDelayAverage station={self.station_id} line={self.line_id} "
+            f"dir={self.direction} {self.sched_time} holiday={self.is_holiday}>"
+        )
 
 
 # ---------------------------------------------------------------------------

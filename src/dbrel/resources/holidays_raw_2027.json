@@ -1,0 +1,452 @@
+[
+  {
+    "id": "a9951b88-fbfa-4634-8b80-39c60abb2a0c",
+    "startDate": "2027-01-01",
+    "endDate": "2027-01-01",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Neujahr"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "341c9738-8063-4e1b-99d3-336174cf42de",
+    "startDate": "2027-01-06",
+    "endDate": "2027-01-06",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Heilige Drei Könige"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-ST",
+        "shortName": "ST"
+      },
+      {
+        "code": "DE-BW",
+        "shortName": "BW"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "1ddfa412-ebda-4571-a6fd-aa8e2ba340d5",
+    "startDate": "2027-03-08",
+    "endDate": "2027-03-08",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Internationaler Frauentag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BE",
+        "shortName": "BE"
+      },
+      {
+        "code": "DE-MV",
+        "shortName": "MV"
+      }
+    ]
+  },
+  {
+    "id": "f5967e35-9fbb-4cd9-ae3d-622f6cf90028",
+    "startDate": "2027-03-26",
+    "endDate": "2027-03-26",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Karfreitag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "996c2e80-0d29-470d-a2dc-4ba482649afb",
+    "startDate": "2027-03-28",
+    "endDate": "2027-03-28",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Ostersonntag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BB",
+        "shortName": "BB"
+      }
+    ]
+  },
+  {
+    "id": "fcd0558e-3e01-4902-b785-d8bd45baba24",
+    "startDate": "2027-03-29",
+    "endDate": "2027-03-29",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Ostermontag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "5dce4648-d6e6-400a-936e-b85edbf85622",
+    "startDate": "2027-05-01",
+    "endDate": "2027-05-01",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Tag der Arbeit"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "889b46cc-0934-44a1-9468-d88f880acc94",
+    "startDate": "2027-05-06",
+    "endDate": "2027-05-06",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Christi Himmelfahrt"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "9193ed98-190c-4819-ae54-5fadd9957912",
+    "startDate": "2027-05-16",
+    "endDate": "2027-05-16",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Pfingstsonntag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BB",
+        "shortName": "BB"
+      }
+    ]
+  },
+  {
+    "id": "689daf70-cc0e-44d6-a501-8a17d4a551dc",
+    "startDate": "2027-05-17",
+    "endDate": "2027-05-17",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Pfingstmontag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "c1b5e914-3c7d-426d-90b4-1d8a889b02a2",
+    "startDate": "2027-05-27",
+    "endDate": "2027-05-27",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Fronleichnam"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-HE",
+        "shortName": "HE"
+      },
+      {
+        "code": "DE-SL",
+        "shortName": "SL"
+      },
+      {
+        "code": "DE-NW",
+        "shortName": "NW"
+      },
+      {
+        "code": "DE-BW",
+        "shortName": "BW"
+      },
+      {
+        "code": "DE-RP",
+        "shortName": "RP"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "b797f7bd-cc49-423b-8835-3acf3cfb1e72",
+    "startDate": "2027-08-08",
+    "endDate": "2027-08-08",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Friedensfest"
+      }
+    ],
+    "regionalScope": "Local",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BY-AU",
+        "shortName": "BY-AU"
+      }
+    ]
+  },
+  {
+    "id": "5773654b-86ef-458c-8ae1-1e59aba3123b",
+    "startDate": "2027-08-15",
+    "endDate": "2027-08-15",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Mariä Himmelfahrt"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SL",
+        "shortName": "SL"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "b126dee7-6a09-4e83-aa39-75f3d70b5eda",
+    "startDate": "2027-09-20",
+    "endDate": "2027-09-20",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Weltkindertag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-TH",
+        "shortName": "TH"
+      }
+    ]
+  },
+  {
+    "id": "3e88b5c4-993a-4bd1-9f9a-149545598bc6",
+    "startDate": "2027-10-03",
+    "endDate": "2027-10-03",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Tag der Deutschen Einheit"
+      }
+    ],
+    "regionalScope": "National",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "d56e42d5-08a0-471e-a3c5-ee5922a6a91c",
+    "startDate": "2027-10-31",
+    "endDate": "2027-10-31",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Reformationstag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SH",
+        "shortName": "SH"
+      },
+      {
+        "code": "DE-ST",
+        "shortName": "ST"
+      },
+      {
+        "code": "DE-HH",
+        "shortName": "HH"
+      },
+      {
+        "code": "DE-HB",
+        "shortName": "HB"
+      },
+      {
+        "code": "DE-TH",
+        "shortName": "TH"
+      },
+      {
+        "code": "DE-MV",
+        "shortName": "MV"
+      },
+      {
+        "code": "DE-SN",
+        "shortName": "SN"
+      },
+      {
+        "code": "DE-NI",
+        "shortName": "NI"
+      },
+      {
+        "code": "DE-BB",
+        "shortName": "BB"
+      }
+    ]
+  },
+  {
+    "id": "506df8ed-e54d-4af6-9939-e8dca991c153",
+    "startDate": "2027-11-01",
+    "endDate": "2027-11-01",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Allerheiligen"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SL",
+        "shortName": "SL"
+      },
+      {
+        "code": "DE-NW",
+        "shortName": "NW"
+      },
+      {
+        "code": "DE-BW",
+        "shortName": "BW"
+      },
+      {
+        "code": "DE-RP",
+        "shortName": "RP"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "b1fe4b1a-fbf6-4e3f-88cd-074840538ce9",
+    "startDate": "2027-11-17",
+    "endDate": "2027-11-17",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Buß- und Bettag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SN",
+        "shortName": "SN"
+      }
+    ]
+  },
+  {
+    "id": "ba7542be-fca8-427b-ac2d-797470860c62",
+    "startDate": "2027-12-25",
+    "endDate": "2027-12-25",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "1. Weihnachtsfeiertag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "ee8fc25d-db77-48d9-a74f-6374d74642fa",
+    "startDate": "2027-12-26",
+    "endDate": "2027-12-26",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "2. Weihnachtsfeiertag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  }
+]

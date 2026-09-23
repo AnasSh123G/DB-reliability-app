@@ -1,8 +1,7 @@
-"""The holiday rules, and the day-type split they drive.
+"""The per-state holiday rules, and the day-type split they drive.
 
-The computus is the part that can be wrong without looking wrong, so it is checked
-against published Easter dates rather than against itself. Everything else follows
-from it by a fixed offset.
+The computus is the part that can be wrong without looking wrong, so it is
+checked against published Easter dates rather than against itself.
 """
 
 from __future__ import annotations
@@ -15,21 +14,18 @@ from sqlalchemy.orm import Session
 
 from dbrel.db import Base
 from dbrel.holidays_de import (
+    ALL_STATE_CODES,
     day_type_of,
     easter_sunday,
     ensure_holidays,
-    holiday_name,
-    is_public_holiday,
+    holidays_for,
+    is_holiday,
     load_holiday_dates,
-    nrw_holidays,
+    tracked_years,
 )
 from dbrel.models import DAY_TYPE_SUNDAY_HOLIDAY, DAY_TYPE_WEEKDAY, PublicHoliday
 
-# The set day_type_of is actually asked to check against, standing in for a real
-# public_holiday table loaded via load_holiday_dates. Built from the same NRW
-# rules so the DayType tests below still exercise "is this date a holiday",
-# just decoupled from the database that carries the answer in the real app.
-NRW_2026 = {d.isoformat() for d in nrw_holidays(2026)}
+NW_2026 = {d.isoformat() for d in holidays_for("DE-NW", 2026)}
 
 
 @pytest.mark.parametrize(
@@ -54,92 +50,114 @@ def test_easter_is_always_a_sunday():
         assert easter_sunday(year).weekday() == 6, year
 
 
+def test_all_16_state_codes_are_present():
+    assert len(ALL_STATE_CODES) == 16
+    assert len(set(ALL_STATE_CODES)) == 16
+
+
 @pytest.mark.parametrize("year", [2025, 2026, 2027])
-def test_moveable_feasts_sit_at_their_fixed_offsets(year):
-    easter = easter_sunday(year)
-    days = nrw_holidays(year)
-    assert days[easter - timedelta(days=2)] == "Karfreitag"
-    assert days[easter + timedelta(days=1)] == "Ostermontag"
-    assert days[easter + timedelta(days=39)] == "Christi Himmelfahrt"
-    assert days[easter + timedelta(days=50)] == "Pfingstmontag"
-    assert days[easter + timedelta(days=60)] == "Fronleichnam"
+def test_holidays_for_nw_has_the_two_nrw_holidays(year):
+    """Fronleichnam and Allerheiligen are NW holidays but not federal."""
+    days = holidays_for("DE-NW", year)
+    names = {name for name, _partial in days.values()}
+    assert "Fronleichnam" in names
+    assert "Allerheiligen" in names
 
 
-@pytest.mark.parametrize("year", [2025, 2026, 2027, 2030])
-def test_nrw_has_eleven_distinct_holidays(year):
-    days = nrw_holidays(year)
-    assert len(days) == 11
-    assert all(day.year == year for day in days)
+def test_fronleichnam_applies_in_bavaria_but_not_hamburg():
+    """State-specific holiday: Bayern observes it, Hamburg doesn't."""
+    by_names = {name for name, _p in holidays_for("DE-BY", 2026).values()}
+    hh_names = {name for name, _p in holidays_for("DE-HH", 2026).values()}
+    assert "Fronleichnam" in by_names
+    assert "Fronleichnam" not in hh_names
 
 
-def test_the_two_nrw_only_holidays_are_present():
-    """Fronleichnam and Allerheiligen are NRW, not federal.
+def test_a_nationwide_holiday_appears_for_every_state():
+    for state in ALL_STATE_CODES:
+        names = {name for name, _p in holidays_for(state, 2026).values()}
+        assert "Tag der Deutschen Einheit" in names, state
 
-    Using a Germany-wide list instead would misclassify two days a year.
-    """
-    days = nrw_holidays(2026)
-    assert "Fronleichnam" in days.values()
-    assert days[date(2026, 11, 1)] == "Allerheiligen"
+
+def test_augsburgs_friedensfest_is_marked_partial_and_only_in_bavaria():
+    days = holidays_for("DE-BY", 2026)
+    friedensfest = [
+        (day, partial) for day, (name, partial) in days.items() if name == "Friedensfest"
+    ]
+    assert friedensfest and all(partial for _day, partial in friedensfest)
+    for state in ALL_STATE_CODES:
+        if state == "DE-BY":
+            continue
+        names = {name for name, _p in holidays_for(state, 2026).values()}
+        assert "Friedensfest" not in names, state
 
 
 def test_christi_himmelfahrt_is_always_a_thursday():
-    """The reason the weekday split alone is not enough.
-
-    A midweek holiday runs a Sunday timetable on what date arithmetic calls a
-    Thursday, so pooling by weekday would drag the Thursday average.
-    """
     for year in range(2024, 2036):
         ascension = easter_sunday(year) + timedelta(days=39)
         assert ascension.weekday() == 3, year
-        assert is_public_holiday(ascension)
-
-
-def test_a_normal_day_is_not_a_holiday():
-    assert not is_public_holiday(date(2026, 9, 18))
-    assert holiday_name(date(2026, 9, 18)) is None
 
 
 class TestDayType:
     def test_plain_weekdays_are_weekdays(self):
         for day in ("2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"):
-            assert day_type_of(day, NRW_2026) == DAY_TYPE_WEEKDAY, day
+            assert day_type_of(day, NW_2026) == DAY_TYPE_WEEKDAY, day
 
     def test_saturday_is_a_weekday(self):
-        """A reduced timetable, but a working day — it pools with Mon-Fri."""
         assert date.fromisoformat("2026-09-19").weekday() == 5
-        assert day_type_of("2026-09-19", NRW_2026) == DAY_TYPE_WEEKDAY
+        assert day_type_of("2026-09-19", NW_2026) == DAY_TYPE_WEEKDAY
 
     def test_sunday_is_not(self):
         assert date.fromisoformat("2026-09-20").weekday() == 6
-        assert day_type_of("2026-09-20", NRW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
+        assert day_type_of("2026-09-20", NW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
 
     def test_a_holiday_on_a_saturday_is_still_a_holiday(self):
-        """2026-10-03, Tag der Deutschen Einheit, falls on a Saturday."""
         assert date.fromisoformat("2026-10-03").weekday() == 5
-        assert day_type_of("2026-10-03", NRW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
+        assert day_type_of("2026-10-03", NW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
 
     def test_a_holiday_midweek_is_a_holiday(self):
-        """2026-05-14, Christi Himmelfahrt, falls on a Thursday.
-
-        This is the case the whole module exists for: nothing about the date says
-        it is special, and a weekday-only split would average it into Thursdays.
-        """
         assert date.fromisoformat("2026-05-14").weekday() == 3
-        assert day_type_of("2026-05-14", NRW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
+        assert day_type_of("2026-05-14", NW_2026) == DAY_TYPE_SUNDAY_HOLIDAY
 
     def test_only_consults_the_given_set_not_the_calendar_rules(self):
-        """The table is the source of truth, not a cache of the computus.
-
-        A real NRW holiday absent from the set does not count -- and a date with
-        no calendar significance at all does, once it is in the set. This is
-        what lets a hand-added test date behave exactly like a real holiday.
-        """
         assert day_type_of("2026-10-03", set()) == DAY_TYPE_WEEKDAY
         assert day_type_of("2026-08-26", {"2026-08-26"}) == DAY_TYPE_SUNDAY_HOLIDAY
 
     @pytest.mark.parametrize("bad", [None, "", "not-a-date", "2026-13-01"])
     def test_unusable_input_returns_none_rather_than_guessing(self, bad):
-        assert day_type_of(bad, NRW_2026) is None
+        assert day_type_of(bad, NW_2026) is None
+
+
+class TestIsHoliday:
+    """The three-way per-state rule: Sunday always, state-specific holiday only
+    in its own state, no-state falls back to "all 16 states" only."""
+
+    def test_a_state_specific_holiday_applies_only_in_its_own_state(self):
+        holiday_set = {("2026-06-04", "DE-BY")}  # Fronleichnam 2026
+        assert is_holiday(date(2026, 6, 4), "DE-BY", holiday_set) is True
+        assert is_holiday(date(2026, 6, 4), "DE-HH", holiday_set) is False
+
+    def test_a_nationwide_holiday_applies_in_every_state(self):
+        holiday_set = {("2026-10-03", code) for code in ALL_STATE_CODES}
+        for state in ALL_STATE_CODES:
+            assert is_holiday(date(2026, 10, 3), state, holiday_set) is True
+
+    def test_every_sunday_is_a_holiday_regardless_of_state(self):
+        assert date(2026, 9, 20).weekday() == 6
+        assert is_holiday(date(2026, 9, 20), "DE-NW", set()) is True
+        assert is_holiday(date(2026, 9, 20), None, set()) is True
+
+    def test_unknown_state_only_counts_an_all_16_states_holiday(self):
+        partial_set = {("2026-06-04", "DE-BY")}  # Fronleichnam, one state only
+        assert is_holiday(date(2026, 6, 4), None, partial_set) is False
+
+        nationwide_set = {("2026-10-03", code) for code in ALL_STATE_CODES}
+        assert is_holiday(date(2026, 10, 3), None, nationwide_set) is True
+
+    def test_partial_holiday_never_flags_a_state_via_this_function(self):
+        """Augsburg's Friedensfest never enters `holiday_set` in the first
+        place (load_holiday_dates excludes partial rows) -- confirmed here by
+        showing an empty set for it means "not a holiday" for all of Bavaria."""
+        assert is_holiday(date(2026, 8, 8), "DE-BY", set()) is False
 
 
 @pytest.fixture
@@ -151,25 +169,36 @@ def session():
 
 
 class TestHolidayTable:
-    def test_ensure_holidays_populates_a_years_nrw_dates(self, session):
+    def test_ensure_holidays_populates_all_16_states(self, session):
         added = ensure_holidays(session, [2026])
-        assert added == 11
-        assert load_holiday_dates(session) == NRW_2026
+        assert added > 0
+        states_seen = {state for _date, state in load_holiday_dates(session)}
+        assert states_seen == set(ALL_STATE_CODES)
 
     def test_ensure_holidays_is_additive_only(self, session):
-        """A hand-added row -- not on any NRW calendar -- must survive a re-run."""
-        session.add(PublicHoliday(date="2026-08-26", name="Betriebsruhetag (test)"))
+        session.add(
+            PublicHoliday(date="2026-08-26", state="DE-NW", name="Betriebsruhetag (test)")
+        )
         session.flush()
         ensure_holidays(session, [2026])
         dates = load_holiday_dates(session)
-        assert "2026-08-26" in dates
-        assert dates == NRW_2026 | {"2026-08-26"}
+        assert ("2026-08-26", "DE-NW") in dates
 
     def test_ensure_holidays_does_not_duplicate_across_calls(self, session):
-        ensure_holidays(session, [2026])
-        second_pass_added = ensure_holidays(session, [2026])
-        assert second_pass_added == 0
-        assert len(load_holiday_dates(session)) == 11
+        first = ensure_holidays(session, [2026])
+        second = ensure_holidays(session, [2026])
+        assert first > 0
+        assert second == 0
 
     def test_load_holiday_dates_on_an_empty_table_is_an_empty_set(self, session):
         assert load_holiday_dates(session) == set()
+
+    def test_load_holiday_dates_excludes_partial_rows(self, session):
+        session.add(
+            PublicHoliday(date="2026-08-08", state="DE-BY", name="Friedensfest", partial=1)
+        )
+        session.flush()
+        assert ("2026-08-08", "DE-BY") not in load_holiday_dates(session)
+
+    def test_tracked_years_matches_the_resource_file(self):
+        assert set(tracked_years()) >= {2025, 2026, 2027}

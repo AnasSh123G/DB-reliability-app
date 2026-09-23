@@ -607,3 +607,48 @@ still produce real, immediate, cross-process backoff rather than being ignored.
 Measured effect on the full-day, 212-station backfill (5,088 `/plan` calls): **≈70 seconds**,
 down from ≈88 minutes at the old fixed 58/min. A full cold-start-to-first-cycle run completed
 in 120s against the live API, with zero 429s observed.
+
+## 28. §17's wings understate the problem — stopIndex itself shifts with coupling
+
+§17 established that wings are real and identified by run key. What it didn't establish: a
+train that sometimes runs solo and sometimes coupled to its wing partner gets a **different
+stopIndex for the same physical station** depending on which it did that day, and nothing in
+the schema recorded which variant a given day's numbering belonged to.
+
+Concrete case, found via the national 30-day backfill (2026-08-24..2026-09-22): RB 30007 and
+30057 (line RB20) both start at Alsdorf-Annapark and run coupled through Eilendorf before
+splitting further down the line — 30007 continues to Eschweiler-Weisweiler, 30057 to
+Stolberg-Altstadt. On days 30007 ran solo, Eilendorf landed at `stopIndex` 11 in its own
+numbering. Once coupled, the combined consist's numbering pushed Eilendorf to `stopIndex` 17,
+and index 11 in that numbering belonged to a different real station (Herzogenrath, per the raw
+`/plan` XML for 2026-09-01: eva 8002806, `pt=`06:43).
+
+`station_stop` (the planned pattern) was keyed on `(train_id, stop_sequence)` alone, on the
+assumption — reasonable for an unwinged train, wrong for one that sometimes isn't — that a
+train's stopIndex-to-station mapping is permanent. Once one day's numbering populated index
+11 as Eilendorf, a later coupled day's real index-11 observation (Herzogenrath) was graded
+against Eilendorf's *planned* time instead of its own, because `changes_poller.py` trusted the
+pattern lookup and never cross-checked the observed eva. The result: `trip_stop` rows with an
+apparent delay around **-1560s** ("26 minutes early") that were in fact correctly-timed
+observations of the wrong station, plus the same physical station appearing twice under two
+stop_sequences for the same trip.
+
+**Scale**: 7,453 of 73,269 trains (~10%) exhibited the collision; 472,612 `(trip, station)`
+pairs held more than one stop_sequence; 416,531 `RECORDED` stops carried `arr_delay_s < -600`
+across the full backfill window — all symptoms of the same root cause, not independent defects.
+
+**Fix**: `runs.py`'s per-run route digest (`path_sha1`, computed since §10/§11 to distinguish
+genuinely different routings under one train number) is now also the key `station_stop` and
+`trip` are stored and looked up under, alongside `(train_id, stop_sequence)`. A station's
+planned slot is therefore scoped to *which routing ran that day*, not just which train number —
+so a coupled day's observations are graded against the coupled numbering's own pattern, and a
+solo day's against its own, instead of one clobbering the other. `changes_poller.py` additionally
+cross-checks the observed eva against the planned station before writing a fact, routing a
+genuine mismatch to `tt_unmatched` rather than ever writing a corrupted `RECORDED` row again —
+a second, independent guard against the same class of bug recurring under some other cause.
+
+**Consequence for anything built on `trip_stop` from before this fix**: a full backfill window
+graded under the old single-pattern-per-train assumption is not just missing some data, it
+contains confidently-wrong `RECORDED` values, silently indistinguishable from genuine ones
+without re-deriving from the raw archive. Any stored aggregate (see `stop_delay_average`) built
+on such a window needs the window re-replayed under the fix, not patched in place.

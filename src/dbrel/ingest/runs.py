@@ -68,6 +68,11 @@ class RunCounters:
     station_stops_written: int = 0
     conflicts: int = 0
     dst_fixups: int = 0
+    # A stop whose station is already pinned to a DIFFERENT stop_sequence for
+    # this train: a route/coupling variant (see upsert_run) reusing the same
+    # (category, number) identity under a shifted index numbering. Counted
+    # rather than silently absorbed.
+    pattern_conflicts: int = 0
 
 
 def tt_feed_version(session: Session) -> int:
@@ -283,15 +288,32 @@ def upsert_run(
         train.n_stops_tracked = max(train.n_stops_tracked or 0, len(stops))
 
     # --- station_stop: tracked stops only, at their true 1-based index ---
-    existing_seqs = {
-        row[0]
-        for row in session.execute(
-            select(StationStop.stop_sequence).where(
-                StationStop.train_id == train_id,
-                StationStop.feed_version_id == ctx.fv_id,
-            )
-        ).all()
-    }
+    #
+    # stopIndex is only trip-wide stable WITHIN one day's numbering (findings
+    # §12), and WITHIN one physical routing of the run: a numbered TT train's
+    # identity is (category, number) alone (identity.py train_identity_key),
+    # so it does not fork when the same number runs a different route on a
+    # different day -- a wing/coupled service is the common case (e.g.
+    # Eilendorf at index 11 on a solo day, index 17 once coupled with its
+    # partner). `digest` (this run's path_sha1, computed above from `ppth`)
+    # names that variant, so the pattern is scoped to it: two variants of the
+    # same train each get their own, non-interfering index numbering rather
+    # than being unioned into one pattern where a later variant's index can
+    # collide with an earlier variant's. Verified against the archive
+    # (openspec change note) that within one path_sha1 the index -> station
+    # map really is invariant across every day that variant was seen.
+    existing_rows = session.execute(
+        select(StationStop.stop_sequence, StationStop.station_id).where(
+            StationStop.train_id == train_id,
+            StationStop.feed_version_id == ctx.fv_id,
+            StationStop.path_sha1 == digest,
+        )
+    ).all()
+    existing_seqs = {seq for seq, _station_id in existing_rows}
+    station_seen_at: dict[int, int] = {}
+    for seq, station_id in existing_rows:
+        station_seen_at.setdefault(station_id, seq)
+
     ss_rows = []
     for stop in stops:
         if stop.stop_index in existing_seqs:
@@ -299,11 +321,21 @@ def upsert_run(
         station_id = ctx.station_id_by_eva.get(stop.eva)
         if station_id is None:
             continue
+        pinned_seq = station_seen_at.get(station_id)
+        if pinned_seq is not None and pinned_seq != stop.stop_index:
+            # Same physical station, a different index than the one already on
+            # file for this train: recording it under a second index would let
+            # a later /fchg observation land on whichever index happens to
+            # match by coincidence, and be graded against the WRONG stop's
+            # planned time (the Eilendorf bug). Keep the index already pinned.
+            counters.pattern_conflicts += 1
+            continue
         side = stop.departure or stop.arrival
         ss_rows.append(
             {
                 "feed_version_id": ctx.fv_id,
                 "train_id": train_id,
+                "path_sha1": digest,
                 "stop_sequence": stop.stop_index,
                 "station_id": station_id,
                 "source_stop_id": str(stop.eva),
@@ -351,6 +383,7 @@ def upsert_run(
                 supposed_departure_utc=first_dep,
                 supposed_arrival_utc=last_arr,
                 n_stops_tracked=len(stops),
+                path_sha1=digest,
             )
         )
         counters.trips_created += 1
@@ -372,6 +405,7 @@ def upsert_run(
             endpoints_tracked=int(len(stops) == len(full_path)),
             n_stops=len(full_path),
             n_stops_tracked=len(stops),
+            path_sha1=digest,
         )
         .on_conflict_do_update(
             index_elements=["source", "source_run_key", "service_date"],
@@ -379,6 +413,7 @@ def upsert_run(
                 "supposed_departure_utc": first_dep,
                 "supposed_arrival_utc": last_arr,
                 "n_stops_tracked": len(stops),
+                "path_sha1": digest,
             },
         )
     )

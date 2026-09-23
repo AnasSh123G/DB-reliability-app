@@ -35,6 +35,7 @@ from dbrel.models import (
 )
 from dbrel.ingest.client import TimetablesClient
 from dbrel.ingest.parser import TtStop, parse_timetable
+from dbrel.ingest.timeutil import read_clock
 from dbrel.ingest.runs import (
     RunContext,
     RunCounters,
@@ -59,9 +60,13 @@ class PlanImportResult:
     elapsed_s: float = 0.0
 
 
-def _pending_hours(last_hour: str | None, lead_hours: int) -> list[tuple[str, int]]:
+def _pending_hours(
+    last_hour: str | None, lead_hours: int, frozen: int | None = None
+) -> list[tuple[str, int]]:
     """Hour buckets to fetch, as (YYYY-MM-DD, hour), oldest first."""
-    now = datetime.now(TZ).replace(minute=0, second=0, microsecond=0)
+    now = datetime.fromtimestamp(read_clock(frozen), TZ).replace(
+        minute=0, second=0, microsecond=0
+    )
     horizon = now + timedelta(hours=lead_hours)
     cursor = now
     if last_hour:
@@ -87,10 +92,13 @@ def import_plan(
     hours: list[int] | None = None,
     force: bool = False,
     workers: int = TT_FETCH_WORKERS,
+    now: int | None = None,
     progress=lambda msg: None,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
 ) -> PlanImportResult:
     started = time.monotonic()
+    # None means live; an explicit value pins this import to a replayed instant.
+    frozen = now
     result = PlanImportResult()
     fv_id = tt_feed_version(session)
 
@@ -123,7 +131,7 @@ def import_plan(
         station.id: (
             [(date, h) for h in (hours or range(24))]
             if date is not None
-            else _pending_hours(station.last_plan_hour, lead_hours)
+            else _pending_hours(station.last_plan_hour, lead_hours, frozen)
         )
         for station in tracked
     }
@@ -190,7 +198,7 @@ def import_plan(
             on_progress(done_buckets, total_buckets)
 
             fetch_row = existing or TtPlanFetch(eva=station.eva, plan_date=day, plan_hour=hour)
-            fetch_row.fetched_at = int(time.time())
+            fetch_row.fetched_at = read_clock(frozen)
             fetch_row.http_status = resp.status
             fetch_row.content_sha256 = hashlib.sha256(resp.body).hexdigest() if resp.ok else None
             fetch_row.error = None
@@ -239,7 +247,7 @@ def import_plan(
                 select(Train.identity_key, Train.id).where(Train.source == SOURCE_TT)
             ).all()
         ),
-        now=int(time.time()),
+        now=read_clock(frozen),
     )
     counters = RunCounters()
 

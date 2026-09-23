@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from dbrel.identity import SOURCE_TT
 from dbrel.config import GRACE_S
-from dbrel.ingest.timeutil import local_date, local_hour
+from dbrel.ingest.timeutil import local_date, local_hour, read_clock
 from dbrel.models import (
     QUALITY_CANCELLED,
     QUALITY_RECORDED,
@@ -102,6 +102,11 @@ class _TripRef:
     trip_id: int
     train_id: int
     service_date: str
+    # Which station_stop variant this trip's own stop_sequence numbers refer
+    # to (see StationStop.path_sha1 / runs.py upsert_run). Needed so the
+    # pattern lookup below never mixes two route variants of one numbered
+    # train under one stop_sequence.
+    path_sha1: str | None = None
 
 
 @dataclass(slots=True)
@@ -124,13 +129,15 @@ def _candidate_service_dates(now: int) -> list[str]:
 def _load_trip_index(session: Session, service_dates: list[str]) -> dict[str, _TripRef]:
     """run_key -> the run. The run key already encodes the date, so it is unique."""
     rows = session.execute(
-        select(Trip.source_run_key, Trip.id, Trip.train_id, Trip.service_date).where(
-            Trip.service_date.in_(service_dates), Trip.source == SOURCE_TT
-        )
+        select(
+            Trip.source_run_key, Trip.id, Trip.train_id, Trip.service_date, Trip.path_sha1
+        ).where(Trip.service_date.in_(service_dates), Trip.source == SOURCE_TT)
     ).all()
     return {
-        run_key: _TripRef(trip_id=trip_id, train_id=train_id, service_date=service_date)
-        for run_key, trip_id, train_id, service_date in rows
+        run_key: _TripRef(
+            trip_id=trip_id, train_id=train_id, service_date=service_date, path_sha1=path_sha1
+        )
+        for run_key, trip_id, train_id, service_date, path_sha1 in rows
     }
 
 
@@ -185,13 +192,22 @@ def _resolve(
 
 
 def _load_patterns(
-    session: Session, train_ids: list[int], dates_by_train: dict[int, set[str]]
+    session: Session, train_ids: list[int], dates_by_train: dict[int, dict[str, str | None]]
 ) -> dict[tuple[int, str], dict[int, _Planned]]:
     """(train_id, service_date) -> stop_sequence -> the planned stop.
 
     The schedule stores seconds from a service-date anchor, so 25:30 is
     representable; turning that into an instant needs the run's own date, which is
     why the key carries it.
+
+    `dates_by_train` maps each wanted service_date to the REF's own path_sha1
+    (StationStop.path_sha1 / Trip.path_sha1 -- see runs.py upsert_run): a
+    numbered train can have two station_stop variants (e.g. a wing/coupled
+    service some days, solo others) sharing one stop_sequence numbering space
+    for different physical stops, so a row is only offered to a service_date
+    whose trip was built from the SAME variant. `None == None` still matches,
+    which keeps pre-migration/GTFS rows (no digest recorded either side)
+    working exactly as before.
     """
     out: dict[tuple[int, str], dict[int, _Planned]] = {}
     chunk = 900  # SQLite's default parameter ceiling is 999
@@ -200,6 +216,7 @@ def _load_patterns(
             select(
                 StationStop.id,
                 StationStop.train_id,
+                StationStop.path_sha1,
                 StationStop.stop_sequence,
                 StationStop.station_id,
                 StationStop.platform_code,
@@ -207,8 +224,10 @@ def _load_patterns(
                 StationStop.planned_departure_sec,
             ).where(StationStop.train_id.in_(train_ids[start : start + chunk]))
         ).all()
-        for ss_id, train_id, seq, station_id, platform, arr_sec, dep_sec in rows:
-            for service_date in dates_by_train.get(train_id, ()):
+        for ss_id, train_id, ss_path_sha1, seq, station_id, platform, arr_sec, dep_sec in rows:
+            for service_date, wanted_path_sha1 in dates_by_train.get(train_id, {}).items():
+                if ss_path_sha1 != wanted_path_sha1:
+                    continue
                 out.setdefault((train_id, service_date), {})[seq] = _Planned(
                     station_stop_id=ss_id,
                     station_id=station_id,
@@ -246,10 +265,14 @@ def run_tt_poll(
     priority_max: int = 3,
     sweep_index: int = 0,
     dry_run: bool = False,
+    now: int | None = None,
     progress=lambda msg: None,
 ) -> PollResult:
     started = time.monotonic()
-    now = int(time.time())
+    # None means live: every clock read below goes to the wall clock, exactly as
+    # before. An explicit value pins the whole sweep to a replayed instant.
+    frozen = now
+    now = read_clock(frozen)
     result = PollResult(sweep_id=now)
 
     tracked = (
@@ -299,7 +322,7 @@ def run_tt_poll(
             sweep_id=result.sweep_id,
             station_id=station.id,
             eva=station.eva,
-            fetched_at=int(time.time()),
+            fetched_at=read_clock(frozen),
             http_status=resp.status,
             bytes=len(resp.body),
             fetch_ms=resp.elapsed_ms,
@@ -331,7 +354,7 @@ def run_tt_poll(
         session.flush()
 
         store_started = time.monotonic()
-        observed_at = int(time.time())
+        observed_at = read_clock(frozen)
         msg_rows: list[dict] = []
         unmatched_rows: list[dict] = []
         # (run, stop, realized arrival, realized departure) for this station.
@@ -341,6 +364,8 @@ def run_tt_poll(
         station_matched = station_unmatched = station_created = 0
 
         for stop in parsed.stops:
+            if stop.eva is None:
+                stop.eva = station.eva
             ref = trip_by_run.get(stop.run_key)
             if ref is None and _is_full_record(stop):
                 # An addition or replacement. /plan will never carry it, so this is
@@ -354,6 +379,7 @@ def run_tt_poll(
                         trip_id=trip_id,
                         train_id=trip.train_id,
                         service_date=trip.service_date,
+                        path_sha1=trip.path_sha1,
                     )
                     trip_by_run[stop.run_key] = ref
                     station_created += 1
@@ -393,9 +419,9 @@ def run_tt_poll(
             realized.append((ref, stop, ar, dp))
 
         # The planned side, for exactly the runs this station just yielded.
-        dates_by_train: dict[int, set[str]] = {}
+        dates_by_train: dict[int, dict[str, str | None]] = {}
         for ref, *_ in realized:
-            dates_by_train.setdefault(ref.train_id, set()).add(ref.service_date)
+            dates_by_train.setdefault(ref.train_id, {})[ref.service_date] = ref.path_sha1
         patterns = _load_patterns(session, list(dates_by_train), dates_by_train)
 
         fact_rows: list[dict] = []
@@ -405,6 +431,35 @@ def run_tt_poll(
                 # /fchg knows this stop but the schedule does not — the run was
                 # created from a delta, or /plan covered a different hour. Without a
                 # planned time there is no delay to state, so it is not a fact yet.
+                continue
+            observed_station_id = run_ctx.station_id_by_eva.get(stop.eva)
+            if observed_station_id is not None and observed_station_id != planned.station_id:
+                # This stop_sequence's planned pattern belongs to a DIFFERENT
+                # station than the one /fchg just reported the observation at.
+                # station_stop is written once per (train, index) and assumes
+                # that mapping is stable across days (runs.py upsert_run), but
+                # a run that sometimes couples with another service shifts its
+                # own stops to a different index once coupled -- the same
+                # physical stop can then land on an index some OTHER day's
+                # pattern already claimed for a different station. Trusting
+                # planned here would grade the observation against the wrong
+                # stop's scheduled time (e.g. an apparent >10-minute-early
+                # arrival that is really a different, correctly-on-time stop).
+                # Record it as unmatched instead of writing a corrupted fact.
+                station_matched -= 1
+                station_unmatched += 1
+                unmatched_rows.append(
+                    {
+                        "service_date": ref.service_date,
+                        "daily_trip_id": stop.daily_trip_id,
+                        "stop_index": stop.stop_index,
+                        "eva": stop.eva,
+                        "category": stop.category,
+                        "number": stop.number,
+                        "first_poll_id": poll.id,
+                        "last_poll_id": poll.id,
+                    }
+                )
                 continue
             row = _fact_row(ref, stop, ar, dp, planned, observed_at)
             fact_rows.append(row)

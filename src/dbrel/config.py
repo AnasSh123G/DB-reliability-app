@@ -36,6 +36,10 @@ _load_dotenv()
 
 DATA_DIR = Path(os.environ.get("DBREL_DATA_DIR", "data"))
 CACHE_DIR = DATA_DIR / "feeds"
+# Downloaded partitions of the public IRIS response archive. Large (~112-176 MB
+# per day), so it is kept out of the database directory's backup path deliberately
+# and is safe to delete: a re-fetch restores it.
+ARCHIVE_DIR = DATA_DIR / "archive"
 DB_PATH = Path(os.environ.get("DBREL_DB", DATA_DIR / "dbrel.sqlite"))
 
 TZ = ZoneInfo("Europe/Berlin")

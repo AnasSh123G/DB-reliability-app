@@ -82,7 +82,10 @@
       "Bash(kill 40642 40646)",
       "Bash(curl -s -o /dev/null -w \"server up: %{http_code}\\\\n\" http://localhost:8000/)",
       "Bash(curl -s -o /dev/null -w \"time_total: %{time_total}s\\\\n\" \"http://localhost:8000/api/line/2/around?direction=0&station=1889&date=2026-09-21&time=08:00\")",
-      "Bash(curl -s -o /dev/null -w \"time_total: %{time_total}s\\\\n\" \"http://localhost:8000/api/line/2/around?direction=0&station=1889&date=2026-09-21&time=14:00\")"
+      "Bash(curl -s -o /dev/null -w \"time_total: %{time_total}s\\\\n\" \"http://localhost:8000/api/line/2/around?direction=0&station=1889&date=2026-09-21&time=14:00\")",
+      "Bash(timeout 10 dbrel serve)",
+      "Bash(dbrel serve *)",
+      "Bash(curl -s http://127.0.0.1:8000/)"
     ]
   }
 }

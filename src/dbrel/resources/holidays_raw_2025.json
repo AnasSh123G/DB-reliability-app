@@ -1,0 +1,476 @@
+[
+  {
+    "id": "27f0d8cd-76b2-47e7-89ac-a3a9f6a6b1ba",
+    "startDate": "2025-01-01",
+    "endDate": "2025-01-01",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Neujahr"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "1c80b87d-8221-4dc2-9a1a-3b0f57dce9f5",
+    "startDate": "2025-01-06",
+    "endDate": "2025-01-06",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Heilige Drei Könige"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-ST",
+        "shortName": "ST"
+      },
+      {
+        "code": "DE-BW",
+        "shortName": "BW"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "4522bbfa-eaee-4efe-b13c-dac7f67bb986",
+    "startDate": "2025-03-08",
+    "endDate": "2025-03-08",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Internationaler Frauentag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BE",
+        "shortName": "BE"
+      },
+      {
+        "code": "DE-MV",
+        "shortName": "MV"
+      }
+    ]
+  },
+  {
+    "id": "c7aef0d5-f292-4d08-b878-a25a6c05fc12",
+    "startDate": "2025-04-18",
+    "endDate": "2025-04-18",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Karfreitag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "90718fa1-5b71-49dc-90a4-142a8aef72d8",
+    "startDate": "2025-04-20",
+    "endDate": "2025-04-20",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Ostersonntag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BB",
+        "shortName": "BB"
+      }
+    ]
+  },
+  {
+    "id": "12776265-e638-4112-a11f-f24bb37d8a3d",
+    "startDate": "2025-04-21",
+    "endDate": "2025-04-21",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Ostermontag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "5db64014-1aaf-46f0-be83-d8baa826cfef",
+    "startDate": "2025-05-01",
+    "endDate": "2025-05-01",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Tag der Arbeit"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "4905efd7-e75e-4930-80b8-d35ca157e5bf",
+    "startDate": "2025-05-08",
+    "endDate": "2025-05-08",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Tag der Befreiung"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BE",
+        "shortName": "BE"
+      }
+    ],
+    "tags": [
+      "OneTime"
+    ]
+  },
+  {
+    "id": "9fbbb949-8b22-4916-a16c-0a799a2dd79f",
+    "startDate": "2025-05-29",
+    "endDate": "2025-05-29",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Christi Himmelfahrt"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "edfb560a-d5c6-493f-b1c1-06f2936347e7",
+    "startDate": "2025-06-08",
+    "endDate": "2025-06-08",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Pfingstsonntag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BB",
+        "shortName": "BB"
+      }
+    ]
+  },
+  {
+    "id": "b52574c0-0e5d-44ff-ac6b-4e3c6d71f1d7",
+    "startDate": "2025-06-09",
+    "endDate": "2025-06-09",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Pfingstmontag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "2590b1ad-4268-4cac-a11a-5192791d0c0d",
+    "startDate": "2025-06-19",
+    "endDate": "2025-06-19",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Fronleichnam"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-HE",
+        "shortName": "HE"
+      },
+      {
+        "code": "DE-SL",
+        "shortName": "SL"
+      },
+      {
+        "code": "DE-NW",
+        "shortName": "NW"
+      },
+      {
+        "code": "DE-BW",
+        "shortName": "BW"
+      },
+      {
+        "code": "DE-RP",
+        "shortName": "RP"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "dc74ad4c-cea7-426a-bef2-ce38fa3435ef",
+    "startDate": "2025-08-08",
+    "endDate": "2025-08-08",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Friedensfest"
+      }
+    ],
+    "regionalScope": "Local",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-BY-AU",
+        "shortName": "BY-AU"
+      }
+    ]
+  },
+  {
+    "id": "e09a9106-86e9-4eeb-9c84-5d257b4f9488",
+    "startDate": "2025-08-15",
+    "endDate": "2025-08-15",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Mariä Himmelfahrt"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SL",
+        "shortName": "SL"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "7d63faa9-5577-4527-a192-edf54e28cd1a",
+    "startDate": "2025-09-20",
+    "endDate": "2025-09-20",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Weltkindertag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-TH",
+        "shortName": "TH"
+      }
+    ]
+  },
+  {
+    "id": "ac964e18-2d34-497a-a9c5-b8ab065b7238",
+    "startDate": "2025-10-03",
+    "endDate": "2025-10-03",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Tag der Deutschen Einheit"
+      }
+    ],
+    "regionalScope": "National",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "2514f889-8ff3-460c-b12c-c886f8b653de",
+    "startDate": "2025-10-31",
+    "endDate": "2025-10-31",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Reformationstag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SH",
+        "shortName": "SH"
+      },
+      {
+        "code": "DE-ST",
+        "shortName": "ST"
+      },
+      {
+        "code": "DE-HH",
+        "shortName": "HH"
+      },
+      {
+        "code": "DE-HB",
+        "shortName": "HB"
+      },
+      {
+        "code": "DE-TH",
+        "shortName": "TH"
+      },
+      {
+        "code": "DE-MV",
+        "shortName": "MV"
+      },
+      {
+        "code": "DE-SN",
+        "shortName": "SN"
+      },
+      {
+        "code": "DE-NI",
+        "shortName": "NI"
+      },
+      {
+        "code": "DE-BB",
+        "shortName": "BB"
+      }
+    ]
+  },
+  {
+    "id": "0e5ed383-7890-4f12-b041-65a79aedeb5f",
+    "startDate": "2025-11-01",
+    "endDate": "2025-11-01",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Allerheiligen"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SL",
+        "shortName": "SL"
+      },
+      {
+        "code": "DE-NW",
+        "shortName": "NW"
+      },
+      {
+        "code": "DE-BW",
+        "shortName": "BW"
+      },
+      {
+        "code": "DE-RP",
+        "shortName": "RP"
+      },
+      {
+        "code": "DE-BY",
+        "shortName": "BY"
+      }
+    ]
+  },
+  {
+    "id": "1d68ac36-9690-4b06-b62d-de890d5b50ef",
+    "startDate": "2025-11-19",
+    "endDate": "2025-11-19",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "Buß- und Bettag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": false,
+    "subdivisions": [
+      {
+        "code": "DE-SN",
+        "shortName": "SN"
+      }
+    ]
+  },
+  {
+    "id": "92b270e3-247f-4f82-b79d-b5ad77a67d95",
+    "startDate": "2025-12-25",
+    "endDate": "2025-12-25",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "1. Weihnachtsfeiertag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  },
+  {
+    "id": "28bf580c-9787-4d67-ab3e-06a5e6597c1c",
+    "startDate": "2025-12-26",
+    "endDate": "2025-12-26",
+    "type": "Public",
+    "name": [
+      {
+        "language": "DE",
+        "text": "2. Weihnachtsfeiertag"
+      }
+    ],
+    "regionalScope": "Regional",
+    "temporalScope": "FullDay",
+    "nationwide": true
+  }
+]

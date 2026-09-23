@@ -30,6 +30,13 @@ ml = [
     "lightgbm>=4.7",
     "numpy>=2.0",
 ]
+# Backfilling from the public archive of IRIS responses means reading its parquet
+# partitions, and the project otherwise has no columnar reader. pyarrow is ~40 MB,
+# so the argument above applies unchanged: a collector box has no reason to carry
+# it. Nothing outside dbrel/ingest/archive.py may import it.
+backfill = [
+    "pyarrow>=18",
+]
 
 [project.scripts]
 dbrel = "dbrel.cli:main"

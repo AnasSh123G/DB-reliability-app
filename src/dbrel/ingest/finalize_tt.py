@@ -149,9 +149,21 @@ def run_finalize_tt(
 
     # The planned pattern, as absolute instants for each run's own service date, so
     # a later feed rebuild cannot retroactively change a historical fact.
-    dates_by_train: dict[int, set[str]] = defaultdict(set)
+    #
+    # Keyed by the trip's OWN path_sha1 (see StationStop.path_sha1 / runs.py
+    # upsert_run): a numbered TT train can hold more than one station_stop
+    # variant (a wing/coupled service some days, solo others, or even
+    # incidental digest drift from which tracked station happened to be the
+    # earliest one seen that day), each with its own, non-interchangeable
+    # stop_sequence numbering. Grouping every variant's rows under one
+    # (train_id, service_date) key -- as this used to, and as the identical
+    # helper in changes_poller._load_patterns used to before its own fix --
+    # let a later variant's row for some OTHER station silently overwrite an
+    # earlier variant's row for THIS trip's own stop_sequence, so a gap got
+    # filled in with a station this trip never actually called at.
+    dates_by_train: dict[int, dict[str, str | None]] = defaultdict(dict)
     for trip in trips:
-        dates_by_train[trip.train_id].add(trip.service_date)
+        dates_by_train[trip.train_id][trip.service_date] = trip.path_sha1
     pattern = _load_patterns(session, list(dates_by_train), dates_by_train)
 
     recorded = _recorded_sequences(session, trip_ids)
@@ -258,15 +270,23 @@ class _Planned:
 
 
 def _load_patterns(
-    session: Session, train_ids: list[int], dates_by_train: dict[int, set[str]]
+    session: Session, train_ids: list[int], dates_by_train: dict[int, dict[str, str | None]]
 ) -> dict[tuple[int, str], dict[int, _Planned]]:
-    """(train_id, service_date) -> stop_sequence -> the planned stop."""
+    """(train_id, service_date) -> stop_sequence -> the planned stop.
+
+    `dates_by_train` maps each wanted service_date to that trip's own
+    path_sha1; a station_stop row is only offered to a service_date whose
+    trip was built from the SAME variant (`None == None` still matches, for
+    pre-migration/GTFS rows with no digest recorded either side). See the
+    caller's comment.
+    """
     out: dict[tuple[int, str], dict[int, _Planned]] = {}
     for start in range(0, len(train_ids), 900):
         rows = session.execute(
             select(
                 StationStop.id,
                 StationStop.train_id,
+                StationStop.path_sha1,
                 StationStop.stop_sequence,
                 StationStop.station_id,
                 StationStop.platform_code,
@@ -274,8 +294,10 @@ def _load_patterns(
                 StationStop.planned_departure_sec,
             ).where(StationStop.train_id.in_(train_ids[start : start + 900]))
         ).all()
-        for ss_id, train_id, seq, station_id, platform, arr_sec, dep_sec in rows:
-            for service_date in dates_by_train.get(train_id, ()):
+        for ss_id, train_id, ss_path_sha1, seq, station_id, platform, arr_sec, dep_sec in rows:
+            for service_date, wanted_path_sha1 in dates_by_train.get(train_id, {}).items():
+                if ss_path_sha1 != wanted_path_sha1:
+                    continue
                 out.setdefault((train_id, service_date), {})[seq] = _Planned(
                     station_stop_id=ss_id,
                     station_id=station_id,

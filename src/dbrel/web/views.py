@@ -131,7 +131,10 @@ def line_trips_around(request, line_id: int):
         )
     time_of_day_s = clock.hour * 3600 + clock.minute * 60
     with read_scope() as session:
-        day_type = queries.resolve_day_type(session, date_str)
+        from dbrel.models import Station
+
+        station = session.get(Station, station_id)
+        day_type = queries.resolve_day_type(session, date_str, station=station)
         if day_type is None:
             return JsonResponse({"error": f"unusable date {date_str!r}"}, status=400)
         result = queries.trips_around(

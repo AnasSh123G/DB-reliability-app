@@ -1,0 +1,2692 @@
+{
+  "source": "https://openholidaysapi.org/PublicHolidays?countryIsoCode=DE&languageIsoCode=DE&validFrom=YYYY-MM-DD&validTo=YYYY-MM-DD",
+  "fetched_at": "2026-09-22T23:49:55.142058Z",
+  "years": [
+    2025,
+    2026,
+    2027
+  ],
+  "notes": "partial=true marks sub-state (Local) holidays only. The API has no municipality-level data for Fronleichnam in parts of Sachsen/Thüringen or for Mariä Himmelfahrt being limited to Catholic-majority municipalities in Bayern (it lists that one for the whole of Bayern).",
+  "states": {
+    "DE-BW": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-06-19",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-06-04",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-27",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-BY": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-06-19",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2025-08-08",
+        "name": "Friedensfest",
+        "partial": true,
+        "scope": "DE-BY-AU"
+      },
+      {
+        "date": "2025-08-15",
+        "name": "Mariä Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-06-04",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2026-08-08",
+        "name": "Friedensfest",
+        "partial": true,
+        "scope": "DE-BY-AU"
+      },
+      {
+        "date": "2026-08-15",
+        "name": "Mariä Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-27",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2027-08-08",
+        "name": "Friedensfest",
+        "partial": true,
+        "scope": "DE-BY-AU"
+      },
+      {
+        "date": "2027-08-15",
+        "name": "Mariä Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-BE": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-03-08",
+        "name": "Internationaler Frauentag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-08",
+        "name": "Tag der Befreiung",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-03-08",
+        "name": "Internationaler Frauentag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-08",
+        "name": "Internationaler Frauentag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-BB": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-20",
+        "name": "Ostersonntag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-08",
+        "name": "Pfingstsonntag",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-05",
+        "name": "Ostersonntag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-24",
+        "name": "Pfingstsonntag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-28",
+        "name": "Ostersonntag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-16",
+        "name": "Pfingstsonntag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-HB": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-HH": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-HE": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-06-19",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-06-04",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-27",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-MV": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-03-08",
+        "name": "Internationaler Frauentag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-03-08",
+        "name": "Internationaler Frauentag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-08",
+        "name": "Internationaler Frauentag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-NI": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-NW": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-06-19",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-06-04",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-27",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-RP": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-06-19",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-06-04",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-27",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-SL": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-06-19",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2025-08-15",
+        "name": "Mariä Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-06-04",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2026-08-15",
+        "name": "Mariä Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-27",
+        "name": "Fronleichnam",
+        "partial": false
+      },
+      {
+        "date": "2027-08-15",
+        "name": "Mariä Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-11-01",
+        "name": "Allerheiligen",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-SN": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-11-19",
+        "name": "Buß- und Bettag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-11-18",
+        "name": "Buß- und Bettag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-11-17",
+        "name": "Buß- und Bettag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-ST": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-01-06",
+        "name": "Heilige Drei Könige",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-SH": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ],
+    "DE-TH": [
+      {
+        "date": "2025-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2025-04-18",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2025-04-21",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2025-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2025-05-29",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2025-06-09",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2025-09-20",
+        "name": "Weltkindertag",
+        "partial": false
+      },
+      {
+        "date": "2025-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2025-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2025-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2026-04-03",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2026-04-06",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2026-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2026-05-14",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2026-05-25",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2026-09-20",
+        "name": "Weltkindertag",
+        "partial": false
+      },
+      {
+        "date": "2026-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2026-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2026-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-01-01",
+        "name": "Neujahr",
+        "partial": false
+      },
+      {
+        "date": "2027-03-26",
+        "name": "Karfreitag",
+        "partial": false
+      },
+      {
+        "date": "2027-03-29",
+        "name": "Ostermontag",
+        "partial": false
+      },
+      {
+        "date": "2027-05-01",
+        "name": "Tag der Arbeit",
+        "partial": false
+      },
+      {
+        "date": "2027-05-06",
+        "name": "Christi Himmelfahrt",
+        "partial": false
+      },
+      {
+        "date": "2027-05-17",
+        "name": "Pfingstmontag",
+        "partial": false
+      },
+      {
+        "date": "2027-09-20",
+        "name": "Weltkindertag",
+        "partial": false
+      },
+      {
+        "date": "2027-10-03",
+        "name": "Tag der Deutschen Einheit",
+        "partial": false
+      },
+      {
+        "date": "2027-10-31",
+        "name": "Reformationstag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-25",
+        "name": "1. Weihnachtsfeiertag",
+        "partial": false
+      },
+      {
+        "date": "2027-12-26",
+        "name": "2. Weihnachtsfeiertag",
+        "partial": false
+      }
+    ]
+  }
+}

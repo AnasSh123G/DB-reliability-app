@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import typer
 from sqlalchemy import func, select, text
 
 from dbrel.config import (
+    ARCHIVE_DIR,
     COLLECT_DERIVE_EVERY,
     COLLECT_DURATION_S,
     COLLECT_INTERVAL_S,
@@ -483,6 +485,170 @@ def tt_import_plan(
         typer.echo(f"  ! {err}")
 
 
+@app.command("archive-fetch")
+def archive_fetch(
+    date_from: str = typer.Option(None, "--from", help="YYYY-MM-DD; default is --days back from --to"),
+    date_to: str = typer.Option(None, "--to", help="YYYY-MM-DD; default today"),
+    days: int = typer.Option(30, help="window length when --from is omitted"),
+    root: Path = typer.Option(ARCHIVE_DIR, help="where partitions are stored"),
+) -> None:
+    """Download archived IRIS responses from the public mirror.
+
+    Writes nothing to the database — this only acquires. Resumable: a partition
+    already held intact is reused, so an interrupted run continues where it
+    stopped. Only raw_data is used; see dbrel/ingest/archive.py for why the
+    mirror's own processed parquet is not.
+    """
+    from dbrel.ingest.archive import (
+        ArchiveStore,
+        fetch_window,
+        missing_hours,
+        resolve_window,
+        store_paths,
+    )
+
+    try:
+        start, end = resolve_window(date_from, date_to, days)
+    except ValueError as exc:
+        typer.echo(f"bad window: {exc}")
+        raise typer.Exit(1) from exc
+
+    typer.echo(f"archive window {start} .. {end} (+1 day either side for overnight runs)")
+    store = ArchiveStore(root)
+    result = fetch_window(store, start, end, progress=typer.echo)
+
+    typer.echo(
+        f"  {result.files_downloaded} downloaded ({result.bytes_downloaded / 1e9:.2f} GB), "
+        f"{result.files_reused} reused"
+    )
+    typer.echo(f"  {result.bytes_on_disk / 1e9:.2f} GB on disk at {root}")
+    if result.days_missing:
+        typer.echo(f"  {len(result.days_missing)} day(s) absent from the archive:")
+        for day in result.days_missing[:10]:
+            typer.echo(f"      {day}")
+
+    gaps = missing_hours(store_paths(store, start, end), start, end)
+    if gaps:
+        # An archive hole is not an on-time train. Replay turns each of these into
+        # a measured poll gap, but it has to be visible here first.
+        typer.echo(f"  {len(gaps)} hour(s) in the window that the archive never captured:")
+        for day, hour in gaps[:20]:
+            typer.echo(f"      {day} {hour:02d}:00")
+        if len(gaps) > 20:
+            typer.echo(f"      ... and {len(gaps) - 20} more")
+    else:
+        typer.echo("  every hour in the window is covered")
+    for err in result.errors[:5]:
+        typer.echo(f"  ! {err}")
+
+
+@app.command("backfill")
+def backfill(
+    date_from: str = typer.Option(None, "--from", help="YYYY-MM-DD; default is --days back from --to"),
+    date_to: str = typer.Option(None, "--to", help="YYYY-MM-DD; default today"),
+    days: int = typer.Option(30, help="window length when --from is omitted"),
+    root: Path = typer.Option(ARCHIVE_DIR, help="where partitions are stored"),
+    dry_run: bool = typer.Option(False, help="grade and report, write nothing"),
+    restart: bool = typer.Option(False, help="ignore the resume point and redo every day"),
+) -> None:
+    """Replay archived IRIS responses into the database.
+
+    Needs partitions on disk already — run 'dbrel archive-fetch' first. Replays
+    each day's upstream job runs in order, so a forecast is graded as a forecast
+    and a later reading supersedes it, exactly as live collection saw them.
+
+    Expect a large NO_DATA / PREDICTION_ONLY share: the archive polls /fchg every
+    ~6 hours against 'collect's 15 minutes, and roughly a quarter of scheduled
+    stops were never reported at all. That is the honest figure. The mirror's own
+    processed parquet publishes those same stops as '0 minutes late'.
+    """
+    from dbrel.ingest.archive import ArchiveStore, resolve_window
+    from dbrel.ingest.replay import replay_day
+    from dbrel.ingest.timeutil import date_range
+
+    try:
+        start, end = resolve_window(date_from, date_to, days)
+    except ValueError as exc:
+        typer.echo(f"bad window: {exc}")
+        raise typer.Exit(1) from exc
+
+    store = ArchiveStore(root)
+    done_path = root / "replayed.json"
+    done: set[str] = set()
+    if done_path.exists() and not restart:
+        try:
+            done = set(json.loads(done_path.read_text()))
+        except (OSError, ValueError):
+            done = set()
+
+    totals: dict[str, int] = {}
+    stored = sweeps = plan_buckets = gaps = 0
+    skipped: list[str] = []
+    untracked: set[int] = set()
+    uncovered: set[int] = set()
+    all_missing: list = []
+
+    with session_scope() as session:
+        _require_schema(session)
+        tracked = set(
+            session.execute(
+                select(Station.eva).where(Station.tracked == 1, Station.eva.isnot(None))
+            ).scalars()
+        )
+    if not tracked:
+        typer.echo("no tracked stations — run 'dbrel tt-map-stations' or seed them first")
+        raise typer.Exit(1)
+    typer.echo(f"backfill {start} .. {end} over {len(tracked):,} tracked stations")
+
+    for day in date_range(start, end):
+        key = day.isoformat()
+        if key in done:
+            skipped.append(key)
+            continue
+        typer.echo(f"{key}:")
+        with session_scope() as session:
+            result = replay_day(
+                session, store, day, tracked_evas=tracked, dry_run=dry_run, progress=typer.echo
+            )
+        if result.errors and not result.sweeps:
+            for err in result.errors[:3]:
+                typer.echo(f"  ! {err}")
+            continue
+        stored += result.stops_stored
+        sweeps += result.sweeps
+        plan_buckets += result.plan_buckets
+        gaps += result.gaps_written
+        untracked |= result.untracked_evas
+        uncovered |= result.uncovered_tracked
+        all_missing.extend(result.missing_hours)
+        for quality, count in result.by_quality.items():
+            totals[quality] = totals.get(quality, 0) + count
+        for err in result.errors[:2]:
+            typer.echo(f"  ! {err}")
+        if not dry_run:
+            # Recorded per day, so an interrupted run resumes rather than restarts.
+            done.add(key)
+            root.mkdir(parents=True, exist_ok=True)
+            done_path.write_text(json.dumps(sorted(done)))
+
+    typer.echo("")
+    typer.echo(f"  {sweeps} sweep(s), {plan_buckets} plan bucket(s), {stored:,} stops stored")
+    if skipped:
+        typer.echo(f"  {len(skipped)} day(s) already replayed, skipped (--restart to redo)")
+    if totals:
+        typer.echo(f"  finalize wrote {gaps:,} gap row(s):")
+        for quality, count in sorted(totals.items(), key=lambda kv: -kv[1]):
+            typer.echo(f"      {quality:16} {count:>9,}")
+    if untracked:
+        typer.echo(f"  {len(untracked):,} archived station(s) skipped as untracked")
+    if uncovered:
+        typer.echo(f"  {len(uncovered):,} tracked station(s) the archive never covered")
+    if all_missing:
+        typer.echo(f"  {len(all_missing)} hour(s) the archive never captured")
+    if dry_run:
+        typer.echo("  --dry-run: nothing was written")
+
+
 @app.command("tt-poll")
 def tt_poll(
     interval: int = typer.Option(0, help="seconds between sweeps; 0 = one sweep and exit"),
@@ -689,6 +855,252 @@ def reset_db(
     except AlreadyRunning as exc:
         typer.echo(f"! {exc}")
         raise typer.Exit(1) from None
+
+
+@app.command("migrate-holiday-schema")
+def migrate_holiday_schema() -> None:
+    """Add station.state/trip_stop.is_holiday and recreate public_holiday.
+
+    Idempotent -- checks PRAGMA table_info before altering, so re-running
+    against an already-migrated database is a no-op. Never touches station,
+    trip, or trip_stop's existing rows; only public_holiday is dropped and
+    recreated (its old NRW-only rows are superseded, not preserved -- see
+    openspec/changes/add-holiday-aware-stop-averages/proposal.md).
+    """
+    from dbrel.db import get_engine
+    from dbrel.schema_migrate import migrate
+
+    report = migrate(get_engine())
+    for key, happened in report.items():
+        typer.echo(f"  {key}: {'done' if happened else 'already up to date'}")
+
+
+@app.command("resolve-station-states")
+def resolve_station_states_cmd() -> None:
+    """Resolve every station's Bundesland from (lat, lon). Re-runnable."""
+    from dbrel.derive.station_states import resolve_station_states
+
+    with session_scope() as session:
+        _require_schema(session)
+        report = resolve_station_states(session)
+    typer.echo(f"{report.total:,} stations, {sum(report.per_state.values()):,} resolved:")
+    for state in sorted(report.per_state):
+        typer.echo(f"  {state}: {report.per_state[state]:,}")
+    typer.echo(f"  NULL (unresolved): {report.unresolved:,}")
+    if report.unresolved_names:
+        typer.echo("  sample unresolved station names:")
+        for name in report.unresolved_names:
+            typer.echo(f"    {name}")
+
+
+@app.command("load-holidays")
+def load_holidays() -> None:
+    """Load resources/holidays_by_state.json into public_holiday. Additive only."""
+    from dbrel.holidays_de import ensure_holidays, tracked_years
+
+    with session_scope() as session:
+        _require_schema(session)
+        added = ensure_holidays(session, tracked_years())
+    typer.echo(f"{added:,} holiday rows added.")
+
+
+@app.command("label-holidays")
+def label_holidays() -> None:
+    """(Re)compute trip_stop.is_holiday from public_holiday and each stop's station."""
+    from dbrel.db import get_engine
+    from dbrel.derive.label_holidays import label_trip_stop_holidays
+
+    touched = label_trip_stop_holidays(get_engine())
+    typer.echo(f"{touched:,} trip_stop rows labelled.")
+
+
+@app.command("build-stop-averages")
+def build_stop_averages_cmd() -> None:
+    """(Re)build stop_delay_average from trip_stop. Full rebuild every run."""
+    from dbrel.db import get_engine
+    from dbrel.derive.stop_averages import build_stop_averages
+
+    with session_scope() as session:
+        _require_schema(session)
+        report = build_stop_averages(get_engine(), session)
+    typer.echo(
+        f"{report['rows']:,} average rows built from years {report['years']} "
+        f"in {report['elapsed_s']:.1f}s "
+        f"({report['excluded_no_start_time']:,} trip_stop rows excluded: no derivable start time)."
+    )
+
+
+def _resolve_line_candidates(session, term: str) -> list[int]:
+    """Every line_id whose alias or search_name matches `term`, best weight first.
+
+    National coverage means a short name like 'RE7' or 'S1' is reused by
+    unrelated regional services (NRW's RE7 and Schleswig-Holstein's RE7 are
+    different lines, different service_line rows, same display name) -- so
+    this is a list of candidates, not a single answer. Callers that also know
+    a station (stop_average) disambiguate by which candidate actually calls
+    there; a caller with no such tie-breaker just takes the first.
+    """
+    from dbrel.identity import search_norm
+
+    norm = search_norm(term)
+    alias_hits = session.execute(
+        select(SearchAlias.line_id)
+        .where(SearchAlias.alias_norm == norm, SearchAlias.line_id.isnot(None))
+        .order_by(SearchAlias.weight.desc())
+    ).scalars().all()
+    if alias_hits:
+        return list(alias_hits)
+    return session.execute(
+        select(ServiceLine.id).where(ServiceLine.search_name == norm)
+    ).scalars().all()
+
+
+def _resolve_line(session, term: str) -> int | None:
+    candidates = _resolve_line_candidates(session, term)
+    return candidates[0] if candidates else None
+
+
+def _derive_trip_start_time(source: str, run_key: str | None, first_departure_sec: int | None) -> str | None:
+    """Mirror of derive/stop_averages.py's SQL CASE, for display-time lookups.
+
+    Kept in sync by hand (small, and the two need different hosts -- one is a
+    SQL fragment interpolated into a bulk query, this is a plain Python
+    function over a handful of candidate rows) rather than shared code; see
+    that module's docstring for what each branch means.
+    """
+    if source == "tts" and run_key and len(run_key) >= 10:
+        stamp = run_key[-10:]
+        hh, mm = stamp[6:8], stamp[8:10]
+        if hh.isdigit() and mm.isdigit() and 0 <= int(hh) <= 23 and 0 <= int(mm) <= 59:
+            return f"{hh}:{mm}"
+        return None
+    if source == "gtfs" and first_departure_sec is not None:
+        return f"{(first_departure_sec // 3600) % 24:02d}:{(first_departure_sec // 60) % 60:02d}"
+    return None
+
+
+def _run_labels(session, line_id: int, station_id: int, direction_map: dict[int, int]) -> dict:
+    """(direction, trip_start_time) -> {"origin", "dest", "display_name"} sample.
+
+    One query over this line's trains that call at this station, decoded in
+    Python (cheap -- a handful of trains per station) so `stop-average`'s
+    output can show "-> Kiel Hbf" instead of a bare direction number.
+    """
+    from dbrel.models import Train, Trip, TripStop
+
+    rows = session.execute(
+        select(
+            Train.id, Train.display_name, Train.origin_name, Train.dest_name,
+            Trip.source, Trip.source_run_key, Train.first_departure_sec,
+        )
+        .join(Trip, Trip.train_id == Train.id)
+        .join(TripStop, TripStop.trip_id == Trip.id)
+        .where(Train.line_id == line_id, TripStop.station_id == station_id)
+        .limit(5000)
+    ).all()
+
+    out: dict[tuple[int, str], dict] = {}
+    for train_id, display_name, origin_name, dest_name, source, run_key, first_dep in rows:
+        direction = direction_map.get(train_id)
+        if direction is None:
+            continue
+        start = _derive_trip_start_time(source, run_key, first_dep)
+        if start is None:
+            continue
+        out.setdefault(
+            (direction, start),
+            {"display_name": display_name, "origin": origin_name, "dest": dest_name},
+        )
+    return out
+
+
+@app.command("stop-average")
+def stop_average(
+    line: str = typer.Option(..., "--line", help="line name or number, e.g. 'RE1'"),
+    station: str = typer.Option(..., "--station", help="station name, e.g. 'Duisburg Hbf'"),
+    direction: int | None = typer.Option(None, "--direction", help="0 or 1"),
+    start: str | None = typer.Option(
+        None, "--start", help="the trip's own origin departure, HH:MM (e.g. the 11:00 service)"
+    ),
+    time_: str | None = typer.Option(None, "--time", help="scheduled HH:MM at this station"),
+    holiday: bool | None = typer.Option(
+        None, "--holiday/--no-holiday", help="filter to holiday or non-holiday rows"
+    ),
+) -> None:
+    """Precomputed average arrival/departure delay from stop_delay_average.
+
+    With no --direction/--start/--time/--holiday, prints every matching row so
+    every distinct trip, both directions, and both holiday/non-holiday
+    averages are all visible at once, each with its own sample count.
+    """
+    from dbrel.direction import direction_by_train_id
+    from dbrel.models import StopDelayAverage
+
+    with session_scope() as session:
+        _require_schema(session)
+        candidates = _resolve_line_candidates(session, line)
+        if not candidates:
+            typer.echo(f"no line matches {line!r}")
+            raise typer.Exit(1)
+        station_id = _resolve_station(session, station)
+        if station_id is None:
+            typer.echo(f"no station matches {station!r}")
+            raise typer.Exit(1)
+
+        # Same short name can belong to several unrelated regional lines
+        # (see _resolve_line_candidates) -- prefer whichever candidate
+        # actually has averages at this station.
+        line_id = next(
+            (
+                lid
+                for lid in candidates
+                if session.execute(
+                    select(StopDelayAverage.station_id)
+                    .where(StopDelayAverage.line_id == lid, StopDelayAverage.station_id == station_id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                is not None
+            ),
+            candidates[0],
+        )
+
+        stmt = select(StopDelayAverage).where(
+            StopDelayAverage.line_id == line_id, StopDelayAverage.station_id == station_id
+        )
+        if direction is not None:
+            stmt = stmt.where(StopDelayAverage.direction == direction)
+        if start is not None:
+            stmt = stmt.where(StopDelayAverage.trip_start_time == start)
+        if time_ is not None:
+            stmt = stmt.where(StopDelayAverage.sched_time == time_)
+        if holiday is not None:
+            stmt = stmt.where(StopDelayAverage.is_holiday == int(holiday))
+        stmt = stmt.order_by(
+            StopDelayAverage.direction,
+            StopDelayAverage.trip_start_time,
+            StopDelayAverage.sched_time,
+            StopDelayAverage.is_holiday,
+        )
+        rows = session.execute(stmt).scalars().all()
+
+        if not rows:
+            typer.echo("no averages for that combination -- has build-stop-averages run?")
+            raise typer.Exit(1)
+
+        direction_map = direction_by_train_id(session, line_id)
+        labels = _run_labels(session, line_id, station_id, direction_map)
+
+        for row in rows:
+            day_kind = "HOLIDAY" if row.is_holiday else "WEEKDAY"
+            arr = f"{row.mean_arr_delay_s:+.0f}s" if row.mean_arr_delay_s is not None else "n/a"
+            dep = f"{row.mean_dep_delay_s:+.0f}s" if row.mean_dep_delay_s is not None else "n/a"
+            label = labels.get((row.direction, row.trip_start_time))
+            route = f"  ({label['origin']} -> {label['dest']})" if label else ""
+            typer.echo(
+                f"dir={row.direction} start={row.trip_start_time} sched={row.sched_time} "
+                f"{day_kind:8s}  arr {arr} (n={row.n_arr})   dep {dep} (n={row.n_dep})"
+                f"{route}"
+            )
 
 
 @app.command("build-aliases")

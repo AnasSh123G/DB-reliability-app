@@ -23,9 +23,11 @@ from dbrel.config import (
     TZ,
 )
 from dbrel.ingest.timeutil import format_gtfs_time, local_date, service_date_anchor
-from dbrel.holidays_de import day_type_of, load_holiday_dates
+from dbrel.direction import canonical_order, direction_of, line_trains_by_direction
+from dbrel.holidays_de import load_holiday_dates
 from dbrel.identity import prefix_range, search_norm
 from dbrel.models import (
+    DAY_TYPE_SUNDAY_HOLIDAY,
     DAY_TYPE_WEEKDAY,
     FeedVersion,
     SearchAlias,
@@ -33,6 +35,7 @@ from dbrel.models import (
     Station,
     StationStop,
     Train,
+    Trip,
 )
 
 TT_FEED_KIND = "tt"
@@ -407,17 +410,34 @@ def train_route(
 
     measured: dict[int, tuple] = {}
     if fv_id is not None:
-        for stop, station in session.execute(
+        # A numbered TT train can hold more than one station_stop variant --
+        # e.g. a wing/coupled service some days, solo others (see
+        # StationStop.path_sha1) -- and two variants can each use the same
+        # stop_sequence for a genuinely different stop. Mixing rows from both
+        # would show a route with two variants' stops interleaved, so this
+        # picks ONE variant (whichever the train's most recent trip actually
+        # ran as) and shows only that.
+        variant = session.execute(
+            select(Trip.path_sha1)
+            .where(Trip.train_id == train_id, Trip.path_sha1.isnot(None))
+            .order_by(Trip.service_date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        stop_query = (
             select(StationStop, Station)
             .join(Station, Station.id == StationStop.station_id)
             .where(
                 StationStop.train_id == train_id,
                 StationStop.feed_version_id == fv_id,
             )
-            # A handful of (train, station) pairs carry two scheduled times, one
-            # per timetable variant sharing a stop_sequence; ordering makes which
-            # one survives into `measured` deterministic rather than query-order.
-            .order_by(StationStop.id)
+        )
+        if variant is not None:
+            stop_query = stop_query.where(StationStop.path_sha1 == variant)
+        for stop, station in session.execute(
+            # No trip row (or no digest) to prefer by: fall back to the
+            # previous behaviour of a deterministic, if arbitrary, pick.
+            stop_query.order_by(StationStop.id)
         ).all():
             measured[stop.stop_sequence] = (stop, station)
 
@@ -477,31 +497,22 @@ def train_route(
 
 
 def _canonical_order(trains) -> list[str]:
-    """The longest route on the line, taken as the axis every run travels along."""
-    best: list[str] = []
-    for train in trains:
-        names = [part for part in (train.route_path or "").split("|") if part]
-        if len(names) > len(best):
-            best = names
-    return best
+    """The longest route on the line, taken as the axis every run travels along.
+
+    Delegates to `dbrel.direction`, the module shared with the stop-average
+    build (`derive/stop_averages.py`) so there is exactly one direction
+    heuristic, not two that could drift.
+    """
+    return canonical_order(trains)
 
 
 def _direction_of(train, index: dict[str, int]) -> int:
     """0 if the run travels the canonical way along the line, 1 if it runs back.
 
-    Endpoints alone cannot answer this. RB33's short workings terminate at
-    Mönchengladbach and Herzogenrath rather than at either end of the line, so its
-    six origin/destination pairs describe only two directions. Position along the
-    longest route does answer it, and the short workings sort into the right half
-    without anyone having to enumerate them.
+    See `dbrel.direction.direction_of` for the reasoning; kept as a thin alias
+    here so existing call sites in this module don't need renaming.
     """
-    seen = [index[name] for name in (train.route_path or "").split("|") if name in index]
-    if len(seen) < 2:
-        ends = (index.get(train.origin_name), index.get(train.dest_name))
-        seen = [position for position in ends if position is not None]
-    if len(seen) < 2 or seen[-1] == seen[0]:
-        return 0
-    return 0 if seen[-1] > seen[0] else 1
+    return direction_of(train, index)
 
 
 def _line_trains_by_direction(
@@ -513,19 +524,7 @@ def _line_trains_by_direction(
     direction/station pickers, and the around-this-time lookup all have to agree
     on which train goes which way, so the split lives here once.
     """
-    trains = session.execute(
-        select(Train)
-        .where(Train.line_id == line_id)
-        .order_by(Train.first_departure_sec, Train.train_number)
-        .limit(limit)
-    ).scalars().all()
-
-    canonical = _canonical_order(trains)
-    index = {name: position for position, name in enumerate(canonical)}
-    halves: list[list[Train]] = [[], []]
-    for t in trains:
-        halves[_direction_of(t, index)].append(t)
-    return canonical, halves
+    return line_trains_by_direction(session, line_id, limit=limit)
 
 
 def _direction_label(canonical: list[str], direction: int) -> str:
@@ -578,25 +577,38 @@ def line_stations(session: Session, line_id: int, direction: int) -> list[dict] 
         return []
 
     rows = session.execute(
-        select(StationStop.train_id, StationStop.station_id, StationStop.stop_sequence, Station.name)
+        select(
+            StationStop.train_id,
+            StationStop.path_sha1,
+            StationStop.station_id,
+            StationStop.stop_sequence,
+            Station.name,
+        )
         .join(Station, Station.id == StationStop.station_id)
         .where(StationStop.train_id.in_(train_ids), StationStop.feed_version_id == fv_id)
     ).all()
     if not rows:
         return []
 
-    coverage: dict[int, int] = {}
-    for train_id, _station_id, _seq, _name in rows:
-        coverage[train_id] = coverage.get(train_id, 0) + 1
-    reference_id = max(coverage, key=coverage.get)
+    # A numbered TT train can hold more than one station_stop variant (a
+    # wing/coupled service some days, solo others -- see StationStop.path_sha1),
+    # sharing the same stop_sequence numbers for different physical stops. The
+    # reference is picked as one (train, variant) pair -- whichever covers the
+    # most stations -- so `position` is never built by interleaving two
+    # variants' stop_sequences together.
+    coverage: dict[tuple[int, str | None], int] = {}
+    for train_id, variant, _station_id, _seq, _name in rows:
+        key = (train_id, variant)
+        coverage[key] = coverage.get(key, 0) + 1
+    reference_id, reference_variant = max(coverage, key=coverage.get)
 
     position = {
         station_id: seq
-        for train_id, station_id, seq, _name in rows
-        if train_id == reference_id
+        for train_id, variant, station_id, seq, _name in rows
+        if train_id == reference_id and variant == reference_variant
     }
     names: dict[int, str] = {}
-    for _train_id, station_id, _seq, name in rows:
+    for _train_id, _variant, station_id, _seq, name in rows:
         names.setdefault(station_id, name)
 
     # A station only a non-reference train serves (a short working's own extra
@@ -607,15 +619,42 @@ def line_stations(session: Session, line_id: int, direction: int) -> list[dict] 
     return [{"id": station_id, "name": names[station_id]} for station_id in ordered_ids]
 
 
-def resolve_day_type(session: Session, service_date: str) -> str | None:
+def resolve_day_type(
+    session: Session, service_date: str, *, station: Station | None = None
+) -> str | None:
     """Which average pool a calendar date reads from -- WEEKDAY or SUNDAY_HOLIDAY.
 
-    Checks the public_holiday table (day_type_of), not just the day of the week,
-    so a date entered on the browse widget gets whichever pool the holiday table
-    says it belongs to -- including a date that is a holiday for no reason a
-    calendar rule would know about.
+    Checks the public_holiday table, not just the day of the week, so a date
+    entered on the browse widget gets whichever pool the holiday table says it
+    belongs to -- including a date that is a holiday for no reason a calendar
+    rule would know about.
+
+    Holidays are per-Bundesland now, so this needs to know *whose* holiday
+    calendar to check:
+    - `station` given (with a resolved `state`): that state's calendar.
+    - `station` given but its `state` is NULL, or no `station` at all: only a
+      date observed in all 16 states counts (the one case that's still
+      decidable without knowing a state) -- see `holidays_de.is_holiday`.
     """
-    return day_type_of(service_date, load_holiday_dates(session))
+    from datetime import date as date_cls
+
+    from dbrel.holidays_de import ALL_STATE_CODES
+
+    try:
+        day = date_cls.fromisoformat(service_date)
+    except (ValueError, TypeError):
+        return None
+
+    holiday_set = load_holiday_dates(session)
+    state = station.state if station is not None else None
+    iso = day.isoformat()
+    if day.weekday() == 6:
+        is_hol = True
+    elif state is not None:
+        is_hol = (iso, state) in holiday_set
+    else:
+        is_hol = all((iso, code) in holiday_set for code in ALL_STATE_CODES)
+    return DAY_TYPE_SUNDAY_HOLIDAY if is_hol else DAY_TYPE_WEEKDAY
 
 
 def trips_around(
@@ -741,7 +780,12 @@ def line_detail(
     monitored = (
         dict(
             session.execute(
-                select(StationStop.train_id, func.count(StationStop.id))
+                # DISTINCT station_id, not a row count: a train with more than
+                # one station_stop variant (wing/coupled some days, solo
+                # others -- StationStop.path_sha1) would otherwise have its
+                # monitored-station count added up across variants instead of
+                # reflecting distinct stations actually covered.
+                select(StationStop.train_id, func.count(func.distinct(StationStop.station_id)))
                 .join(Train, Train.id == StationStop.train_id)
                 .where(Train.line_id == line_id, StationStop.feed_version_id == fv_id)
                 .group_by(StationStop.train_id)
