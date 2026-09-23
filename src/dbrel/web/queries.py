@@ -23,7 +23,12 @@ from dbrel.config import (
     TZ,
 )
 from dbrel.ingest.timeutil import format_gtfs_time, local_date, service_date_anchor
-from dbrel.direction import canonical_order, direction_of, line_trains_by_direction
+from dbrel.direction import (
+    canonical_order,
+    direction_by_train_id,
+    direction_of,
+    line_trains_by_direction,
+)
 from dbrel.holidays_de import load_holiday_dates
 from dbrel.identity import prefix_range, search_norm
 from dbrel.models import (
@@ -34,6 +39,7 @@ from dbrel.models import (
     ServiceLine,
     Station,
     StationStop,
+    StopDelayAverage,
     Train,
     Trip,
 )
@@ -67,6 +73,90 @@ def _hhmm(sec: int | None) -> str | None:
     return format_gtfs_time(sec)[:5]
 
 
+def _is_holiday_flag(day_type: str) -> int:
+    return 1 if day_type == DAY_TYPE_SUNDAY_HOLIDAY else 0
+
+
+def _train_trip_start_time(train: Train) -> str | None:
+    """Mod-24 station-local 'HH:MM' proxy for a train pattern's origin departure.
+
+    This is what stop_delay_average keys GTFS-sourced trips on exactly
+    (derive/stop_averages.py falls back to `first_departure_sec % 86400` when a
+    trip has no tts run id), and a fair approximation for the tts-sourced
+    majority: a train number only has more than one true daily start time in
+    rare coupled/split cases (see dbrel-aggregates memory), which these
+    pattern-level query functions can't tell apart since they work off `Train`,
+    not individual dated `Trip` rows.
+    """
+    if train.first_departure_sec is None:
+        return None
+    sec = train.first_departure_sec % 86400
+    return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}"
+
+
+def _sched_time_key(arr_sec: int | None, dep_sec: int | None) -> str | None:
+    """Mod-24 station-local 'HH:MM' for a stop_delay_average lookup key.
+
+    stop_delay_average keys BOTH sides of a stop under ONE row -- built from
+    `COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc)`
+    (derive/stop_averages.py), i.e. the departure's local time if there is
+    one, else the arrival's. So arr_pred and dep_pred for the same stop must
+    look up the SAME sched_time (this function), never each side's own raw
+    time -- only `side` in `_delay_pred` picks which column of that one row
+    to read.
+
+    Deliberately separate from `_hhmm`: display keeps service-day notation (a
+    post-midnight stop shows '25:10', not '01:10', so it's clear which day's
+    run it belongs to), but stop_delay_average's own `sched_time` was built
+    from actual local wall-clock time, so the lookup key needs the wrapped
+    hour, not the service-day one.
+    """
+    sec = dep_sec if dep_sec is not None else arr_sec
+    if sec is None:
+        return None
+    sec = sec % 86400
+    return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}"
+
+
+def _delay_pred(
+    session: Session,
+    *,
+    station_id: int | None,
+    line_id: int | None,
+    direction: int | None,
+    trip_start_time: str | None,
+    sched_time: str | None,
+    is_holiday: int,
+    side: str,
+) -> dict | None:
+    """A stop's historical mean delay from stop_delay_average, or None.
+
+    This is the only "expected"/"predicted" delay figure dbrel has -- there is
+    no live model. None (never a fabricated 0 or an invented interval) means
+    either no matching row, or a row whose relevant side has zero samples --
+    see the web-frontend spec's "No average exists for the stop" requirement.
+    `lo_min`/`hi_min` are set equal to `p50_min`: stop_delay_average has no
+    interval, only a mean, and the JSON shape is kept rather than resurveyed
+    since nothing outside this app depends on it.
+    """
+    if station_id is None or line_id is None or direction is None:
+        return None
+    if trip_start_time is None or sched_time is None:
+        return None
+    row = session.get(
+        StopDelayAverage,
+        (station_id, line_id, direction, trip_start_time, sched_time, is_holiday),
+    )
+    if row is None:
+        return None
+    n = row.n_dep if side == "dep" else row.n_arr
+    mean_s = row.mean_dep_delay_s if side == "dep" else row.mean_arr_delay_s
+    if not n or mean_s is None:
+        return None
+    p50 = round(mean_s / 60)
+    return {"p50_min": p50, "lo_min": p50, "hi_min": p50}
+
+
 # How a mixed result list is ordered once exact matches are out of the way. A
 # line is more useful than any one of its three hundred numbered runs, and an
 # unmonitored station is a dead end, so it sorts last.
@@ -78,6 +168,44 @@ _SUGGEST_KIND_COLUMN = {
     "line": SearchAlias.line_id,
     "train": SearchAlias.train_id,
 }
+
+# A service_line whose "line" is just a generic product code -- IRIS echoing
+# the train category ("RE", "RB", "S", ...) where a real line name belongs. It
+# names no actual route, so it is never offered as a searchable line. Operator
+# codes used as a line name (HSB, MBB, SAB, FEX, SEV, P, ...) are real named
+# services and are deliberately NOT in this set.
+_BARE_CATEGORY_LINES = frozenset(
+    {"RE", "RB", "S", "R", "RS", "E", "EX", "D", "IR", "IRE", "IC", "ICE", "EC", "ECE",
+     "EN", "NJ", "BUS"}
+)
+
+
+def _is_bare_category_line(line: ServiceLine) -> bool:
+    return (line.line or "").strip().upper() in _BARE_CATEGORY_LINES
+
+
+def _line_endpoints(session: Session, line_ids: list[int]) -> dict[int, str]:
+    """'First – Last' station of each line's longest route, for display only.
+
+    Same axis `canonical_order` picks (the route_path with the most stops),
+    so the endpoints shown in search match what the direction picker offers.
+    """
+    if not line_ids:
+        return {}
+    longest: dict[int, list[str]] = {}
+    for line_id, route_path in session.execute(
+        select(Train.line_id, Train.route_path).where(
+            Train.line_id.in_(line_ids), Train.route_path.is_not(None)
+        )
+    ).all():
+        names = [part for part in route_path.split("|") if part]
+        if len(names) > len(longest.get(line_id, [])):
+            longest[line_id] = names
+    return {
+        line_id: f"{names[0]} – {names[-1]}"
+        for line_id, names in longest.items()
+        if len(names) >= 2
+    }
 
 
 def suggest(
@@ -174,6 +302,7 @@ def suggest(
                 .group_by(Train.line_id)
             ).all()
         )
+    line_endpoints = _line_endpoints(session, wanted["line"])
 
     results: list[dict] = []
     for kind, ident in order:
@@ -198,7 +327,7 @@ def suggest(
             )
         elif kind == "line":
             line = lines.get(ident)
-            if line is None:
+            if line is None or _is_bare_category_line(line):
                 continue
             n = run_counts.get(ident, 0)
             # IRIS publishes rail-replacement buses under the line they replace,
@@ -218,6 +347,7 @@ def suggest(
                         else f"Line · {line.operator or '?'} · {n} run{'s' if n != 1 else ''}"
                     ),
                     "replacement_bus": is_bus,
+                    "stops": line_endpoints.get(line.id),
                     "url": f"/line/{line.id}/",
                 }
             )
@@ -234,6 +364,8 @@ def suggest(
                     "id": train.id,
                     "name": train.display_name or f"#{train.id}",
                     "sub": f"Train · {journey}" if journey else "Train",
+                    "stops": " – ".join(x for x in (train.origin_name, train.dest_name) if x)
+                    or None,
                     "url": f"/train/{train.id}/",
                 }
             )
@@ -299,6 +431,14 @@ def station_board(
 
     now = now or int(time.time())
     fv_id = tt_feed_version_id(session)
+    # The board is inherently "right now": resolve today's actual day type
+    # (rather than defaulting to weekday) so its delay averages reflect
+    # whether today is a holiday-timetable day at this station.
+    is_holiday_flag = _is_holiday_flag(
+        resolve_day_type(session, local_date(now).isoformat(), station=station)
+        or DAY_TYPE_WEEKDAY
+    )
+    direction_cache: dict[int, dict[int, int]] = {}
 
     payload = {
         "station": {
@@ -360,6 +500,25 @@ def station_board(
                     # here, and naming its destination would just repeat the
                     # station you are already looking at.
                     terminates = dep_epoch is None and arr_epoch is not None
+
+                    direction = None
+                    if train.line_id is not None:
+                        dirs = direction_cache.get(train.line_id)
+                        if dirs is None:
+                            dirs = direction_by_train_id(session, train.line_id)
+                            direction_cache[train.line_id] = dirs
+                        direction = dirs.get(train.id)
+                    trip_start_time = _train_trip_start_time(train)
+                    sched_time = _sched_time_key(stop.planned_arrival_sec, stop.planned_departure_sec)
+                    pred_kwargs = dict(
+                        station_id=station_id,
+                        line_id=train.line_id,
+                        direction=direction,
+                        trip_start_time=trip_start_time,
+                        sched_time=sched_time,
+                        is_holiday=is_holiday_flag,
+                    )
+
                     entry = {
                         "station_stop_id": stop.id,
                         "train_id": train.id,
@@ -381,7 +540,16 @@ def station_board(
                         "arr": _clock(arr_epoch),
                         "dep": _clock(dep_epoch),
                         "sort_key": dep_epoch or arr_epoch or 0,
-                        "dep_pred": None,
+                        "arr_pred": _delay_pred(
+                            session,
+                            side="arr",
+                            **pred_kwargs,
+                        ),
+                        "dep_pred": _delay_pred(
+                            session,
+                            side="dep",
+                            **pred_kwargs,
+                        ),
                     }
                     calls[key] = entry
 
@@ -407,6 +575,13 @@ def train_route(
         return None
 
     fv_id = tt_feed_version_id(session)
+    is_holiday_flag = _is_holiday_flag(day_type)
+    direction = (
+        direction_by_train_id(session, train.line_id).get(train.id)
+        if train.line_id is not None
+        else None
+    )
+    trip_start_time = _train_trip_start_time(train)
 
     measured: dict[int, tuple] = {}
     if fv_id is not None:
@@ -456,6 +631,7 @@ def train_route(
             "arr": None,
             "dep": None,
             "platform": None,
+            "arr_pred": None,
             "dep_pred": None,
         }
         hit = measured.get(index)
@@ -471,6 +647,30 @@ def train_route(
                     "arr": _hhmm(stop.planned_arrival_sec),
                     "dep": _hhmm(stop.planned_departure_sec),
                     "platform": stop.platform_code,
+                    "arr_pred": _delay_pred(
+                        session,
+                        station_id=station.id,
+                        line_id=train.line_id,
+                        direction=direction,
+                        trip_start_time=trip_start_time,
+                        sched_time=_sched_time_key(
+                            stop.planned_arrival_sec, stop.planned_departure_sec
+                        ),
+                        is_holiday=is_holiday_flag,
+                        side="arr",
+                    ),
+                    "dep_pred": _delay_pred(
+                        session,
+                        station_id=station.id,
+                        line_id=train.line_id,
+                        direction=direction,
+                        trip_start_time=trip_start_time,
+                        sched_time=_sched_time_key(
+                            stop.planned_arrival_sec, stop.planned_departure_sec
+                        ),
+                        is_holiday=is_holiday_flag,
+                        side="dep",
+                    ),
                 }
             )
         stops.append(entry)
@@ -530,7 +730,7 @@ def _line_trains_by_direction(
 def _direction_label(canonical: list[str], direction: int) -> str:
     if not canonical:
         return "all runs"
-    return f"towards {canonical[-1 if direction == 0 else 0]}"
+    return canonical[-1 if direction == 0 else 0]
 
 
 def line_directions(session: Session, line_id: int) -> dict | None:
@@ -739,9 +939,19 @@ def trips_around(
         seen.add(stop.id)
         picked.append((stop, relation))
 
+    is_holiday_flag = _is_holiday_flag(day_type)
     trips = []
     for stop, relation in picked:
         train = trains_by_id[stop.train_id]
+        trip_start_time = _train_trip_start_time(train)
+        pred_kwargs = dict(
+            station_id=station_id,
+            line_id=line_id,
+            direction=direction,
+            trip_start_time=trip_start_time,
+            sched_time=_sched_time_key(stop.planned_arrival_sec, stop.planned_departure_sec),
+            is_holiday=is_holiday_flag,
+        )
         trips.append(
             {
                 "train_id": train.id,
@@ -749,7 +959,8 @@ def trips_around(
                 "url": f"/train/{train.id}/",
                 "sched_arr": _hhmm(stop.planned_arrival_sec),
                 "sched_dep": _hhmm(stop.planned_departure_sec),
-                "dep_pred": None,
+                "arr_pred": _delay_pred(session, side="arr", **pred_kwargs),
+                "dep_pred": _delay_pred(session, side="dep", **pred_kwargs),
                 "relation": relation,
             }
         )
@@ -772,6 +983,7 @@ def line_detail(
     Listing them interleaved by departure time -- which is what a line page did
     before -- hides that, and reads as one service running twice as often.
     """
+    is_holiday_flag = _is_holiday_flag(day_type)
     line = session.get(ServiceLine, line_id)
     if line is None:
         return None
@@ -797,9 +1009,31 @@ def line_detail(
 
     canonical, halves = _line_trains_by_direction(session, line_id, limit=limit)
 
+    # Train.origin_station_id is unreliable -- NULL even for trains whose
+    # origin is a fully tracked station with its own station_stop row (a
+    # backfill/ingest gap, not a "genuinely unmonitored origin" signal). The
+    # earliest monitored stop_sequence per train is the real origin station.
+    origin_station_by_train: dict[int, int] = {}
+    if fv_id is not None:
+        all_train_ids = [t.id for trains in halves for t in trains]
+        if all_train_ids:
+            for train_id, station_id in session.execute(
+                select(StationStop.train_id, StationStop.station_id)
+                .where(
+                    StationStop.train_id.in_(all_train_ids),
+                    StationStop.feed_version_id == fv_id,
+                )
+                .order_by(StationStop.train_id, StationStop.stop_sequence)
+            ).all():
+                origin_station_by_train.setdefault(train_id, station_id)
+
     result_halves: list[list[dict]] = [[], []]
     for direction, trains in enumerate(halves):
         for t in trains:
+            # A run's own "typical delay" is its historical departure delay
+            # from its own origin station -- the only station a per-run (not
+            # per-stop) figure can unambiguously mean.
+            trip_start_time = _train_trip_start_time(t)
             result_halves[direction].append(
                 {
                     "id": t.id,
@@ -815,7 +1049,16 @@ def line_detail(
                     # A short working: runs part of the line rather than all of it.
                     "partial": bool(canonical) and (t.n_stops or 0) < len(canonical),
                     "current": t.id == current_train_id,
-                    "pred": None,
+                    "pred": _delay_pred(
+                        session,
+                        station_id=origin_station_by_train.get(t.id),
+                        line_id=line_id,
+                        direction=direction,
+                        trip_start_time=trip_start_time,
+                        sched_time=trip_start_time,
+                        is_holiday=is_holiday_flag,
+                        side="dep",
+                    ),
                 }
             )
 

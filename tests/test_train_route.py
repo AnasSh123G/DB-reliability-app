@@ -78,8 +78,8 @@ def test_times_land_on_the_right_stop(session):
     assert stops["Aachen Hbf"]["dep"] is None
 
 
-def test_no_forecast_without_an_activated_model(session):
-    """The default fixture state: ml installed or not, no model means no figure."""
+def test_no_forecast_without_average_data(session):
+    """This fixture never populates stop_delay_average, so no figure is shown."""
     stops = {s["name"]: s for s in queries.train_route(session, TRAIN_ID)["stops"]}
     assert stops["Bochum Hbf"]["dep_pred"] is None
     assert stops["Duisburg Hbf"]["dep_pred"] is None
@@ -107,7 +107,7 @@ def test_line_detail_lists_its_runs(session):
     assert runs[0]["name"] == "NX 26811"
     assert runs[0]["n_monitored"] == 2
     assert runs[0]["url"] == f"/train/{TRAIN_ID}/"
-    assert runs[0]["pred"] is None  # no model in this test
+    assert runs[0]["pred"] is None  # no stop_delay_average rows in this fixture
 
 
 def test_replacement_bus_is_flagged(session):

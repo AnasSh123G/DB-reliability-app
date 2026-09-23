@@ -1,0 +1,22 @@
+## Requested changes
+- [x] Preserve Train and Journey tab contents while switching between them
+- [x] Show the last two services at or before the chosen time and the first service after it
+- [x] Show train suggestions matching the typed prefix
+- [x] Provide two directions for every train
+- [x] Limit stop choices to the selected train and direction
+- [x] Make train search the default screen
+- [x] Add line, direction, stop, and time controls
+- [x] Show stop-level scheduled and expected timings before opening the full route
+- [x] Add search by train name/number
+- [x] Show a compact full stop list with timings
+- [x] Open the same stop list from station-search train results
+- [x] Replace glass/gradient styling with minimal solid fills
+- [x] Remove risk label and delay distribution graph
+- [x] Restore smooth squircle-style corners
+- [x] Show separate expected delay indicators for each station arrival and departure
+- [x] Color delays under 6 minutes green, 6–14 yellow, and 15+ red
+- [x] Replace the blue-toned background with neutral dark gray
+- [x] Remove “Plan” from scheduled timing columns
+- [x] Add a German/English language toggle
+- [x] Darken the green accent
+- [x] Remove the Verbindung/Journey tab entirely

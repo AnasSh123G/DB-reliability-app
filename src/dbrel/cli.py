@@ -1126,12 +1126,41 @@ def serve(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8000),
     debug: bool = typer.Option(False),
+    frontend: bool = typer.Option(
+        True, help="Also spawn the built bahn-buddy-predict frontend as a subprocess."
+    ),
 ) -> None:
-    """Run the web UI."""
+    """Run the web UI.
+
+    One command, one port: the frontend (bahn-buddy-predict) is a separate
+    built Node server, but the operator never runs or reaches it directly --
+    this spawns it as a subprocess and Django's own frontend_proxy view
+    forwards anything that isn't a /api/* request to it. See design.md,
+    decision 6 of the replace-web-ui-with-bahn-buddy change.
+    """
+    import atexit
     import os
+    import subprocess
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "dbrel.web.settings")
     os.environ["DBREL_WEB_DEBUG"] = "1" if debug else "0"
+
+    if frontend:
+        from dbrel.config import FRONTEND_PORT, FRONTEND_SERVER_ENTRY
+
+        if not FRONTEND_SERVER_ENTRY.exists():
+            typer.echo(
+                f"frontend build not found at {FRONTEND_SERVER_ENTRY} -- build it first "
+                "('cd bahn-buddy-predict && npm install && npm run build'), or pass "
+                "--no-frontend to serve the API alone"
+            )
+            raise typer.Exit(1)
+        frontend_process = subprocess.Popen(
+            ["node", str(FRONTEND_SERVER_ENTRY)],
+            env={**os.environ, "PORT": str(FRONTEND_PORT)},
+        )
+        atexit.register(frontend_process.terminate)
+
     try:
         from django.core.management import execute_from_command_line
     except ImportError:

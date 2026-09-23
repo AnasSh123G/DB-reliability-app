@@ -88,7 +88,7 @@ def session():
 def test_directions_are_labelled_by_where_they_end_up(session):
     result = queries.line_directions(session, LINE_ID)
     labels = {d["label"]: d["n_runs"] for d in result["directions"]}
-    assert labels == {"towards Duisburg Hbf": 3, "towards Aachen Hbf": 1}
+    assert labels == {"Duisburg Hbf": 3, "Aachen Hbf": 1}
 
 
 def test_unknown_line_directions_is_none(session):
@@ -176,9 +176,11 @@ def test_scheduled_times_are_the_ones_at_the_chosen_station(session):
     assert re11["sched_dep"] == "12:00"
 
 
-def test_no_forecast_without_an_activated_model(session):
+def test_no_forecast_without_average_data(session):
+    # This fixture never populates stop_delay_average, so every trip's
+    # dep_pred/arr_pred must come back None rather than a fabricated value.
     trips = around(session, "14:00")["trips"]
-    assert all(t["dep_pred"] is None for t in trips)
+    assert all(t["dep_pred"] is None and t["arr_pred"] is None for t in trips)
 
 
 def test_unknown_line_or_station_is_none(session):

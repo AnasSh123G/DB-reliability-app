@@ -1,20 +1,40 @@
-"""Two pages and two JSON endpoints.
+"""JSON endpoints, plus a catch-all that proxies to the frontend's own server.
 
-Every view opens read_scope(), which cannot commit. The station page is rendered
-server-side so it works with JavaScript off and shows no loading flash; the same
-payload is available as JSON so the page can refresh itself in place.
+Every JSON view opens read_scope(), which cannot commit. Rendering (search,
+station board, train route, line detail) now lives entirely in the
+`bahn-buddy-predict` frontend, which `dbrel serve` runs as its own subprocess
+(see cli.py) -- `frontend_proxy` is the other half of that: any request the
+JSON patterns in urls.py don't match is forwarded to it, so the operator still
+sees one command and one port (see design.md, decision 6 of
+replace-web-ui-with-bahn-buddy).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from django.http import Http404, JsonResponse
-from django.shortcuts import render
+import httpx
+from django.http import HttpResponse, JsonResponse
 
-from dbrel.config import BOARD_BACK_S, BOARD_FWD_S
+from dbrel.config import BOARD_BACK_S, BOARD_FWD_S, FRONTEND_PORT, FRONTEND_PROXY_TIMEOUT_S
 from dbrel.db import read_scope
 from dbrel.web import queries
+
+# Headers that describe THIS hop's transport, not the proxied response's actual
+# content -- forwarding them verbatim would mislead the client (e.g. a stale
+# content-length after Django's own gzip middleware re-encodes the body).
+_HOP_BY_HOP = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "content-encoding",
+    "content-length",
+}
 
 
 def _window(request) -> tuple[int, int]:
@@ -32,10 +52,6 @@ def _window(request) -> tuple[int, int]:
     return minutes("back", BOARD_BACK_S), minutes("fwd", BOARD_FWD_S)
 
 
-def index(request):
-    return render(request, "dbrel/search.html")
-
-
 def suggest(request):
     term = request.GET.get("q", "")
     only = request.GET.get("only")
@@ -46,29 +62,6 @@ def suggest(request):
     return JsonResponse({"query": term, "results": results})
 
 
-def station(request, station_id: int):
-    back_s, fwd_s = _window(request)
-    with read_scope() as session:
-        board = queries.station_board(session, station_id, back_s=back_s, fwd_s=fwd_s)
-    if board is None:
-        raise Http404(f"no station {station_id}")
-    return render(request, "dbrel/station.html", {"board": board})
-
-
-def train(request, train_id: int):
-    with read_scope() as session:
-        route = queries.train_route(session, train_id)
-        if route is None:
-            raise Http404(f"no train {train_id}")
-        line = route["train"]["line"]
-        detail = (
-            queries.line_detail(session, line["id"], current_train_id=train_id)
-            if line
-            else None
-        )
-    return render(request, "dbrel/train.html", {"route": route, "detail": detail})
-
-
 def train_route(request, train_id: int):
     with read_scope() as session:
         route = queries.train_route(session, train_id)
@@ -77,12 +70,12 @@ def train_route(request, train_id: int):
     return JsonResponse(route)
 
 
-def line(request, line_id: int):
+def line_detail(request, line_id: int):
     with read_scope() as session:
         detail = queries.line_detail(session, line_id)
     if detail is None:
-        raise Http404(f"no line {line_id}")
-    return render(request, "dbrel/line.html", {"detail": detail})
+        return JsonResponse({"error": f"no line {line_id}"}, status=404)
+    return JsonResponse(detail)
 
 
 def station_board(request, station_id: int):
@@ -145,3 +138,43 @@ def line_trips_around(request, line_id: int):
     result["date"] = date_str
     result["day_type"] = day_type
     return JsonResponse(result)
+
+
+def frontend_proxy(request, path: str = ""):
+    """Forward anything the JSON patterns above didn't match to the frontend.
+
+    `dbrel serve` spawns the frontend's own built server as a subprocess on
+    `FRONTEND_PORT` (see cli.py); this streams the response back rather than
+    redirecting, so the operator's browser only ever talks to one port.
+    """
+    url = f"http://127.0.0.1:{FRONTEND_PORT}/{path}"
+    query_string = request.META.get("QUERY_STRING")
+    if query_string:
+        url = f"{url}?{query_string}"
+
+    # host/content-length describe THIS request's framing, not the proxied
+    # one -- httpx recomputes content-length from `content=` itself, and a
+    # stale forwarded value conflicts with that (httpx.LocalProtocolError).
+    forward_headers = {
+        k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")
+    }
+    try:
+        upstream = httpx.request(
+            request.method,
+            url,
+            content=request.body,
+            headers=forward_headers,
+            timeout=FRONTEND_PROXY_TIMEOUT_S,
+        )
+    except httpx.HTTPError:
+        return HttpResponse(
+            "The frontend server isn't reachable yet -- give it a moment and reload.",
+            status=502,
+            content_type="text/plain",
+        )
+
+    response = HttpResponse(upstream.content, status=upstream.status_code)
+    for key, value in upstream.headers.items():
+        if key.lower() not in _HOP_BY_HOP:
+            response[key] = value
+    return response

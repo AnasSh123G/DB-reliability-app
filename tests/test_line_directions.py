@@ -96,7 +96,7 @@ def test_a_line_has_exactly_two_halves(session):
 
 def test_each_half_is_named_for_the_end_it_runs_to(session):
     labels = {d["label"] for d in queries.line_detail(session, LINE_ID)["directions"]}
-    assert labels == {"towards Aachen Hbf", "towards Duisburg Hbf"}
+    assert labels == {"Aachen Hbf", "Duisburg Hbf"}
 
 
 def test_short_workings_are_marked_as_partial(session):
@@ -127,7 +127,7 @@ def run_named(session, name: str, **kwargs) -> dict:
     return next(r for d in detail["directions"] for r in d["runs"] if r["name"] == name)
 
 
-def test_no_forecast_without_an_activated_model(session):
+def test_no_forecast_without_average_data(session):
     assert run_named(session, "RB 10324")["pred"] is None
 
 

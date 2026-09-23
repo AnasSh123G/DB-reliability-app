@@ -63,9 +63,9 @@ def board_calls(session, **kwargs):
     return queries.station_board(session, STATION_ID, now=NOW, **kwargs)["calls"]
 
 
-def test_no_forecast_anywhere_without_an_activated_model(session):
+def test_no_forecast_anywhere_without_average_data(session):
     calls = board_calls(session)
-    assert calls and all(c["dep_pred"] is None for c in calls)
+    assert calls and all(c["dep_pred"] is None and c["arr_pred"] is None for c in calls)
 
 
 def test_unknown_station_is_none(session):

@@ -188,3 +188,13 @@ COLLECT_MAX_FAILED_CYCLES = 5
 # range, and equal to SERVICE_DATE_CLOSE_S so the window we check for poll coverage
 # is exactly the period over which the grades are still allowed to change.
 TT_LINGER_S = int(os.environ.get("DBREL_TT_LINGER_S", 6 * 3600))
+
+# --- Frontend (bahn-buddy-predict) ------------------------------------------
+# `dbrel serve` spawns the built TanStack Start server as its own subprocess
+# and Django proxies non-API requests to it (see design.md, decision 6 of
+# replace-web-ui-with-bahn-buddy) -- there is no reverse proxy in front of
+# this project to extend; `dbrel serve` is the one command/port it has.
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "bahn-buddy-predict"
+FRONTEND_SERVER_ENTRY = FRONTEND_DIR / ".output" / "server" / "index.mjs"
+FRONTEND_PORT = int(os.environ.get("DBREL_FRONTEND_PORT", "8901"))
+FRONTEND_PROXY_TIMEOUT_S = 10.0
