@@ -68,7 +68,11 @@ class DelayModel:
             )
         return cls(artifact)
 
-    def predict_calls(self, session: Session, calls: list[ScheduledCall]) -> list[Prediction]:
+    def predict_calls(self, session: Session, calls: list[ScheduledCall], *,
+                      direction=direction_for) -> list[Prediction]:
+        """`direction(session, train)` defaults to `direction_for`; a caller predicting many
+        trains can pass a cached equivalent (web.queries._ModelDirectionCache.get), which
+        computes each line's split once instead of once per train."""
         if not calls:
             return []
         holiday_set = load_holiday_dates(session)
@@ -76,7 +80,7 @@ class DelayModel:
         raw: dict[str, list] = {name: [] for name in RAW_COLUMNS}
         for call in calls:
             if call.train.id not in directions:
-                directions[call.train.id] = direction_for(session, call.train)
+                directions[call.train.id] = direction(session, call.train)
             row = call.raw(direction=directions[call.train.id], holiday_set=holiday_set)
             for name in RAW_COLUMNS:
                 raw[name].extend(row[name])

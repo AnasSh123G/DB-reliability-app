@@ -2,11 +2,12 @@
 // with its own visual identity (see openspec/changes/redesign-v2-visual-identity/design.md).
 // The desktop board uses `Table`; phone width keeps a stacked list, since `Table` doesn't
 // reflow.
-import { MapPin } from "lucide-react";
+import { ArrowLeft, MapPin } from "lucide-react";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -134,26 +135,39 @@ export function BoardV2({ stationId, locale }: Props) {
       role="region"
       aria-labelledby="board-heading"
     >
-      <div className="border-b border-line pb-5">
-        <p className="text-xs text-fog">{t.stationBoard}</p>
-        <h2 id="board-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
-          {board.station.name}
-          {board.station.eva && (
-            <span className="ml-2 align-middle font-mono text-xs font-normal text-fog">
-              EVA {board.station.eva}
-            </span>
+      <div className="flex items-start gap-3 border-b border-line pb-5">
+        <Button
+          variant="ghost"
+          size="icon"
+          asChild
+          aria-label={t.back}
+          className="rounded-md text-fog hover:bg-ink hover:text-paper"
+        >
+          <Link {...v2Paths.home()}>
+            <ArrowLeft />
+          </Link>
+        </Button>
+        <div>
+          <p className="text-xs text-fog">{t.stationBoard}</p>
+          <h2 id="board-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
+            {board.station.name}
+            {board.station.eva && (
+              <span className="ml-2 align-middle font-mono text-xs font-normal text-fog">
+                EVA {board.station.eva}
+              </span>
+            )}
+          </h2>
+          <p className="mt-1 text-xs text-fog">
+            {t.windowLabel}: {board.window.from} – {board.window.to} ({board.window.date})
+          </p>
+          {!board.station.tracked && (
+            <Alert className="mt-2 border-line bg-ink">
+              <AlertDescription className="text-xs text-amber">
+                {t.notTrackedStation}
+              </AlertDescription>
+            </Alert>
           )}
-        </h2>
-        <p className="mt-1 text-xs text-fog">
-          {t.windowLabel}: {board.window.from} – {board.window.to} ({board.window.date})
-        </p>
-        {!board.station.tracked && (
-          <Alert className="mt-2 border-line bg-ink">
-            <AlertDescription className="text-xs text-amber">
-              {t.notTrackedStation}
-            </AlertDescription>
-          </Alert>
-        )}
+        </div>
       </div>
 
       {board.calls.length > 0 ? (

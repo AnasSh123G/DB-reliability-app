@@ -47,8 +47,10 @@ app = typer.Typer(add_completion=False, help="Local database of German train pun
 # The ml sub-app imports its heavy dependencies inside each command, so
 # registering it here costs nothing on a machine without the ml extra.
 from dbrel.ml.cli import ml_app  # noqa: E402
+from dbrel.study.cli import study_app  # noqa: E402
 
 app.add_typer(ml_app, name="ml")
+app.add_typer(study_app, name="study")
 
 
 def _require_schema(session) -> None:

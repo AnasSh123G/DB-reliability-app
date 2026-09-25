@@ -1,0 +1,208 @@
+<title>Live Prediction Misses</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --page: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --tabm: #2a78d6; --avg: #eb6834;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19; --page: #0d0d0d; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+      --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+      --tabm: #3987e5; --avg: #d95926;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --tabm: #3987e5; --avg: #d95926;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--page); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 28px 16px 48px; }
+  .wrap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+  .num { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  h1 { font-size: 21px; font-weight: 600; margin: 0 0 6px; text-wrap: balance; }
+  header p { margin: 0; color: var(--ink-2); max-width: 64ch; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg button { font: inherit; font-size: 12.5px; border: 0; background: transparent; color: var(--ink-2); padding: 5px 10px; border-radius: 6px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+  .seg button:focus-visible { outline: 2px solid var(--tabm); outline-offset: 1px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 10px; height: 10px; border-radius: 2px; }
+  svg { width: 100%; height: auto; display: block; }
+  .grid { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
+  .base { stroke: var(--baseline); stroke-width: 1; shape-rendering: crispEdges; }
+  .tick { fill: var(--ink-muted); font-size: 10.5px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .bin { fill: var(--ink-2); font-size: 11.5px; font-weight: 500; }
+  .lbl { fill: var(--ink-2); font-size: 10px; font-weight: 600; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .axis-title { fill: var(--ink-muted); font-size: 11px; }
+  .hit { fill: transparent; cursor: pointer; }
+  .caption { color: var(--ink-muted); font-size: 12px; margin: 8px 0 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--grid); }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { color: var(--ink-muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom-color: var(--baseline); }
+  tbody tr:last-child td { border-bottom: 0; }
+  .tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--surface); border-radius: 8px; padding: 7px 10px; font-size: 12px; opacity: 0; transition: opacity .1s; z-index: 5; }
+  .tip.show { opacity: 1; }
+  .tip b { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .fact { background: var(--surface); padding: 12px 14px; }
+  .fact .k { color: var(--ink-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .fact .v { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  .fact .s { color: var(--ink-2); font-size: 12px; }
+  @media (max-width: 560px) { .facts { grid-template-columns: repeat(2, 1fr); } }
+  @media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>How far off were TabM and the stored average?</h1>
+    <p id="intro"></p>
+  </header>
+
+  <div class="facts" id="facts" aria-label="How late the trains actually were"></div>
+
+  <section class="card">
+    <div class="head">
+      <div class="seg" role="group" aria-label="Which stops">
+        <button type="button" id="btn-both" data-side="both" aria-pressed="true">All stops</button>
+        <button type="button" id="btn-dep" data-side="dep" aria-pressed="false">Departures</button>
+        <button type="button" id="btn-arr" data-side="arr" aria-pressed="false">Arrivals</button>
+      </div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--tabm)"></i>TabM</span>
+        <span><i class="sw" style="background:var(--avg)"></i>Stored average</span>
+      </div>
+    </div>
+    <svg id="chart" viewBox="0 0 680 360" role="img" aria-label="Share of stops by how many minutes each prediction was off"></svg>
+    <p class="caption" id="caption"></p>
+  </section>
+
+  <section class="card">
+    <table>
+      <thead><tr><th>Minutes off</th><th>TabM stops</th><th>TabM share</th><th>Average stops</th><th>Average share</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </section>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+(function () {
+  "use strict";
+  var BINS = ["0–1", "1–3", "3–5", "5–10", "10–20", "20+"];
+  var DATA = __DATA__;
+  var SERIES = [["tabm", "TabM", "--tabm"], ["average", "Stored average", "--avg"]];
+  var NS = "http://www.w3.org/2000/svg";
+  var W = 680, H = 360, M = { t: 24, r: 12, b: 48, l: 44 };
+  var pw = W - M.l - M.r, ph = H - M.t - M.b, YMAX = 50;
+  var svg = document.getElementById("chart"), tip = document.getElementById("tip");
+
+  function el(tag, a) { var e = document.createElementNS(NS, tag); for (var k in a) e.setAttribute(k, a[k]); return e; }
+  function y(v) { return M.t + ph * (1 - v / YMAX); }
+  function pct(v) { return v >= 10 ? Math.round(v) + "" : v.toFixed(1); }
+  function color(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+  function showTip(e, bin, name, count, share) {
+    tip.textContent = "";
+    var h = document.createElement("div"); h.textContent = bin + " min off · " + name;
+    var v = document.createElement("b"); v.textContent = share.toFixed(1) + "% (" + count.toLocaleString("en-US") + " stops)";
+    tip.appendChild(h); tip.appendChild(v); tip.classList.add("show"); moveTip(e);
+  }
+  function moveTip(e) {
+    var r = e.target.getBoundingClientRect ? e.target.getBoundingClientRect() : null;
+    var x = e.clientX || (r ? r.left + r.width / 2 : 0), yy = e.clientY || (r ? r.top : 0);
+    tip.style.left = Math.min(x + 12, window.innerWidth - 230) + "px"; tip.style.top = Math.max(yy - 48, 8) + "px";
+  }
+  function hideTip() { tip.classList.remove("show"); }
+
+  function draw(side) {
+    var d = DATA[side];
+    svg.textContent = "";
+    [0, 10, 20, 30, 40, 50].forEach(function (v) {
+      svg.appendChild(el("line", { "class": v ? "grid" : "base", x1: M.l, x2: W - M.r, y1: y(v), y2: y(v) }));
+      var t = el("text", { "class": "tick", x: M.l - 8, y: y(v) + 3, "text-anchor": "end" }); t.textContent = v + "%"; svg.appendChild(t);
+    });
+    var gw = pw / BINS.length, bw = 24, gap = 2;
+    BINS.forEach(function (bin, i) {
+      var cx = M.l + gw * i + gw / 2;
+      SERIES.forEach(function (s, j) {
+        var count = d[s[0]][i], share = 100 * count / d.n;
+        var x = cx - (bw * 2 + gap) / 2 + j * (bw + gap), top = y(share), h = Math.max(M.t + ph - top, 1);
+        var r = 4, bottom = M.t + ph;
+        var path = "M" + x + "," + bottom + "V" + (top + r) + "Q" + x + "," + top + " " + (x + r) + "," + top +
+          "H" + (x + bw - r) + "Q" + (x + bw) + "," + top + " " + (x + bw) + "," + (top + r) + "V" + bottom + "Z";
+        if (h < r * 2) path = "M" + x + "," + bottom + "V" + top + "H" + (x + bw) + "V" + bottom + "Z";
+        var bar = el("path", { d: path, fill: color(s[2]) });
+        svg.appendChild(bar);
+        var lbl = el("text", { "class": "lbl", x: x + bw / 2, y: top - 5, "text-anchor": "middle" });
+        lbl.textContent = pct(share); svg.appendChild(lbl);
+        var hit = el("rect", { "class": "hit", x: x - 1, y: M.t, width: bw + 2, height: ph, tabindex: 0,
+          "aria-label": s[1] + ", " + bin + " minutes off: " + share.toFixed(1) + "% of stops" });
+        hit.addEventListener("pointerenter", function (e) { showTip(e, bin, s[1], count, share); bar.style.filter = "brightness(1.12)"; });
+        hit.addEventListener("pointermove", moveTip);
+        hit.addEventListener("pointerleave", function () { hideTip(); bar.style.filter = ""; });
+        hit.addEventListener("focus", function (e) { showTip(e, bin, s[1], count, share); });
+        hit.addEventListener("blur", hideTip);
+        svg.appendChild(hit);
+      });
+      var b = el("text", { "class": "bin", x: cx, y: M.t + ph + 18, "text-anchor": "middle" }); b.textContent = bin; svg.appendChild(b);
+    });
+    var at = el("text", { "class": "axis-title", x: M.l + pw / 2, y: H - 6, "text-anchor": "middle" });
+    at.textContent = "Minutes between the prediction and the real delay"; svg.appendChild(at);
+
+    document.getElementById("caption").textContent = "Share of " + d.n.toLocaleString("en-US") +
+      " stops in each range. Labels are percent. Both methods are measured on the same stops.";
+    var tb = document.getElementById("tbody"); tb.textContent = "";
+    BINS.forEach(function (bin, i) {
+      var tr = document.createElement("tr");
+      [bin, d.tabm[i].toLocaleString("en-US"), (100 * d.tabm[i] / d.n).toFixed(1) + "%",
+       d.average[i].toLocaleString("en-US"), (100 * d.average[i] / d.n).toFixed(1) + "%"].forEach(function (v, k) {
+        var td = document.createElement("td"); if (k) td.className = "num"; td.textContent = v; tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+  }
+
+  var buttons = document.querySelectorAll(".seg button");
+  buttons.forEach(function (b) {
+    b.addEventListener("click", function () {
+      buttons.forEach(function (o) { o.setAttribute("aria-pressed", String(o === b)); });
+      draw(b.getAttribute("data-side"));
+    });
+  });
+  function fmt(n) { return n.toLocaleString("en-US"); }
+  document.getElementById("intro").textContent = DATA.meta.stations + " stations were queried live, " +
+    DATA.meta.when + ". For each train that had already arrived or departed in the previous two hours, " +
+    "this compares TabM's guess and the stored average with the delay DB actually recorded, on the " +
+    fmt(DATA.both.n) + " stops that have both predictions.";
+  var R = DATA.real, facts = document.getElementById("facts");
+  [["More than 5 min late", fmt(R.over5), (100 * R.over5 / R.n).toFixed(0) + "% of " + fmt(R.n) + " stops"],
+   ["More than 15 min late", fmt(R.over15), (100 * R.over15 / R.n).toFixed(1) + "%"],
+   ["More than 30 min late", fmt(R.over30), (100 * R.over30 / R.n).toFixed(1) + "%"],
+   ["Latest train", Math.round(R.max) + " min", fmt(R.over60) + " were over an hour late"]].forEach(function (f) {
+    var d = document.createElement("div"); d.className = "fact";
+    [["k", f[0]], ["v num", f[1]], ["s", f[2]]].forEach(function (p) {
+      var e = document.createElement("div"); e.className = p[0]; e.textContent = p[1]; d.appendChild(e);
+    });
+    facts.appendChild(d);
+  });
+  draw("both");
+  if (window.matchMedia) {
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    if (mq.addEventListener) mq.addEventListener("change", function () {
+      var on = document.querySelector('.seg button[aria-pressed="true"]'); draw(on.getAttribute("data-side"));
+    });
+  }
+})();
+</script>
