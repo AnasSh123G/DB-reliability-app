@@ -20,6 +20,7 @@ urlpatterns = [
          name="corridor-stations"),
     path("api/corridor/<int:train_id>/around", views.corridor_trips_around,
          name="corridor-trips-around"),
+    path("api/model/<str:stamp>/model.onnx", views.model_file, name="model-file"),
     # Everything else belongs to the bahn-buddy-predict frontend, which dbrel
     # serve runs as its own subprocess -- must stay last, since it matches any
     # path none of the /api/* patterns above already claimed.

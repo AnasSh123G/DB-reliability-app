@@ -11,6 +11,7 @@ dependencies = [
     "alembic>=1.19.2",
     "gtfs-realtime-bindings>=2.2.0",
     "httpx>=0.28.1",
+    "onnxruntime>=1.30.0",
     "rich>=13.0",
     "sqlalchemy>=2.0",
     "typer>=0.27.2",
@@ -26,9 +27,16 @@ web = [
 # one more: lightgbm is 3.5 MB but drags in numpy and scipy, which together are
 # 52 MB — ten times everything else this project installs. A collector box has
 # no reason to carry that, so nothing outside dbrel/ml may import them.
+# catboost, xgboost and optuna are the other two bake-off candidates and the
+# tuner; together they add a few hundred MB more, which only sharpens the point.
+# xgboost from PyPI is CPU/CUDA only: scripts/build_xgboost_rocm.sh replaces it
+# with a ROCm build for the local AMD GPU, and a later `uv sync` undoes that.
 ml = [
     "lightgbm>=4.7",
     "numpy>=2.0",
+    "catboost>=1.2",
+    "xgboost>=2.1",
+    "optuna>=4",
 ]
 # Backfilling from the public archive of IRIS responses means reading its parquet
 # partitions, and the project otherwise has no columnar reader. pyarrow is ~40 MB,

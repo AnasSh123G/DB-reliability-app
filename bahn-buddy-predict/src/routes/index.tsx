@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { AppShell, useAppChrome } from "@/components/AppShell";
-import { TrainSearch } from "@/components/TrainSearch";
+import { useAppChrome } from "@/components/AppShell";
+import { SearchV2 } from "@/components/v2/SearchV2";
+import { ShellV2 } from "@/components/v2/ShellV2";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -14,21 +15,22 @@ export const Route = createFileRoute("/")({
       { property: "og:title", content: "BahnPredict — German Train Delay Averages" },
       {
         property: "og:description",
-        content: "Historical delay averages for German trains — expected delay, timings, and train info.",
+        content:
+          "Historical delay averages for German trains — expected delay, timings, and train info.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: Index,
+  component: IndexV2,
 });
 
-function Index() {
+function IndexV2() {
   const { locale, setLocale, isDark, setIsDark } = useAppChrome();
 
   return (
-    <AppShell locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
-      <TrainSearch locale={locale} />
-    </AppShell>
+    <ShellV2 locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
+      <SearchV2 locale={locale} />
+    </ShellV2>
   );
 }

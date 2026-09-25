@@ -9,6 +9,16 @@ export interface DelayPred {
   hi_min: number;
 }
 
+// One call's already-encoded input for the current delay model (see
+// web/queries.py's _model_input) -- the exact `cat`/`num` tensors the ONNX
+// model expects. Never run through the model server-side; the browser does
+// that (see lib/tabm.ts). One input covers both arr and dep, which side's
+// prediction is shown is gated on whether that side has a scheduled time.
+export interface ModelInput {
+  cat: number[];
+  num: number[];
+}
+
 export interface SuggestResult {
   kind: "station" | "line" | "train";
   id: number;
@@ -43,11 +53,13 @@ export interface StationBoardCall {
   dep: string | null;
   arr_pred: DelayPred | null;
   dep_pred: DelayPred | null;
+  model_input: ModelInput | null;
 }
 
 export interface StationBoard {
   station: { id: number; name: string; eva: number | null; tracked: boolean };
   window: { from: string | null; to: string | null; date: string };
+  model_stamp: string | null;
   calls: StationBoardCall[];
 }
 
@@ -61,6 +73,7 @@ export interface TrainRouteStop {
   platform: string | null;
   arr_pred: DelayPred | null;
   dep_pred: DelayPred | null;
+  model_input: ModelInput | null;
   url?: string;
 }
 
@@ -79,6 +92,7 @@ export interface TrainRoute {
     replacement_bus: boolean;
   };
   n_monitored: number;
+  model_stamp: string | null;
   stops: TrainRouteStop[];
 }
 
@@ -106,6 +120,7 @@ export interface TripAround {
   sched_dep: string | null;
   arr_pred: DelayPred | null;
   dep_pred: DelayPred | null;
+  model_input: ModelInput | null;
   relation: "before" | "after";
 }
 
@@ -113,6 +128,7 @@ export interface TripsAroundResponse {
   line: { id: number; name: string };
   direction: 0 | 1;
   station: { id: number; name: string };
+  model_stamp: string | null;
   trips: TripAround[];
   date?: string;
   day_type?: string;
@@ -132,6 +148,7 @@ export interface LineRun {
   partial: boolean;
   current: boolean;
   pred: DelayPred | null;
+  model_input: ModelInput | null;
 }
 
 export interface LineDetail {
@@ -143,6 +160,7 @@ export interface LineDetail {
     replacement_bus: boolean;
   };
   n_runs: number;
+  model_stamp: string | null;
   directions: { label: string; n_runs: number; runs: LineRun[] }[];
 }
 

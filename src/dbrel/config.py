@@ -108,18 +108,14 @@ TT_PLAN_LEAD_HOURS = int(os.environ.get("DBREL_TT_PLAN_LEAD_HOURS", "3"))
 RAIL_EVA_RANGE = range(8_000_000, 8_100_000)
 
 # --- Delay model -----------------------------------------------------------
-# Bump when FEATURE_SPEC or the label definition changes. A booster indexes its
-# features positionally, so a model trained against a different spec would not
+# Bump when the feature set or the label definition changes. A model indexes its
+# features positionally, so a model trained against a different set would not
 # fail — it would predict confidently from the wrong columns. The version is a
 # directory name under data/models, which makes older models unreachable rather
-# than merely out of date.
-ML_MODEL_VERSION = 1
-
-# How much better than the historical average a model must be before it is
-# allowed to serve predictions, as a share of the baseline's pinball loss. The
-# baseline is known to be hard to beat; without this a run that lost by a hair
-# would still be activated and quietly make the app worse.
-ML_MIN_IMPROVEMENT = 0.02
+# than merely out of date. v1 was the pipeline deleted on 2026-09-22.
+ML_MODEL_VERSION = 2
+ML_DATA_DIR = DATA_DIR / "ml"
+ML_MODELS_DIR = DATA_DIR / "models" / f"v{ML_MODEL_VERSION}"
 
 # --- Station board ---------------------------------------------------------
 # A service day runs past midnight; GTFS seconds-of-day exceed 86400 accordingly.

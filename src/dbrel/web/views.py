@@ -11,13 +11,21 @@ replace-web-ui-with-bahn-buddy).
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import date, datetime
 
 import httpx
-from django.http import HttpResponse, JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse
 
-from dbrel.config import BOARD_BACK_S, BOARD_FWD_S, FRONTEND_PORT, FRONTEND_PROXY_TIMEOUT_S
+from dbrel.config import (
+    BOARD_BACK_S,
+    BOARD_FWD_S,
+    FRONTEND_PORT,
+    FRONTEND_PROXY_TIMEOUT_S,
+    ML_MODELS_DIR,
+)
 from dbrel.db import read_scope
+from dbrel.ml.bakeoff import current_artifact
 from dbrel.web import queries
 
 # Headers that describe THIS hop's transport, not the proxied response's actual
@@ -154,12 +162,52 @@ def _trips_around_response(fetch, key_id: int, request):
         day_type = queries.resolve_day_type(session, date_str, station=station)
         if day_type is None:
             return JsonResponse({"error": f"unusable date {date_str!r}"}, status=400)
-        result = fetch(session, key_id, direction, station_id, time_of_day_s, day_type=day_type)
+        result = fetch(
+            session,
+            key_id,
+            direction,
+            station_id,
+            time_of_day_s,
+            day_type=day_type,
+            service_date=date.fromisoformat(date_str),
+        )
     if result is None:
         return JsonResponse({"error": "no such line, direction or station"}, status=404)
     result["date"] = date_str
     result["day_type"] = day_type
     return JsonResponse(result)
+
+
+def model_file(request, stamp: str):
+    """The current delay model's ONNX weights, cached forever under this stamp's URL.
+
+    `stamp` (the artifact's own timestamp directory name, from
+    `queries.current_model()`'s first item) makes the URL change exactly when
+    `CURRENT` moves to a different artifact -- an artifact's bytes never change
+    once written (bakeoff.py: "a second run never touches the [previous]
+    artifact"), so a client can cache this response indefinitely. `stamp` is
+    not used to locate the file; the response always reflects whatever
+    `CURRENT` points to right now, which is the same stamp any API response
+    fetched at the same time would carry.
+    """
+    artifact = current_artifact(ML_MODELS_DIR)
+    if artifact is None:
+        return JsonResponse(
+            {
+                "error": (
+                    f"no trained delay model under {ML_MODELS_DIR} -- export the TabM "
+                    "model with `data/build/torch-rocm/venv/bin/python "
+                    "scripts/export_tabm.py` first"
+                )
+            },
+            status=404,
+        )
+    manifest = json.loads((artifact / "manifest.json").read_text())
+    response = FileResponse(
+        open(artifact / manifest["model_file"], "rb"), content_type="application/octet-stream"
+    )
+    response["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
 
 
 def frontend_proxy(request, path: str = ""):

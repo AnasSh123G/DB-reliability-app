@@ -8,6 +8,7 @@ into two different answers to the same question.
 from __future__ import annotations
 
 import bisect
+import json
 import time
 from datetime import date as date_cls
 from datetime import datetime, timedelta
@@ -19,6 +20,7 @@ from dbrel.config import (
     BOARD_BACK_S,
     BOARD_FWD_S,
     BOARD_LIMIT,
+    ML_MODELS_DIR,
     SERVICE_DAY_MAX_S,
     TZ,
 )
@@ -32,6 +34,10 @@ from dbrel.direction import (
 )
 from dbrel.holidays_de import load_holiday_dates
 from dbrel.identity import prefix_range, search_norm
+from dbrel.ml.bakeoff import MANIFEST_NAME, current_artifact
+from dbrel.ml.features import UNKNOWN_DIRECTION, compute_features, direction_for, encode_categoricals
+from dbrel.ml.nn import model_inputs
+from dbrel.ml.timetable import calls_at
 from dbrel.models import (
     DAY_TYPE_SUNDAY_HOLIDAY,
     DAY_TYPE_WEEKDAY,
@@ -168,6 +174,120 @@ def _delay_pred(
         return None
     p50 = round(mean_s / 60)
     return {"p50_min": p50, "lo_min": p50, "hi_min": p50}
+
+
+# The delay model is served to the browser (add-browser-delay-predictions): the
+# web layer encodes a call's features and hands the browser the tensors its
+# ONNX runtime needs, but never itself loads onnxruntime or runs inference.
+# Only the manifest (vocabulary, per-feature stats, cards) is loaded here --
+# small (under a megabyte) and cheap to cache in the process, unlike the 20 MB
+# model weights, which the browser fetches directly (see views.model_file).
+_model_cache: dict = {"stamp": None, "manifest": None}
+
+
+def current_model() -> tuple[str, dict] | None:
+    """The current model artifact's stamp and manifest, or None if none is trained.
+
+    Cached until the `CURRENT` pointer moves to a different artifact -- a bake-off
+    or export run never touches an existing artifact in place (see bakeoff.py),
+    so a cached manifest is never stale for the stamp it was loaded under.
+    """
+    artifact = current_artifact(ML_MODELS_DIR)
+    if artifact is None:
+        return None
+    stamp = artifact.name
+    if _model_cache["stamp"] != stamp:
+        _model_cache["manifest"] = json.loads((artifact / MANIFEST_NAME).read_text())
+        _model_cache["stamp"] = stamp
+    return stamp, _model_cache["manifest"]
+
+
+class _ModelDirectionCache:
+    """A call site's own direction_for cache, reusing direction_by_train_id's
+    existing per-line result instead of recomputing it once per train.
+
+    direction_for(session, train) is correct but, for a train with a line,
+    always recomputes direction_by_train_id(line_id) from scratch -- a
+    per-line computation expensive enough (see direction.py's
+    _connected_components) that computing it once per distinct train rather
+    than once per distinct line noticeably slowed a busy station board (some
+    lines carry many trains, e.g. S-Bahn lines).
+
+    Pass the call site's own line_id-keyed direction cache, if it already
+    keeps one for the averages lookups (station_board's `direction_cache`),
+    so the two never independently pay for the same line -- the point of this
+    class is not to compute this more cheaply than direction_for does, only
+    to never compute the same line's result twice.
+    """
+
+    def __init__(self, line_direction_cache: dict[int, dict[int, int]] | None = None) -> None:
+        self._by_line: dict[int, dict[int, int]] = (
+            line_direction_cache if line_direction_cache is not None else {}
+        )
+        self._by_train: dict[int, int] = {}
+
+    def get(self, session: Session, train: Train) -> int:
+        if train.line_id is not None:
+            dirs = self._by_line.get(train.line_id)
+            if dirs is None:
+                dirs = direction_by_train_id(session, train.line_id)
+                self._by_line[train.line_id] = dirs
+            return dirs.get(train.id, UNKNOWN_DIRECTION)
+        if train.id not in self._by_train:
+            self._by_train[train.id] = direction_for(session, train)
+        return self._by_train[train.id]
+
+
+def _model_input(
+    session: Session,
+    manifest: dict,
+    *,
+    train: Train,
+    station_id: int | None,
+    service_date: date_cls,
+    direction: int,
+    holiday_set: set[tuple[str, str]],
+    arr_sec: int | None,
+    dep_sec: int | None,
+) -> dict | None:
+    """This call's encoded model input, or None.
+
+    Reuses dbrel.ml.features/dbrel.ml.timetable exactly as predict.py's offline
+    path does (compute_features -> encode_categoricals -> model_inputs), so the
+    arrays match what CLI prediction would compute for the same call bit for
+    bit -- see the delay-model spec's "Encoded input matches what prediction
+    would use" scenario. This stops one step short of running the model: no
+    onnxruntime session is created here, only numpy arrays the browser's
+    ONNX Runtime Web session will consume as its `cat`/`num` inputs.
+
+    One input covers both arr and dep -- the model predicts both sides from one
+    row (see nn.py's SIDES). Whether a side's prediction is actually shown is
+    gated on the frontend by whether that side has a scheduled time at all,
+    exactly like a missing average already is.
+    """
+    if station_id is None:
+        return None
+    calls = calls_at(session, train, station_id, service_date)
+    if not calls:
+        return None
+    call = calls[0]
+    if len(calls) > 1:
+        # A looped route calls_at returns more than one visit for; match the
+        # specific one these times belong to rather than always taking the
+        # first (see ScheduledCall's own "a loop gives two" note).
+        for candidate in calls:
+            if (candidate.planned_arrival_sec, candidate.planned_departure_sec) == (
+                arr_sec,
+                dep_sec,
+            ):
+                call = candidate
+                break
+    raw = call.raw(direction=direction, holiday_set=holiday_set)
+    features = encode_categoricals(compute_features(raw), manifest["vocab"])
+    cats, nums = model_inputs(
+        features, cards=manifest["cards"], numeric=manifest["numeric"], stats=manifest["stats"]
+    )
+    return {"cat": cats[0].tolist(), "num": nums[0].tolist()}
 
 
 # How a mixed result list is ordered once exact matches are out of the way. A
@@ -452,6 +572,9 @@ def station_board(
         or DAY_TYPE_WEEKDAY
     )
     direction_cache: dict[int, dict[int, int]] = {}
+    model = current_model()
+    holiday_set = load_holiday_dates(session) if model is not None else None
+    model_direction = _ModelDirectionCache(direction_cache)
 
     payload = {
         "station": {
@@ -465,6 +588,7 @@ def station_board(
             "to": _clock(now + fwd_s),
             "date": local_date(now).isoformat(),
         },
+        "model_stamp": model[0] if model is not None else None,
         "calls": [],
     }
     if fv_id is None:
@@ -533,6 +657,20 @@ def station_board(
                         train_id=train.id,
                     )
 
+                    model_input = None
+                    if model is not None:
+                        model_input = _model_input(
+                            session,
+                            model[1],
+                            train=train,
+                            station_id=station_id,
+                            service_date=service_date,
+                            direction=model_direction.get(session, train),
+                            holiday_set=holiday_set,
+                            arr_sec=stop.planned_arrival_sec,
+                            dep_sec=stop.planned_departure_sec,
+                        )
+
                     entry = {
                         "station_stop_id": stop.id,
                         "train_id": train.id,
@@ -564,6 +702,7 @@ def station_board(
                             side="dep",
                             **pred_kwargs,
                         ),
+                        "model_input": model_input,
                     }
                     calls[key] = entry
 
@@ -596,6 +735,23 @@ def train_route(
         else None
     )
     trip_start_time = _train_trip_start_time(train)
+
+    # This view shows a dateless pattern, not a specific run, so the model --
+    # which needs an actual calendar date for its weekday/holiday features --
+    # is asked about today, the same "typical day" the averages fall back to
+    # via `day_type`'s own default.
+    model = current_model()
+    model_service_date = local_date(int(time.time()))
+    holiday_set = load_holiday_dates(session) if model is not None else None
+    if model is None:
+        model_direction = None
+    elif train.line_id is not None:
+        # `direction` above already paid for direction_by_train_id on this
+        # line; reuse it instead of asking _ModelDirectionCache to pay again
+        # for a line this call only ever looks at once.
+        model_direction = direction if direction is not None else UNKNOWN_DIRECTION
+    else:
+        model_direction = direction_for(session, train)
 
     measured: dict[int, tuple] = {}
     if fv_id is not None:
@@ -647,6 +803,7 @@ def train_route(
             "platform": None,
             "arr_pred": None,
             "dep_pred": None,
+            "model_input": None,
         }
         hit = measured.get(index)
         if hit is not None:
@@ -687,6 +844,21 @@ def train_route(
                         side="dep",
                         train_id=train.id,
                     ),
+                    "model_input": (
+                        _model_input(
+                            session,
+                            model[1],
+                            train=train,
+                            station_id=station.id,
+                            service_date=model_service_date,
+                            direction=model_direction,
+                            holiday_set=holiday_set,
+                            arr_sec=stop.planned_arrival_sec,
+                            dep_sec=stop.planned_departure_sec,
+                        )
+                        if model is not None
+                        else None
+                    ),
                 }
             )
         stops.append(entry)
@@ -708,6 +880,7 @@ def train_route(
             "replacement_bus": (train.category or "").upper() == "BUS",
         },
         "n_monitored": sum(1 for s in stops if s["monitored"]),
+        "model_stamp": model[0] if model is not None else None,
         "stops": stops,
     }
 
@@ -937,6 +1110,7 @@ def trips_around(
     time_of_day_s: int,
     *,
     day_type: str = DAY_TYPE_WEEKDAY,
+    service_date: date_cls | None = None,
 ) -> dict | None:
     """The 2 scheduled calls at or before a time, and the 1 right after.
 
@@ -946,7 +1120,8 @@ def trips_around(
     which pool the model conditions its forecast on for each trip; it does not
     affect which trips are considered, since the underlying timetable pattern is
     itself dateless. Callers with an actual calendar date use resolve_day_type
-    first.
+    first, and pass that same date on as `service_date` for the model (which,
+    unlike the averages, needs an actual date rather than a day-type bucket).
     """
     line = session.get(ServiceLine, line_id)
     station = session.get(Station, station_id)
@@ -957,7 +1132,7 @@ def trips_around(
     header = {"id": line.id, "name": line.display_name or line.identity_key}
     return _trips_around_in(
         session, header, halves[direction], direction, station, time_of_day_s,
-        day_type=day_type, line_id=line_id,
+        day_type=day_type, line_id=line_id, service_date=service_date,
     )
 
 
@@ -969,6 +1144,7 @@ def corridor_trips_around(
     time_of_day_s: int,
     *,
     day_type: str = DAY_TYPE_WEEKDAY,
+    service_date: date_cls | None = None,
 ) -> dict | None:
     """trips_around for a line-less train's route; averages come per train."""
     station = session.get(Station, station_id)
@@ -981,7 +1157,7 @@ def corridor_trips_around(
     header = {"id": anchor.id, "name": anchor.display_name or f"#{anchor.id}"}
     return _trips_around_in(
         session, header, grouped[1][direction], direction, station, time_of_day_s,
-        day_type=day_type, line_id=None,
+        day_type=day_type, line_id=None, service_date=service_date,
     )
 
 
@@ -995,6 +1171,7 @@ def _trips_around_in(
     *,
     day_type: str,
     line_id: int | None,
+    service_date: date_cls | None = None,
 ) -> dict:
     """The body of trips_around, for any set of trains running one direction.
 
@@ -1004,11 +1181,16 @@ def _trips_around_in(
     station_id = station.id
     trains_by_id = {t.id: t for t in trains}
     fv_id = tt_feed_version_id(session)
+    model = current_model()
+    model_service_date = service_date or local_date(int(time.time()))
+    holiday_set = load_holiday_dates(session) if model is not None else None
+    model_direction = _ModelDirectionCache()
 
     payload = {
         "line": header,
         "direction": direction,
         "station": {"id": station.id, "name": station.name},
+        "model_stamp": model[0] if model is not None else None,
         "trips": [],
     }
     if not trains_by_id or fv_id is None:
@@ -1076,6 +1258,21 @@ def _trips_around_in(
             is_holiday=is_holiday_flag,
             train_id=train.id,
         )
+
+        model_input = None
+        if model is not None:
+            model_input = _model_input(
+                session,
+                model[1],
+                train=train,
+                station_id=station_id,
+                service_date=model_service_date,
+                direction=model_direction.get(session, train),
+                holiday_set=holiday_set,
+                arr_sec=stop.planned_arrival_sec,
+                dep_sec=stop.planned_departure_sec,
+            )
+
         trips.append(
             {
                 "train_id": train.id,
@@ -1085,6 +1282,7 @@ def _trips_around_in(
                 "sched_dep": _hhmm(stop.planned_departure_sec),
                 "arr_pred": _delay_pred(session, side="arr", **pred_kwargs),
                 "dep_pred": _delay_pred(session, side="dep", **pred_kwargs),
+                "model_input": model_input,
                 "relation": relation,
             }
         )
@@ -1111,6 +1309,13 @@ def line_detail(
     line = session.get(ServiceLine, line_id)
     if line is None:
         return None
+
+    # Dateless, like train_route: a per-run figure has no specific service date
+    # to ask the model about, so it is asked about today.
+    model = current_model()
+    model_service_date = local_date(int(time.time()))
+    holiday_set = load_holiday_dates(session) if model is not None else None
+    model_direction = _ModelDirectionCache()
 
     fv_id = tt_feed_version_id(session)
     monitored = (
@@ -1158,6 +1363,22 @@ def line_detail(
             # from its own origin station -- the only station a per-run (not
             # per-stop) figure can unambiguously mean.
             trip_start_time = _train_trip_start_time(t)
+            origin_station_id = origin_station_by_train.get(t.id)
+
+            model_input = None
+            if model is not None:
+                model_input = _model_input(
+                    session,
+                    model[1],
+                    train=t,
+                    station_id=origin_station_id,
+                    service_date=model_service_date,
+                    direction=model_direction.get(session, t),
+                    holiday_set=holiday_set,
+                    arr_sec=None,
+                    dep_sec=t.first_departure_sec,
+                )
+
             result_halves[direction].append(
                 {
                     "id": t.id,
@@ -1175,7 +1396,7 @@ def line_detail(
                     "current": t.id == current_train_id,
                     "pred": _delay_pred(
                         session,
-                        station_id=origin_station_by_train.get(t.id),
+                        station_id=origin_station_id,
                         line_id=line_id,
                         direction=direction,
                         trip_start_time=trip_start_time,
@@ -1183,6 +1404,7 @@ def line_detail(
                         is_holiday=is_holiday_flag,
                         side="dep",
                     ),
+                    "model_input": model_input,
                 }
             )
 
@@ -1195,6 +1417,7 @@ def line_detail(
             "replacement_bus": (line.category or "").upper() == "BUS",
         },
         "n_runs": sum(len(runs) for runs in result_halves),
+        "model_stamp": model[0] if model is not None else None,
         "directions": [
             {
                 "label": _direction_label(canonical, direction),

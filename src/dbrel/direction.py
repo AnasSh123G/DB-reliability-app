@@ -181,6 +181,28 @@ def line_trains_by_direction(
     return canonical, halves
 
 
+def corridor_members(route: list[str], candidates) -> list[Train]:
+    """The trains among `candidates` on the stretch `route` covers, in either direction.
+
+    A member either runs the whole stretch (both of `route`'s end stations are
+    on its own route) or runs within it (both of its end stations are on
+    `route`). Split out of `corridor_trains_by_direction` so a bulk pass over
+    every line-less train (the delay model's direction feature) applies the
+    exact same rule without one query per train.
+    """
+    on_route = set(route)
+    members: list[Train] = []
+    for train in candidates:
+        names = [part for part in (train.route_path or "").split("|") if part]
+        if len(names) < 2:
+            continue
+        runs_whole_stretch = route[0] in names and route[-1] in names
+        runs_within_stretch = names[0] in on_route and names[-1] in on_route
+        if runs_whole_stretch or runs_within_stretch:
+            members.append(train)
+    return members
+
+
 def corridor_trains_by_direction(
     session: Session, train_id: int
 ) -> tuple[list[str], list[list[Train]]] | None:
@@ -206,22 +228,16 @@ def corridor_trains_by_direction(
     if len(route) < 2:
         return route, [[anchor], []]
 
-    on_route = set(route)
-    members: list[Train] = []
-    for train in session.execute(
-        select(Train).where(
-            Train.line_id.is_(None),
-            Train.category == anchor.category,
-            Train.route_path.is_not(None),
-        )
-    ).scalars():
-        names = [part for part in train.route_path.split("|") if part]
-        if len(names) < 2:
-            continue
-        runs_whole_stretch = route[0] in names and route[-1] in names
-        runs_within_stretch = names[0] in on_route and names[-1] in on_route
-        if runs_whole_stretch or runs_within_stretch:
-            members.append(train)
+    members = corridor_members(
+        route,
+        session.execute(
+            select(Train).where(
+                Train.line_id.is_(None),
+                Train.category == anchor.category,
+                Train.route_path.is_not(None),
+            )
+        ).scalars(),
+    )
 
     index = {name: position for position, name in enumerate(route)}
     halves: list[list[Train]] = [[], []]

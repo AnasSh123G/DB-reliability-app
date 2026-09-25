@@ -1,18 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { AppShell, useAppChrome } from "@/components/AppShell";
-import { StationBoard } from "@/components/StationBoard";
+import { useAppChrome } from "@/components/AppShell";
+import { BoardV2 } from "@/components/v2/BoardV2";
+import { ShellV2 } from "@/components/v2/ShellV2";
 
 export const Route = createFileRoute("/station/$stationId")({
-  component: StationPage,
+  component: StationPageV2,
 });
 
-function StationPage() {
+function StationPageV2() {
   const { stationId } = Route.useParams();
   const { locale, setLocale, isDark, setIsDark } = useAppChrome();
 
   return (
-    <AppShell locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
-      <StationBoard stationId={Number(stationId)} locale={locale} />
-    </AppShell>
+    <ShellV2 locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
+      <BoardV2 stationId={Number(stationId)} locale={locale} />
+    </ShellV2>
   );
 }

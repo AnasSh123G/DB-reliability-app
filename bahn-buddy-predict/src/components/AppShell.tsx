@@ -125,7 +125,7 @@ export function AppShell({ locale, isDark, setLocale, setIsDark, children }: Pro
           </div>
         </div>
         <header className="flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2.5">
+          <Link to="/v1" className="flex items-center gap-2.5">
             <span className="inline-grid size-8 place-items-center rounded-xl bg-teal font-display font-semibold text-action-foreground">
               H
             </span>

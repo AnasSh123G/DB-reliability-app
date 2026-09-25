@@ -44,6 +44,12 @@ from dbrel.models import (
 
 app = typer.Typer(add_completion=False, help="Local database of German train punctuality.")
 
+# The ml sub-app imports its heavy dependencies inside each command, so
+# registering it here costs nothing on a machine without the ml extra.
+from dbrel.ml.cli import ml_app  # noqa: E402
+
+app.add_typer(ml_app, name="ml")
+
 
 def _require_schema(session) -> None:
     """Fail readably when there is no database yet.

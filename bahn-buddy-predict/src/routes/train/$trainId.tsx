@@ -1,18 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { AppShell, useAppChrome } from "@/components/AppShell";
-import { TrainOverview } from "@/components/TrainOverview";
+import { useAppChrome } from "@/components/AppShell";
+import { TrainV2 } from "@/components/v2/TrainV2";
+import { ShellV2 } from "@/components/v2/ShellV2";
 
 export const Route = createFileRoute("/train/$trainId")({
-  component: TrainPage,
+  component: TrainPageV2,
 });
 
-function TrainPage() {
+function TrainPageV2() {
   const { trainId } = Route.useParams();
   const { locale, setLocale, isDark, setIsDark } = useAppChrome();
 
   return (
-    <AppShell locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
-      <TrainOverview trainId={Number(trainId)} locale={locale} className="mx-auto w-full max-w-3xl" />
-    </AppShell>
+    <ShellV2 locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
+      <TrainV2 trainId={Number(trainId)} locale={locale} className="mx-auto w-full max-w-3xl" />
+    </ShellV2>
   );
 }

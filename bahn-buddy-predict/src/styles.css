@@ -21,6 +21,7 @@
 @theme {
   --font-display: "Space Grotesk", sans-serif;
   --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
 
   --color-amber: #f6b34a;
   --color-danger: #ff6a5a;
@@ -162,6 +163,79 @@
   --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.551 0.027 264.364);
+}
+
+/*
+ * v2's own identity: a train station departure board, not a generic dashboard
+ * (see openspec/changes/redesign-v2-visual-identity/design.md, D1-D2). Scoped
+ * under `.v2` / `.v2.dark` so v1's `:root` / `.dark` values above are never
+ * touched -- `/v1` keeps rendering exactly as it does today. Every shadcn
+ * stock token a v2 component resolves (Badge, Table, Alert, Skeleton, Card,
+ * Button, plus the shared focus ring) gets a value here; none are left at
+ * their generated `:root` default.
+ */
+.v2 {
+  --radius: 0.375rem;
+
+  --ink: #eef1ee;
+  --panel: #ffffff;
+  --line: #d7dcd8;
+  --fog: #6b716c;
+  --mist: #454b46;
+  --paper: #14201a;
+  --teal: #0f8f6c;
+  --action-foreground: #f4fbf8;
+  --color-amber: #b9740a;
+  --color-danger: #c93a3f;
+
+  --card: oklch(0.99 0.003 150);
+  --card-foreground: oklch(0.2 0.02 165);
+  --popover: oklch(0.99 0.003 150);
+  --popover-foreground: oklch(0.2 0.02 165);
+  --primary: oklch(0.55 0.11 165);
+  --primary-foreground: oklch(0.97 0.01 165);
+  --secondary: oklch(0.92 0.01 150);
+  --secondary-foreground: oklch(0.25 0.02 165);
+  --muted: oklch(0.93 0.008 150);
+  --muted-foreground: oklch(0.5 0.005 150);
+  --accent: oklch(0.9 0.02 165);
+  --accent-foreground: oklch(0.2 0.02 165);
+  --destructive: oklch(0.5 0.17 20);
+  --destructive-foreground: oklch(0.98 0.01 20);
+  --border: oklch(0.88 0.005 150);
+  --input: oklch(0.88 0.005 150);
+  --ring: oklch(0.55 0.11 165);
+}
+
+.v2.dark {
+  --ink: #0b0c0d;
+  --panel: #16181a;
+  --line: #2b2e30;
+  --fog: #8a8d8f;
+  --mist: #c7c9ca;
+  --paper: #f3ede0;
+  --teal: #22e0ab;
+  --action-foreground: #06201a;
+  --color-amber: #ffb545;
+  --color-danger: #ff5a5f;
+
+  --card: oklch(0.2 0.005 240);
+  --card-foreground: oklch(0.94 0.02 80);
+  --popover: oklch(0.2 0.005 240);
+  --popover-foreground: oklch(0.94 0.02 80);
+  --primary: oklch(0.82 0.16 165);
+  --primary-foreground: oklch(0.15 0.03 165);
+  --secondary: oklch(0.26 0.006 240);
+  --secondary-foreground: oklch(0.9 0.02 80);
+  --muted: oklch(0.24 0.006 240);
+  --muted-foreground: oklch(0.6 0.005 240);
+  --accent: oklch(0.28 0.03 165);
+  --accent-foreground: oklch(0.94 0.02 80);
+  --destructive: oklch(0.65 0.2 20);
+  --destructive-foreground: oklch(0.97 0.01 20);
+  --border: oklch(0.28 0.005 240);
+  --input: oklch(0.28 0.005 240);
+  --ring: oklch(0.82 0.16 165);
 }
 
 @layer base {

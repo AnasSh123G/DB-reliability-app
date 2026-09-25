@@ -13,6 +13,12 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as LineLineIdRouteImport } from './routes/line/$lineId'
 import { Route as StationStationIdRouteImport } from './routes/station/$stationId'
 import { Route as TrainTrainIdRouteImport } from './routes/train/$trainId'
+import { Route as V1IndexRouteImport } from './routes/v1/index'
+import { Route as V2IndexRouteImport } from './routes/v2/index'
+import { Route as V2SplatRouteImport } from './routes/v2/$'
+import { Route as V1LineLineIdRouteImport } from './routes/v1/line/$lineId'
+import { Route as V1StationStationIdRouteImport } from './routes/v1/station/$stationId'
+import { Route as V1TrainTrainIdRouteImport } from './routes/v1/train/$trainId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,18 +40,60 @@ const TrainTrainIdRoute = TrainTrainIdRouteImport.update({
   path: '/train/$trainId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const V1IndexRoute = V1IndexRouteImport.update({
+  id: '/v1/',
+  path: '/v1/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const V2IndexRoute = V2IndexRouteImport.update({
+  id: '/v2/',
+  path: '/v2/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const V2SplatRoute = V2SplatRouteImport.update({
+  id: '/v2/$',
+  path: '/v2/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const V1LineLineIdRoute = V1LineLineIdRouteImport.update({
+  id: '/v1/line/$lineId',
+  path: '/v1/line/$lineId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const V1StationStationIdRoute = V1StationStationIdRouteImport.update({
+  id: '/v1/station/$stationId',
+  path: '/v1/station/$stationId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const V1TrainTrainIdRoute = V1TrainTrainIdRouteImport.update({
+  id: '/v1/train/$trainId',
+  path: '/v1/train/$trainId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/line/$lineId': typeof LineLineIdRoute
   '/station/$stationId': typeof StationStationIdRoute
   '/train/$trainId': typeof TrainTrainIdRoute
+  '/v2/$': typeof V2SplatRoute
+  '/v1/': typeof V1IndexRoute
+  '/v2/': typeof V2IndexRoute
+  '/v1/line/$lineId': typeof V1LineLineIdRoute
+  '/v1/station/$stationId': typeof V1StationStationIdRoute
+  '/v1/train/$trainId': typeof V1TrainTrainIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/line/$lineId': typeof LineLineIdRoute
   '/station/$stationId': typeof StationStationIdRoute
   '/train/$trainId': typeof TrainTrainIdRoute
+  '/v2/$': typeof V2SplatRoute
+  '/v1': typeof V1IndexRoute
+  '/v2': typeof V2IndexRoute
+  '/v1/line/$lineId': typeof V1LineLineIdRoute
+  '/v1/station/$stationId': typeof V1StationStationIdRoute
+  '/v1/train/$trainId': typeof V1TrainTrainIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,18 +101,50 @@ export interface FileRoutesById {
   '/line/$lineId': typeof LineLineIdRoute
   '/station/$stationId': typeof StationStationIdRoute
   '/train/$trainId': typeof TrainTrainIdRoute
+  '/v2/$': typeof V2SplatRoute
+  '/v1/': typeof V1IndexRoute
+  '/v2/': typeof V2IndexRoute
+  '/v1/line/$lineId': typeof V1LineLineIdRoute
+  '/v1/station/$stationId': typeof V1StationStationIdRoute
+  '/v1/train/$trainId': typeof V1TrainTrainIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/line/$lineId' | '/station/$stationId' | '/train/$trainId'
+  fullPaths:
+    | '/'
+    | '/line/$lineId'
+    | '/station/$stationId'
+    | '/train/$trainId'
+    | '/v2/$'
+    | '/v1/'
+    | '/v2/'
+    | '/v1/line/$lineId'
+    | '/v1/station/$stationId'
+    | '/v1/train/$trainId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/line/$lineId' | '/station/$stationId' | '/train/$trainId'
+  to:
+    | '/'
+    | '/line/$lineId'
+    | '/station/$stationId'
+    | '/train/$trainId'
+    | '/v2/$'
+    | '/v1'
+    | '/v2'
+    | '/v1/line/$lineId'
+    | '/v1/station/$stationId'
+    | '/v1/train/$trainId'
   id:
     | '__root__'
     | '/'
     | '/line/$lineId'
     | '/station/$stationId'
     | '/train/$trainId'
+    | '/v2/$'
+    | '/v1/'
+    | '/v2/'
+    | '/v1/line/$lineId'
+    | '/v1/station/$stationId'
+    | '/v1/train/$trainId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -72,6 +152,12 @@ export interface RootRouteChildren {
   LineLineIdRoute: typeof LineLineIdRoute
   StationStationIdRoute: typeof StationStationIdRoute
   TrainTrainIdRoute: typeof TrainTrainIdRoute
+  V2SplatRoute: typeof V2SplatRoute
+  V1IndexRoute: typeof V1IndexRoute
+  V2IndexRoute: typeof V2IndexRoute
+  V1LineLineIdRoute: typeof V1LineLineIdRoute
+  V1StationStationIdRoute: typeof V1StationStationIdRoute
+  V1TrainTrainIdRoute: typeof V1TrainTrainIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -104,6 +190,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TrainTrainIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/v1/': {
+      id: '/v1/'
+      path: '/v1'
+      fullPath: '/v1/'
+      preLoaderRoute: typeof V1IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/v2/': {
+      id: '/v2/'
+      path: '/v2'
+      fullPath: '/v2/'
+      preLoaderRoute: typeof V2IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/v2/$': {
+      id: '/v2/$'
+      path: '/v2/$'
+      fullPath: '/v2/$'
+      preLoaderRoute: typeof V2SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/v1/line/$lineId': {
+      id: '/v1/line/$lineId'
+      path: '/v1/line/$lineId'
+      fullPath: '/v1/line/$lineId'
+      preLoaderRoute: typeof V1LineLineIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/v1/station/$stationId': {
+      id: '/v1/station/$stationId'
+      path: '/v1/station/$stationId'
+      fullPath: '/v1/station/$stationId'
+      preLoaderRoute: typeof V1StationStationIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/v1/train/$trainId': {
+      id: '/v1/train/$trainId'
+      path: '/v1/train/$trainId'
+      fullPath: '/v1/train/$trainId'
+      preLoaderRoute: typeof V1TrainTrainIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -112,6 +240,12 @@ const rootRouteChildren: RootRouteChildren = {
   LineLineIdRoute: LineLineIdRoute,
   StationStationIdRoute: StationStationIdRoute,
   TrainTrainIdRoute: TrainTrainIdRoute,
+  V2SplatRoute: V2SplatRoute,
+  V1IndexRoute: V1IndexRoute,
+  V2IndexRoute: V2IndexRoute,
+  V1LineLineIdRoute: V1LineLineIdRoute,
+  V1StationStationIdRoute: V1StationStationIdRoute,
+  V1TrainTrainIdRoute: V1TrainTrainIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
