@@ -20,6 +20,15 @@ dist-ssr
 .wrangler/
 .dev.vars
 
+# Frozen /v1 legacy UI (v2 is now the default; kept on disk to keep serving /v1,
+# no longer tracked -- v2 doesn't import these). AppShell.tsx stays tracked:
+# v2 imports its useAppChrome hook.
+src/routes/v1/
+src/components/LineDetail.tsx
+src/components/StationBoard.tsx
+src/components/TrainOverview.tsx
+src/components/TrainSearch.tsx
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
