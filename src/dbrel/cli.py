@@ -507,6 +507,8 @@ def archive_fetch(
     stopped. Only raw_data is used; see dbrel/ingest/archive.py for why the
     mirror's own processed parquet is not.
     """
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
+
     from dbrel.ingest.archive import (
         ArchiveStore,
         fetch_window,
@@ -523,7 +525,20 @@ def archive_fetch(
 
     typer.echo(f"archive window {start} .. {end} (+1 day either side for overnight runs)")
     store = ArchiveStore(root)
-    result = fetch_window(store, start, end, progress=typer.echo)
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+    ) as bar:
+        task_id = bar.add_task("days", total=None)
+        result = fetch_window(
+            store,
+            start,
+            end,
+            progress=bar.console.print,
+            on_progress=lambda done, total: bar.update(task_id, completed=done, total=total),
+        )
 
     typer.echo(
         f"  {result.files_downloaded} downloaded ({result.bytes_downloaded / 1e9:.2f} GB), "

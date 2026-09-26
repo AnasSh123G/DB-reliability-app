@@ -286,13 +286,15 @@ def fetch_window(
     end: date,
     *,
     progress=lambda msg: None,
+    on_progress=lambda done, total: None,
 ) -> FetchResult:
     """Acquire every partition covering the window. Resumable and idempotent."""
     result = FetchResult()
     days = partition_days(start, end)
     result.days_requested = len(days)
 
-    for day in days:
+    for done, day in enumerate(days, start=1):
+        on_progress(done, len(days))
         if day < NATIONAL_FROM:
             progress(f"  {day}: before {NATIONAL_FROM} (top ~100 stations only), skipped")
             continue
@@ -317,9 +319,10 @@ def fetch_window(
                 continue
             result.files_downloaded += 1
             result.bytes_downloaded += written
-            progress(f"  {remote.name} ({written / 1e6:.1f} MB)")
+            progress(f"  {day} {remote.name} ({written / 1e6:.1f} MB)")
         store.save()
 
+    on_progress(len(days), len(days))
     result.bytes_on_disk = store.bytes_on_disk()
     return result
 
