@@ -210,6 +210,23 @@ def model_file(request, stamp: str):
     return response
 
 
+def model_meta(request, stamp: str):
+    """How the browser turns the current model's ONNX output into a forecast.
+
+    Kind, output name, sides, point rule and (for a distribution) its bin
+    edges -- no vocabulary or statistics, which stay server-side. Cached like
+    model_file: an artifact never changes once written.
+    """
+    from dbrel.ml.arrival import browser_meta
+
+    artifact = current_artifact(ML_MODELS_DIR)
+    if artifact is None:
+        return JsonResponse({"error": f"no trained delay model under {ML_MODELS_DIR}"}, status=404)
+    response = JsonResponse(browser_meta(json.loads((artifact / "manifest.json").read_text())))
+    response["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
+
 def frontend_proxy(request, path: str = ""):
     """Forward anything the JSON patterns above didn't match to the frontend.
 

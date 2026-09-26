@@ -13,6 +13,7 @@ under a quarter of the median day's rows is not a representative day.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Collection
 
 import numpy as np
 
@@ -21,6 +22,7 @@ from dbrel.ml.features import CATEGORICAL, UNKNOWN
 TRAIN_SHARE = 0.67
 VALIDATION_SHARE = 0.13
 STUB_DAY_SHARE = 0.25
+MIN_FRESH_DAYS = 3
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,71 @@ def masks_for(day: np.ndarray, dates: list[str], split: DateSplit) -> dict[str, 
         wanted[[index[d] for d in members]] = True
         out[name] = wanted[day]
     return out
+
+
+def reserve_fresh_holdout(rows_per_date: dict[str, int], *,
+                          training: Collection[str], validation: Collection[str],
+                          inspected: Collection[str], minimum_days: int = MIN_FRESH_DAYS) -> list[str]:
+    """Reserve complete, later and uninspected dates without reading their outcomes."""
+    if minimum_days < 1 or not training or not validation:
+        raise ValueError("holdout needs training, validation and at least one fresh date")
+    train, valid, seen = set(training), set(validation), set(inspected)
+    if train & valid or max(train) >= min(valid):
+        raise ValueError("training and validation dates must be disjoint and chronological")
+    if (train | valid) - rows_per_date.keys():
+        raise ValueError("training or validation date is absent from the dataset")
+    floor = STUB_DAY_SHARE * float(np.median(list(rows_per_date.values())))
+    after = max(train | valid | seen)
+    fresh = sorted(d for d, n in rows_per_date.items() if d > after and n >= floor)
+    if len(fresh) < minimum_days:
+        raise ValueError(f"need {minimum_days} complete uninspected dates after {after}; "
+                         f"only {len(fresh)} available")
+    return fresh[:minimum_days]
+
+
+def training_history_before(
+    train_mask: np.ndarray, evaluation_cutoffs_utc: np.ndarray, finalized_at: np.ndarray
+) -> np.ndarray:
+    """Keep only fully finalized training runs before *every* evaluated cutoff.
+
+    Use the earliest evaluation cutoff (not the service date): a run just after
+    midnight can cross a date boundary. Unknown finalization times are excluded.
+    Fit vocabularies and statistics from this returned mask, not train_mask.
+    """
+    if len(train_mask) != len(finalized_at) or not len(evaluation_cutoffs_utc):
+        raise ValueError("training mask, finalization times and evaluation cutoffs are required")
+    if not np.all(np.isfinite(evaluation_cutoffs_utc)):
+        raise ValueError("evaluation cutoffs must be finite UTC seconds")
+    mask = train_mask & (finalized_at > 0) & (finalized_at <= np.min(evaluation_cutoffs_utc))
+    if not mask.any():
+        raise ValueError("no finalized training observations before evaluation cutoffs")
+    return mask
+
+
+def arrival_experiment_masks(
+    ds, *, training: Collection[str], validation: Collection[str],
+    inspected: Collection[str], final_test: bool = False
+) -> tuple[DateSplit, dict[str, np.ndarray]]:
+    """Fit on observations finalized before validation, with a sealed later test."""
+    if ds.cutoff_utc is None or ds.finalized_at is None:
+        raise ValueError("arrival experiment requires per-call cutoffs and finalization times")
+    if ds.meta.get("timetable_asof_verified") is not False:
+        raise ValueError("arrival replay must disclose unverified timetable provenance")
+    train, val = sorted(set(training)), sorted(set(validation))
+    if not train or not val or max(train) >= min(val) or set(train) & set(val):
+        raise ValueError("training and validation dates must be ordered and disjoint")
+    dates = ds.meta["dates"]
+    if (set(train) | set(val)) - set(dates):
+        raise ValueError("requested training or validation date is absent")
+    test = reserve_fresh_holdout(
+        ds.meta["rows_per_date"], training=train, validation=val, inspected=inspected,
+    ) if final_test else []
+    split = DateSplit(train=train, validation=val, test=test)
+    masks = masks_for(ds.day, dates, split)
+    masks["train"] = training_history_before(
+        masks["train"], ds.cutoff_utc[masks["validation"]], ds.finalized_at,
+    )
+    return split, masks
 
 
 def restrict_to_training_vocab(

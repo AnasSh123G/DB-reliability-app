@@ -72,8 +72,8 @@ def key_differences(saved: dict, now: dict, prefix: str = "") -> list[str]:
             out += key_differences(a, b, f"{prefix}{name}.")
         elif a != b:
             if name == "split":
-                a = {k: f"{v[0]}..{v[-1]}" for k, v in (a or {}).items()}
-                b = {k: f"{v[0]}..{v[-1]}" for k, v in (b or {}).items()}
+                a = {k: f"{v[0]}..{v[-1]}" if v else "none" for k, v in (a or {}).items()}
+                b = {k: f"{v[0]}..{v[-1]}" if v else "none" for k, v in (b or {}).items()}
             out.append(f"{prefix}{name}: saved {a}, now {b}")
     return out
 

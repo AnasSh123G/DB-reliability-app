@@ -102,7 +102,7 @@
   "use strict";
   var BINS = ["0–1", "1–3", "3–5", "5–10", "10–20", "20+"];
   var DATA = __DATA__;
-  var SERIES = [["tabm", "TabM", "--tabm"], ["average", "Stored average", "--avg"]];
+  var SERIES = [["tabm", DATA.meta.model_label || "TabM", "--tabm"], ["average", "Stored average", "--avg"]];
   var NS = "http://www.w3.org/2000/svg";
   var W = 680, H = 360, M = { t: 24, r: 12, b: 48, l: 44 };
   var pw = W - M.l - M.r, ph = H - M.t - M.b, YMAX = 50;

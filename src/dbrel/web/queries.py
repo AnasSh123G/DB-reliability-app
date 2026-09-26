@@ -34,6 +34,7 @@ from dbrel.direction import (
 )
 from dbrel.holidays_de import load_holiday_dates
 from dbrel.identity import prefix_range, search_norm
+from dbrel.ml.arrival import ARRIVAL_KIND, arrival_inputs
 from dbrel.ml.bakeoff import MANIFEST_NAME, current_artifact
 from dbrel.ml.features import UNKNOWN_DIRECTION, compute_features, direction_for, encode_categoricals
 from dbrel.ml.nn import model_inputs
@@ -282,11 +283,17 @@ def _model_input(
             ):
                 call = candidate
                 break
-    raw = call.raw(direction=direction, holiday_set=holiday_set)
+    arrival_only = manifest.get("kind") == ARRIVAL_KIND
+    if arrival_only and call.planned_arrival_sec is None:
+        return None  # an arrival-only model has nothing to say about an origin call
+    raw = call.raw(direction=direction, holiday_set=holiday_set, arrival_clock=arrival_only)
     features = encode_categoricals(compute_features(raw), manifest["vocab"])
-    cats, nums = model_inputs(
-        features, cards=manifest["cards"], numeric=manifest["numeric"], stats=manifest["stats"]
-    )
+    if arrival_only:
+        cats, nums = arrival_inputs(features, manifest["prep"])
+    else:
+        cats, nums = model_inputs(
+            features, cards=manifest["cards"], numeric=manifest["numeric"], stats=manifest["stats"]
+        )
     return {"cat": cats[0].tolist(), "num": nums[0].tolist()}
 
 

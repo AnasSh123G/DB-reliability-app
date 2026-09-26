@@ -29,14 +29,16 @@ def _counts(errors: list[float]) -> list[int]:
 def histogram_data(study_dir: Path) -> dict:
     with (study_dir / "comparisons.csv").open(newline="") as fh:
         rows = list(csv.DictReader(fh))
+    # v2 studies store the median as tabm_p50; arrival-only ones a window point as model_point
+    point = "tabm_p50" if rows and "tabm_p50" in rows[0] else "model_point"
     data = {}
     for side in ("both", "dep", "arr"):
         rs = [r for r in rows if (side == "both" or r["side"] == side)
-              and r["tabm_p50"] and r["average_min"]]
+              and r.get(point) and r["average_min"]]
         real = [float(r["real_delay_min"]) for r in rs]
         data[side] = {
             "n": len(rs),
-            "tabm": _counts([abs(float(r["tabm_p50"]) - y) for r, y in zip(rs, real)]),
+            "tabm": _counts([abs(float(r[point]) - y) for r, y in zip(rs, real)]),
             "average": _counts([abs(float(r["average_min"]) - y) for r, y in zip(rs, real)]),
         }
     delays = [float(r["real_delay_min"]) for r in rows]
@@ -47,6 +49,8 @@ def histogram_data(study_dir: Path) -> dict:
     data["meta"] = {
         "stations": f"{result['stations_sampled']:,}",
         "when": finished.astimezone(TZ).strftime("finishing %d %b %Y at %H:%M"),
+        "model_label": "TabM" if result.get("model_kind", "tabm") != "arrival-net"
+                       else f"Model estimate ({result.get('point_rule')} rule)",
     }
     return data
 

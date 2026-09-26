@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from dbrel.db import make_engine
 from dbrel.holidays_de import load_holiday_dates
 from dbrel.ml import features as F
-from dbrel.ml.dataset import build_dataset, dataset_is_stale, load_dataset
+from dbrel.ml.dataset import (
+    build_arrival_dataset, build_dataset, dataset_is_stale, load_arrival_dataset, load_dataset,
+)
 from dbrel.ml.timetable import calls_at
 from dbrel.models import Train, TripStop
 
@@ -111,6 +113,35 @@ def test_dataset_rows_targets_and_meta(db, session, tmp_path):
     json.loads((tmp_path / "ml" / "dataset.json").read_text())
 
 
+def test_arrival_view_preserves_individual_targets_and_v2_cache(db, session, tmp_path):
+    out = tmp_path / "ml"
+    dirs = F.all_directions(session)
+    build_dataset(db, out, dirs)
+    before = (out / "dataset.npz").read_bytes()
+    for day, minutes in enumerate((1, 4, 12)):
+        trip = day * len(PATTERNS) + list(PATTERNS).index(70) + 1
+        stop = session.query(TripStop).filter_by(trip_id=trip, stop_sequence=20).one()
+        stop.arr_delay_s = minutes * 60
+    cancelled = session.query(TripStop).filter_by(trip_id=4, stop_sequence=20).one()
+    cancelled.arr_cancelled = 1
+    session.commit()
+    meta = build_arrival_dataset(db, out, dirs)
+    ds = load_arrival_dataset(out)
+    assert (out / "dataset.npz").read_bytes() == before
+    assert meta["kind"] == "arrival-only" and meta["timetable_asof_verified"] is False
+    assert len(ds.arr_min) == meta["n_arr_targets"]
+    assert np.isnan(ds.dep_min).all()
+    assert np.unique(ds.stop_id).size == len(ds.stop_id)
+    assert np.all(ds.cutoff_utc == ds.scheduled_arrival_utc - 5 * 3600)
+    for day, minutes in enumerate((1, 4, 12)):
+        trip = day * len(PATTERNS) + list(PATTERNS).index(70) + 1
+        (idx,) = np.flatnonzero((ds.trip_id == trip) & (ds.stop_sequence == 20))
+        assert ds.arr_min[idx] == minutes
+        assert ds.features["sched_min"][idx] == 8 * 60 + 50  # arrival, not 08:52 departure
+        assert ds.v2_sched_local_sec[idx] % 86400 == (8 * 60 + 52) * 60  # the v2 model's clock
+    assert not np.any((ds.trip_id == 4) & (ds.stop_sequence == 20))
+
+
 def test_cancelled_and_implausible_stops(db, session, tmp_path):
     first = session.query(TripStop).filter(TripStop.trip_id == 1).order_by(TripStop.stop_sequence).all()
     first[0].cancelled = 1  # cancelled: no target at all
@@ -179,3 +210,21 @@ def test_prediction_side_never_reads_history_or_averages(session):
     assert statements
     for forbidden in ("trip_stop", "stop_delay_average", "train_stop_delay_average", " trip "):
         assert not any(forbidden in s for s in statements), forbidden
+
+
+def test_incumbent_inputs_equal_the_v2_datasets_own_features(db, session, tmp_path):
+    from dbrel.ml.arrival import incumbent_features
+
+    out = tmp_path / "ml"
+    dirs = F.all_directions(session)
+    build_dataset(db, out, dirs)
+    build_arrival_dataset(db, out, dirs)
+    v2, arr = load_dataset(out), load_arrival_dataset(out)
+    station_v2 = np.array(v2.meta["vocab"]["station"])[v2.features["station"]]
+    station_arr = np.array(arr.meta["vocab"]["station"])[arr.features["station"]]
+    index = {(t, s): i for i, (t, s) in enumerate(zip(v2.trip_id.tolist(), station_v2.tolist()))}
+    match = np.array([index[(t, s)] for t, s in zip(arr.trip_id.tolist(), station_arr.tolist())])
+    rows = np.arange(len(arr.arr_min))
+    got = incumbent_features(arr, rows, v2.meta["vocab"])
+    for name in F.FEATURES:
+        np.testing.assert_array_equal(got[name], v2.features[name][match], err_msg=name)

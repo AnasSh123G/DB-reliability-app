@@ -20,7 +20,13 @@ For each station:
 1. Ask the DB Timetables API which trains passed through in the **last 2 hours**, with their
    **planned** time and their **real** recorded time.
 2. For every stop that has **already happened**, compute:
-   - **TabM's prediction** (the median, p50) — from the deployed model, exactly as the app does.
+   - **The deployed model's prediction** — from the `CURRENT` artifact, exactly as the app does.
+     Which figure that is depends on the artifact kind (check `manifest.json` → `kind`):
+     - `tabm` (v2, two-sided): TabM's median (p50) for arrivals **and** departures.
+     - `arrival-net`: an **arrival-only** estimate — the centre of the most likely 6-minute window
+       ("window rule"), **not** a median. It makes **no departure predictions**, so the report
+       says departures are not predicted and scores arrivals only. Never call this figure "TabM"
+       or "p50"; the report and CSV label it "Model estimate (window rule)" / `model_point`.
    - **The stored average** (the "Ø" the app shows) — exactly as the station board does.
 3. Compare both against the **real delay** DB recorded.
 
@@ -223,7 +229,7 @@ Everything goes into `data/ml/studies/<STAMP>/` (the stamp is the **UTC** finish
 |---|---|
 | `report.md` | plain-language summary per side (departures, arrivals) |
 | `result.json` | the same numbers as JSON |
-| `comparisons.csv` | **one row per stop**: side, station, train, date, segment, holiday, real delay, TabM p25/p50/p75, stored average |
+| `comparisons.csv` | **one row per stop**: side, station, train, date, segment, holiday, real delay, the model's p25 / point / p75 (`tabm_p25/p50/p75` for a v2 artifact, `model_p25/model_point/model_p75` for an arrival-net one), stored average |
 | `histogram.html` | the histogram page (written automatically) |
 
 If `histogram.html` is missing (the job ran older code), create it:
@@ -240,7 +246,13 @@ Open the report:
 cat data/ml/studies/<STAMP>/report.md
 ```
 
-Compare with these normal ranges (from the real runs on 2026-09-25):
+Compare with these normal ranges (from the real runs on 2026-09-25, **v2 TabM artifact only**).
+With an `arrival-net` artifact the model rows below do **not** apply: its window rule trades
+within-1-minute hits for within-3-minute hits by design, so its "within 1 min" and "minutes off"
+are expected to differ from the average's. Normal ranges for it must be re-established from its
+first real runs — do not judge it against the TabM numbers, and do not invent a range. The
+non-model rows (stations with no realized stops, stops skipped, stops compared, real delays) still
+apply.
 
 | Check | Normal | If outside the normal range |
 |---|---|---|
@@ -297,7 +309,9 @@ Keep it short and plain. Use **only** these numbers:
 Always mention these two facts, because they explain the numbers:
 1. **The stored average is a whole number of minutes, and DB records delays in whole minutes**,
    so the average can match exactly; TabM gives fractions (e.g. 0.9) and never ties. This helps
-   the average on "within 1 min".
+   the average on "within 1 min". (With an `arrival-net` artifact, also say that its estimate is
+   chosen to be within 3 minutes as often as possible, not to be exactly right, and that
+   departures are not predicted.)
 2. **Stops with no stored average** are listed separately — TabM is the only prediction there,
    and those stops are harder (TabM was ~12–13 min off on them).
 
@@ -310,10 +324,10 @@ The <HH:MM> run finished in <N> minutes: <S> stations, <K> had trains that had a
 
 | | Minutes off (avg) | Within 1 min | Within 3 min | Within 5 min |
 |---|---|---|---|---|
-| TabM | … | … | … | … |
+| TabM (or "Model estimate (window rule)" for an arrival-net artifact) | … | … | … | … |
 | Stored average | … | … | … | … |
 
-- Closer, stop by stop: stored average <A> times, TabM <T> times.
+- Closer, stop by stop: stored average <A> times, model <T> times.
 - How late trains really were: <x> (…%) more than 5 min late, <y> more than 30, latest <z> min.
 - <one sentence on the whole-minute rounding effect>
 - <one sentence on stops without a stored average>

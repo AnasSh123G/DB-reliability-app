@@ -2,6 +2,66 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import numpy as np
+
+from dbrel.ml.metrics import arrival_errors, score_arrivals_with_breakdowns
+
+
+def save_arrival_report(out_dir: Path, *, ds, rows: np.ndarray,
+                        predictions: dict[str, np.ndarray], phase: str,
+                        exclusions: dict[str, int] | None = None) -> dict:
+    """Save scored individual arrivals and recomputable summaries, without touching v2."""
+    if phase not in ("validation", "diagnostic", "fresh-test"):
+        raise ValueError(f"unknown evaluation phase: {phase}")
+    if ds.stop_id is None or ds.scheduled_arrival_utc is None or ds.cutoff_utc is None:
+        raise ValueError("arrival report requires individual-arrival dataset provenance")
+    rows = np.asarray(rows, dtype=np.int64)
+    if rows.ndim != 1 or (len(rows) and (rows.min() < 0 or rows.max() >= len(ds.arr_min))):
+        raise ValueError("invalid arrival row indices")
+    actual = ds.arr_min[rows]
+    day = np.array(ds.meta["dates"])[ds.day[rows]]
+    groups = {
+        "date": day,
+        "segment": ds.segment[rows],
+        "holiday": ds.features["is_holiday"][rows],
+        "actual_delay_band": np.where(np.abs(actual) > 15, "abs(delay)>15min",
+                                      "abs(delay)<=15min"),
+    }
+    if len(np.unique(ds.stop_id[rows])) != len(rows):
+        raise ValueError("report rows contain duplicate arrival stop IDs")
+    scored = {}
+    for name, prediction in predictions.items():
+        if not name or not name.replace("-", "").replace("_", "").isalnum():
+            raise ValueError(f"invalid predictor name: {name!r}")
+        prediction = np.asarray(prediction, dtype=np.float32)
+        scored[name] = (prediction, arrival_errors(actual, prediction))
+    out_dir.mkdir(parents=True, exist_ok=False)
+    summaries: dict[str, dict] = {}
+    for name, (prediction, errors) in scored.items():
+        np.savez_compressed(
+            out_dir / f"{name}.npz",
+            stop_id=ds.stop_id[rows], trip_id=ds.trip_id[rows],
+            stop_sequence=ds.stop_sequence[rows], date=day,
+            station=ds.features["station"][rows],
+            scheduled_arrival_utc=ds.scheduled_arrival_utc[rows],
+            cutoff_utc=ds.cutoff_utc[rows],
+            segment=groups["segment"], holiday=groups["holiday"],
+            actual_delay_band=groups["actual_delay_band"],
+            actual_min=actual, predicted_min=prediction, error_min=errors,
+            missing=np.isnan(prediction),
+        )
+        summaries[name] = score_arrivals_with_breakdowns(actual, prediction, groups)
+    report = {
+        "phase": phase, "timetable_asof_verified": bool(ds.meta["timetable_asof_verified"]),
+        "cutoff_hours": ds.meta["cutoff_hours"], "eligible": len(rows),
+        "exclusions": exclusions or {}, "scores": summaries,
+    }
+    (out_dir / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False))
+    return report
+
 
 def _fmt(value, digits: int = 2) -> str:
     if value is None:

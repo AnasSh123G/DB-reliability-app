@@ -1,7 +1,6 @@
 import { TrainFront } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useLineDetail } from "@/hooks/use-dbrel";
-import { delayColor } from "@/lib/delay";
 import { copy, type Locale } from "@/lib/i18n";
 
 interface Props {
@@ -65,7 +64,6 @@ export function LineDetail({ lineId, locale }: Props) {
                           <TrainFront className="size-3.5" />
                         </span>
                         <div className="min-w-0">
-                          <span className="font-display text-sm text-mist">{run.departs ?? "--:--"}</span>{" "}
                           <Link
                             to="/train/$trainId"
                             params={{ trainId: String(run.id) }}
@@ -80,13 +78,6 @@ export function LineDetail({ lineId, locale }: Props) {
                           </p>
                         </div>
                       </div>
-                      {run.pred ? (
-                        <span className={`shrink-0 text-right text-xs font-semibold ${delayColor(run.pred.p50_min)}`}>
-                          +{run.pred.p50_min} min
-                        </span>
-                      ) : (
-                        <span className="shrink-0 text-right text-[10px] text-fog">{t.noAverage}</span>
-                      )}
                     </li>
                   ))}
                 </ol>

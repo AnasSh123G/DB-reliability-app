@@ -39,6 +39,7 @@ from dbrel.ingest.changes_poller import GRACE_S
 from dbrel.ingest.client import TimetablesClient
 from dbrel.ingest.parser import TtEvent, TtStop, parse_timetable
 from dbrel.ingest.timeutil import epoch_to_gtfs_sec, local_date, read_clock
+from dbrel.ml.arrival import ARRIVAL_KIND
 from dbrel.ml.predict import DelayModel
 from dbrel.ml.timetable import ScheduledCall, calls_at
 from dbrel.models import DAY_TYPE_SUNDAY_HOLIDAY, Station, Train
@@ -309,6 +310,12 @@ class StudyResult:
     scores: dict  # side -> {"tabm": {...}, "average": {...}}
     n_scored: dict[str, int]
     comparisons: list[Comparison] = field(default_factory=list)  # every stop, for comparisons.csv
+    model_kind: str = "tabm"  # "arrival-net": arrivals only, no departure predictions
+    point_rule: str = "median"  # "window": the model figure is NOT a median
+
+
+def model_label(result: StudyResult) -> str:
+    return "TabM" if result.model_kind != ARRIVAL_KIND else f"Model estimate ({result.point_rule} rule)"
 
 
 WITHIN_MIN = (1, 3, 5)
@@ -397,6 +404,8 @@ def run_study(
     n_scored = {side: scores[side]["n"] for side in SIDES}
 
     return StudyResult(
+        model_kind=model.manifest.get("kind", "tabm"),
+        point_rule=model.manifest.get("point_rule", "median"),
         stations_sampled=len(stations),
         stations_skipped=stations_skipped,
         skip_reasons=skip_reasons,
@@ -438,33 +447,44 @@ def render_report(result: StudyResult, *, created_at: str) -> str:
         f"{result.stops_skipped_no_local_match}",
         "",
         "Real delay = what DB recorded for that stop. TabM's figure is its median guess; the "
-        "stored average is the Ø the app shows.",
+        "stored average is the Ø the app shows." if result.model_kind != ARRIVAL_KIND else
+        "Real delay = what DB recorded for that stop. The model's figure is the centre of its most "
+        f"likely 6-minute window ({result.point_rule} rule), not a median; the stored average is "
+        "the Ø the app shows. This model artifact predicts arrivals only -- departures are not "
+        "predicted, so no departure is scored.",
         "",
     ]
+    name_model = model_label(result)
     for side, title in (("dep", "Departures"), ("arr", "Arrivals")):
         s = result.scores[side]
         lines += [f"## {title}", ""]
+        if side == "dep" and result.model_kind == ARRIVAL_KIND:
+            lines += ["Not predicted: this model artifact (arrival-only) makes no departure "
+                      "predictions.", ""]
+            continue
         if s["n_compared"] == 0:
             lines += ["Nothing to compare.", ""]
             continue
         lines += [
+            f"Compared on {s['n_compared']:,} stops that have both a {name_model} guess and a stored average."
+            if result.model_kind == ARRIVAL_KIND else
             f"Compared on {s['n_compared']:,} stops that have both a TabM guess and a stored average.",
             "",
             "| | Average minutes off | Within 1 min | Within 3 min | Within 5 min |",
             "|---|---|---|---|---|",
         ]
-        for name, key in (("TabM", "tabm"), ("Stored average", "average")):
+        for name, key in ((name_model, "tabm"), ("Stored average", "average")):
             e = s[key]
             lines.append(f"| {name} | {_fmt(e['minutes_off'], 1)} | {_pct(e['within_1'])} | "
                          f"{_pct(e['within_3'])} | {_pct(e['within_5'])} |")
         lines += [
             "",
-            f"Closer to the real delay: TabM {s['tabm_closer']:,} times, stored average "
+            f"Closer to the real delay: {name_model} {s['tabm_closer']:,} times, stored average "
             f"{s['average_closer']:,} times, same {s['tie']:,} times.",
         ]
         if s["n_no_average"]:
             e = s["tabm_on_no_average"]
-            lines.append(f"{s['n_no_average']:,} more stops had no stored average; TabM was "
+            lines.append(f"{s['n_no_average']:,} more stops had no stored average; {name_model} was "
                          f"{_fmt(e['minutes_off'], 1)} min off on those.")
         lines.append("")
     return "\n".join(lines)
@@ -485,8 +505,10 @@ def save_report(result: StudyResult, studies_dir: Path, *, stamp: str) -> Path:
     (out_dir / RESULT_NAME).write_text(json.dumps(payload, indent=1))
     with (out_dir / COMPARISONS_NAME).open("w", newline="") as fh:
         w = csv.writer(fh)
+        model_cols = (["tabm_p25", "tabm_p50", "tabm_p75"] if result.model_kind != ARRIVAL_KIND
+                      else ["model_p25", "model_point", "model_p75"])  # a window point is not p50
         w.writerow(["side", "station", "train", "service_date", "segment", "is_holiday",
-                    "real_delay_min", "tabm_p25", "tabm_p50", "tabm_p75", "average_min"])
+                    "real_delay_min", *model_cols, "average_min"])
         for c in result.comparisons:
             tabm = c.tabm or (None, None, None)
             w.writerow([c.side, c.station, c.train, c.service_date, c.segment, c.is_holiday,

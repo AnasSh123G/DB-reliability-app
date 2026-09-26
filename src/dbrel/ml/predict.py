@@ -7,7 +7,8 @@ averages were never built.
 
 A call with no scheduled departure (the train terminates here) gets no
 departure prediction, and none is derived from its arrival; a call with no
-scheduled arrival (it starts here) likewise gets no arrival prediction.
+scheduled arrival (it starts here) likewise gets no arrival prediction. An
+`arrival-net` artifact predicts arrivals only: every departure is None.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from dbrel.holidays_de import load_holiday_dates
+from dbrel.ml.arrival import ARRIVAL_KIND, ArrivalNetPredictor
 from dbrel.ml.bakeoff import MANIFEST_NAME, current_artifact
 from dbrel.ml.candidates import LIBRARIES
 from dbrel.ml.features import (
@@ -41,8 +43,9 @@ class NoModelError(RuntimeError):
 @dataclass
 class Prediction:
     call: ScheduledCall
-    arr: tuple[float, float, float] | None  # p25, p50, p75 minutes
+    arr: tuple[float, float, float] | None  # p25, point, p75 minutes
     dep: tuple[float, float, float] | None
+    point_rule: str = "median"  # "window": the point is NOT the median, see dbrel.ml.arrival
 
 
 class DelayModel:
@@ -51,6 +54,10 @@ class DelayModel:
         self.manifest = json.loads((artifact / MANIFEST_NAME).read_text())
         self.models = {}
         self.tabm = None
+        self.arrival = None
+        if self.manifest.get("kind") == ARRIVAL_KIND:
+            self.arrival = ArrivalNetPredictor(artifact, self.manifest)
+            return
         if self.manifest.get("kind") == TABM_KIND:
             self.tabm = TabMPredictor(artifact, self.manifest)
             return
@@ -81,12 +88,22 @@ class DelayModel:
         for call in calls:
             if call.train.id not in directions:
                 directions[call.train.id] = direction(session, call.train)
-            row = call.raw(direction=directions[call.train.id], holiday_set=holiday_set)
+            row = call.raw(direction=directions[call.train.id], holiday_set=holiday_set,
+                           arrival_clock=self.arrival is not None)
             for name in RAW_COLUMNS:
                 raw[name].extend(row[name])
         arrays = {name: np.array(values, dtype=object if name in ("category", "operator", "state")
                                  else np.float64) for name, values in raw.items()}
         features = encode_categoricals(compute_features(arrays), self.manifest["vocab"])
+        if self.arrival is not None:
+            forecast = self.arrival.predict(features)
+            rule = forecast.rule
+            return [
+                Prediction(call=call, dep=None, point_rule=rule, arr=(
+                    float(forecast.percentiles[i, 0]), float(forecast.point[i]), float(forecast.percentiles[i, 2])
+                ) if call.planned_arrival_sec is not None and forecast.missing_reason[i] == "" else None)
+                for i, call in enumerate(calls)
+            ]
         if self.tabm is not None:
             preds = self.tabm.predict(features)
         else:

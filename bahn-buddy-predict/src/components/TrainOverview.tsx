@@ -15,7 +15,7 @@ interface Props {
 }
 
 const DESKTOP_GRID =
-  "hidden sm:grid sm:grid-cols-[minmax(0,1fr)_72px_72px_72px_72px] sm:gap-x-3 md:grid-cols-[minmax(0,1fr)_96px_96px_96px_96px] md:gap-x-4";
+  "hidden sm:grid sm:grid-cols-[minmax(0,1fr)_72px_72px] sm:gap-x-3 md:grid-cols-[minmax(0,1fr)_96px_96px] md:gap-x-4";
 
 function DelayCell({ scheduled, pred, noAverageLabel }: { scheduled: string | null; pred: DelayPred | null; noAverageLabel: string }) {
   const expected = expectedTime(scheduled, pred);
@@ -107,8 +107,6 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
         <span>{t.stop}</span>
         <span>{t.arrival}</span>
         <span>{t.expectedArrival}</span>
-        <span>{t.departure}</span>
-        <span>{t.expectedDeparture}</span>
       </div>
       <ol className="mt-2">
         {stops.map((stop) => {
@@ -152,16 +150,6 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                         <DelayCell scheduled={stop.arr} pred={stop.arr_pred} noAverageLabel={t.noAverage} />
                       </p>
                     </div>
-                    <div>
-                      <p className="text-[10px] uppercase text-fog">{t.departure}</p>
-                      <p className="mt-1 font-display text-sm text-mist">{stop.dep ?? "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] uppercase text-fog">{t.expectedDeparture}</p>
-                      <p className="mt-1 font-display text-sm">
-                        <DelayCell scheduled={stop.dep} pred={stop.dep_pred} noAverageLabel={t.noAverage} />
-                      </p>
-                    </div>
                   </div>
 
                   <div className={DESKTOP_GRID}>
@@ -178,10 +166,6 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                     <span className="self-center font-display text-sm">
                       <DelayCell scheduled={stop.arr} pred={stop.arr_pred} noAverageLabel={t.noAverage} />
                     </span>
-                    <span className="self-center font-display text-sm text-mist">{stop.dep ?? "—"}</span>
-                    <span className="self-center font-display text-sm">
-                      <DelayCell scheduled={stop.dep} pred={stop.dep_pred} noAverageLabel={t.noAverage} />
-                    </span>
                   </div>
                 </>
               ) : (
@@ -192,7 +176,7 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                     </span>
                     <p className="truncate text-sm font-medium text-paper">{nameNode}</p>
                   </div>
-                  <span className="col-span-4 self-center text-[11px] text-fog">{t.notMonitored}</span>
+                  <span className="col-span-2 self-center text-[11px] text-fog">{t.notMonitored}</span>
                 </div>
               )}
             </li>

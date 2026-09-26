@@ -194,35 +194,19 @@ export function BoardV2({ stationId, locale }: Props) {
                       <CallTags call={call} endsHereLabel={t.endsHere} platformLabel={t.platform} />
                     </div>
                   </div>
-                  <div className="grid shrink-0 grid-cols-2 gap-x-4 text-right">
-                    <span>
-                      <span className="block text-[10px] uppercase font-normal text-fog">
-                        {t.arrival}
-                      </span>
-                      <span className="mt-1 block font-mono text-sm text-mist">
-                        {call.arr ?? "—"}
-                      </span>
-                      <DelayBlock
-                        scheduled={call.arr}
-                        pred={call.arr_pred}
-                        modelPred={predictions.get(call.station_stop_id)?.arr}
-                        noAverageLabel={t.noAverage}
-                      />
+                  <div className="shrink-0 text-right">
+                    <span className="block text-[10px] uppercase font-normal text-fog">
+                      {t.arrival}
                     </span>
-                    <span>
-                      <span className="block text-[10px] uppercase font-normal text-fog">
-                        {t.departure}
-                      </span>
-                      <span className="mt-1 block font-mono text-sm text-mist">
-                        {call.dep ?? "—"}
-                      </span>
-                      <DelayBlock
-                        scheduled={call.dep}
-                        pred={call.dep_pred}
-                        modelPred={predictions.get(call.station_stop_id)?.dep}
-                        noAverageLabel={t.noAverage}
-                      />
+                    <span className="mt-1 block font-mono text-sm text-mist">
+                      {call.arr ?? "—"}
                     </span>
+                    <DelayBlock
+                      scheduled={call.arr}
+                      pred={call.arr_pred}
+                      modelPred={predictions.get(call.station_stop_id)?.arr}
+                      noAverageLabel={t.noAverage}
+                    />
                   </div>
                 </li>
               );
@@ -236,7 +220,6 @@ export function BoardV2({ stationId, locale }: Props) {
                 <TableRow className="border-line hover:bg-transparent">
                   <TableHead />
                   <TableHead className="text-[10px] uppercase text-fog">{t.arrival}</TableHead>
-                  <TableHead className="text-[10px] uppercase text-fog">{t.departure}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -269,15 +252,6 @@ export function BoardV2({ stationId, locale }: Props) {
                           scheduled={call.arr}
                           pred={call.arr_pred}
                           modelPred={predictions.get(call.station_stop_id)?.arr}
-                          noAverageLabel={t.noAverage}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <span className="block font-mono text-sm text-mist">{call.dep ?? "—"}</span>
-                        <DelayBlock
-                          scheduled={call.dep}
-                          pred={call.dep_pred}
-                          modelPred={predictions.get(call.station_stop_id)?.dep}
                           noAverageLabel={t.noAverage}
                         />
                       </TableCell>

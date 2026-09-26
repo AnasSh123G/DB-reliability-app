@@ -54,7 +54,6 @@ export function StationBoard({ stationId, locale }: Props) {
         <ol className="mt-2">
           {board.calls.map((call) => {
             const expectedArr = expectedTime(call.arr, call.arr_pred);
-            const expectedDep = expectedTime(call.dep, call.dep_pred);
             return (
               <li key={call.station_stop_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-line py-4 sm:py-3">
                 <div className="flex min-w-0 items-center gap-3">
@@ -76,29 +75,16 @@ export function StationBoard({ stationId, locale }: Props) {
                     </p>
                   </div>
                 </div>
-                <div className="grid shrink-0 grid-cols-2 gap-x-4 text-right">
-                  <span>
-                    <span className="block text-[10px] uppercase font-normal text-fog">{t.arrival}</span>
-                    <span className="mt-1 block font-display text-sm text-mist">{call.arr ?? "—"}</span>
-                    {expectedArr && call.arr_pred ? (
-                      <span className={`block text-[10px] font-semibold ${delayColor(call.arr_pred.p50_min)}`}>
-                        {expectedArr} · +{call.arr_pred.p50_min}
-                      </span>
-                    ) : (
-                      <span className="block text-[10px] text-fog">{call.arr ? t.noAverage : "—"}</span>
-                    )}
-                  </span>
-                  <span>
-                    <span className="block text-[10px] uppercase font-normal text-fog">{t.departure}</span>
-                    <span className="mt-1 block font-display text-sm text-mist">{call.dep ?? "—"}</span>
-                    {expectedDep && call.dep_pred ? (
-                      <span className={`block text-[10px] font-semibold ${delayColor(call.dep_pred.p50_min)}`}>
-                        {expectedDep} · +{call.dep_pred.p50_min}
-                      </span>
-                    ) : (
-                      <span className="block text-[10px] text-fog">{call.dep ? t.noAverage : "—"}</span>
-                    )}
-                  </span>
+                <div className="shrink-0 text-right">
+                  <span className="block text-[10px] uppercase font-normal text-fog">{t.arrival}</span>
+                  <span className="mt-1 block font-display text-sm text-mist">{call.arr ?? "—"}</span>
+                  {expectedArr && call.arr_pred ? (
+                    <span className={`block text-[10px] font-semibold ${delayColor(call.arr_pred.p50_min)}`}>
+                      {expectedArr} · +{call.arr_pred.p50_min}
+                    </span>
+                  ) : (
+                    <span className="block text-[10px] text-fog">{call.arr ? t.noAverage : "—"}</span>
+                  )}
                 </div>
               </li>
             );

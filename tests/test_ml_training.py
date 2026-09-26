@@ -7,6 +7,7 @@ only; nothing is written to any database.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -14,8 +15,15 @@ import pytest
 from dbrel.ml import baselines
 from dbrel.ml.candidates import CatBoostCandidate, LightGBMCandidate, XGBoostCandidate
 from dbrel.ml.features import CATEGORICAL, FEATURES, NO_LINE, UNKNOWN
-from dbrel.ml.metrics import order_quantiles, pinball, score
-from dbrel.ml.split import masks_for, restrict_to_training_vocab, split_dates
+from dbrel.ml.metrics import (
+    arrival_errors, order_quantiles, pinball, score, score_arrivals,
+    score_arrivals_with_breakdowns,
+)
+from dbrel.ml.report import save_arrival_report
+from dbrel.ml.split import (
+    arrival_experiment_masks, masks_for, reserve_fresh_holdout, restrict_to_training_vocab, split_dates,
+    training_history_before,
+)
 from dbrel.ml.tune import tune
 
 # --- split ------------------------------------------------------------------
@@ -56,7 +64,134 @@ def test_training_vocab_makes_test_only_values_unknown():
     assert out["train"].tolist() == [0, UNKNOWN, 1, 1]
 
 
+def test_fresh_holdout_excludes_inspected_dates_and_stubs():
+    rows = {f"2026-09-{day:02d}": 100 for day in range(1, 27)}
+    rows["2026-09-23"] = 2
+    fresh = reserve_fresh_holdout(
+        rows, training=["2026-09-01"], validation=["2026-09-16"],
+        inspected=[f"2026-09-{day:02d}" for day in range(17, 23)],
+    )
+    assert fresh == ["2026-09-24", "2026-09-25", "2026-09-26"]
+    with pytest.raises(ValueError, match="only 2 available"):
+        reserve_fresh_holdout(
+            dict(rows, **{"2026-09-26": 1}), training=["2026-09-01"],
+            validation=["2026-09-16"], inspected=["2026-09-22"],
+        )
+
+
+def test_history_excludes_labels_finalized_after_cross_midnight_cutoff():
+    from ml_fixture import utc_of
+
+    # Service-date 2 September, arrival 03:00 on the 3rd: the cutoff is
+    # 22:00 on the 2nd, even though the scheduled arrival falls the next day.
+    arrival = utc_of("2026-09-02", 27 * 3600)
+    cutoff = arrival - 5 * 3600
+    mask = training_history_before(
+        np.array([True, True, True, False]),
+        np.array([cutoff]),
+        np.array([cutoff - 1, cutoff + 1, -1, cutoff - 100]),
+    )
+    assert mask.tolist() == [True, False, False, False]
+    with pytest.raises(ValueError, match="no finalized"):
+        training_history_before(np.array([True]), np.array([cutoff]), np.array([cutoff + 1]))
+
+
+def test_arrival_experiment_fits_vocab_only_from_finalized_prior_history():
+    dates = ["2026-09-01", "2026-09-02", "2026-09-03"]
+    ds = SimpleNamespace(
+        day=np.array([0, 0, 1, 2]), cutoff_utc=np.array([100, 100, 200, 300]),
+        finalized_at=np.array([150, 250, 300, 400]),
+        meta={"dates": dates, "rows_per_date": dict.fromkeys(dates, 100),
+              "timetable_asof_verified": False},
+    )
+    split, masks = arrival_experiment_masks(
+        ds, training=[dates[0]], validation=[dates[1]], inspected=[dates[2]],
+    )
+    assert split.test == []
+    assert masks["train"].tolist() == [True, False, False, False]
+    feats = {name: np.zeros(4, dtype=np.int32) for name in CATEGORICAL}
+    feats["train"] = np.array([0, 1, 2, 3], dtype=np.int32)
+    vocab = {name: [0] for name in CATEGORICAL}
+    vocab["train"] = [10, 20, 30, 40]
+    encoded, trained_vocab = restrict_to_training_vocab(feats, vocab, masks["train"])
+    assert trained_vocab["train"] == [10]
+    assert encoded["train"].tolist() == [0, UNKNOWN, UNKNOWN, UNKNOWN]
+    with pytest.raises(ValueError, match="need 3 complete"):
+        arrival_experiment_masks(
+            ds, training=[dates[0]], validation=[dates[1]], inspected=[dates[2]],
+            final_test=True,
+        )
+
+
 # --- metrics ----------------------------------------------------------------
+
+def test_individual_arrival_tolerances_include_boundary_and_missing():
+    actual = np.array([6.0, 10.0, 3.0, 12.0])
+    predicted = np.array([4.0, 7.0, np.nan, 0.0])
+    scored = score_arrivals(actual, predicted)
+    assert scored["eligible"] == 4 and scored["scored"] == 3 and scored["missing"] == 1
+    assert scored["coverage"] == 0.75
+    assert scored["within_1_min"] == 0
+    assert scored["within_3_min"] == 0.5
+    assert scored["within_5_min"] == 0.5
+    assert scored["mae_scored"] == pytest.approx(17 / 3)
+    assert arrival_errors(actual, predicted).tolist()[:2] == [2, 3]
+    assert score_arrivals(actual[:1], np.array([2.9999]))["within_3_min"] == 0
+
+
+def test_arrival_scores_handle_all_missing_empty_and_bad_inputs():
+    assert score_arrivals(np.array([2.0]), np.array([np.nan])) == {
+        "eligible": 1, "scored": 0, "missing": 1, "coverage": 0.,
+        "mae_scored": None, "within_1_min": 0., "within_3_min": 0., "within_5_min": 0.,
+    }
+    assert score_arrivals(np.array([]), np.array([]))["within_3_min"] is None
+    with pytest.raises(ValueError, match="finite"):
+        score_arrivals(np.array([np.nan]), np.array([1.]))
+    with pytest.raises(ValueError, match="infinite"):
+        score_arrivals(np.array([1.]), np.array([np.inf]))
+
+
+def test_arrival_breakdowns_use_same_individual_rows():
+    scores = score_arrivals_with_breakdowns(
+        np.array([6., 7., 3.]), np.array([4., np.nan, 3.]),
+        {"day_type": np.array([0, 0, 1])},
+    )
+    assert scores["overall"]["within_3_min"] == pytest.approx(2 / 3)
+    assert scores["by_day_type"]["0"]["eligible"] == 2
+    assert scores["by_day_type"]["0"]["within_3_min"] == pytest.approx(0.5)
+
+
+def test_arrival_report_recomputes_scores_from_saved_rows(tmp_path):
+    ds = SimpleNamespace(
+        stop_id=np.array([11, 12, 13, 14]), trip_id=np.array([1, 2, 3, 4]),
+        stop_sequence=np.array([20, 20, 30, 30]), day=np.array([0, 0, 1, 1]),
+        segment=np.array(["FV", "FV", "RV", "RV"]),
+        arr_min=np.array([1., 4., 12., 80.], dtype=np.float32),
+        scheduled_arrival_utc=np.array([100000, 200000, 300000, 400000]),
+        cutoff_utc=np.array([82000, 182000, 282000, 382000]),
+        features={"station": np.array([1, 1, 2, 2]),
+                  "is_holiday": np.array([0., 0., 1., 1.])},
+        meta={"dates": ["2026-09-01", "2026-09-02"],
+              "timetable_asof_verified": False, "cutoff_hours": 5},
+    )
+    out = tmp_path / "arrival-report"
+    report = save_arrival_report(
+        out, ds=ds, rows=np.arange(4),
+        predictions={"incumbent": np.array([1., 0., 12., 10.]),
+                     "formula": np.array([2., 5., np.nan, 79.])},
+        phase="diagnostic", exclusions={"cancelled": 1},
+    )
+    assert report["exclusions"] == {"cancelled": 1}
+    assert report["timetable_asof_verified"] is False
+    assert report["scores"]["formula"]["overall"]["within_3_min"] == 0.75
+    assert report["scores"]["formula"]["by_date"]["2026-09-02"]["missing"] == 1
+    for name, summary in json.loads((out / "report.json").read_text())["scores"].items():
+        with np.load(out / f"{name}.npz") as saved:
+            recomputed = score_arrivals(saved["actual_min"], saved["predicted_min"])
+            assert recomputed == summary["overall"]
+            assert np.allclose(saved["error_min"], arrival_errors(
+                saved["actual_min"], saved["predicted_min"]), equal_nan=True)
+    assert report["scores"]["incumbent"]["overall"]["eligible"] == 4
 
 
 def test_pinball_and_coverage_by_hand():

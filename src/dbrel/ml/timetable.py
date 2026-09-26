@@ -37,12 +37,20 @@ class ScheduledCall:
     stop_rank: int
     n_stops: int
 
-    def raw(self, *, direction: int, holiday_set: set[tuple[str, str]]) -> dict[str, list]:
-        """This call as a one-row `RAW_COLUMNS` dict."""
+    def raw(self, *, direction: int, holiday_set: set[tuple[str, str]],
+            arrival_clock: bool = False) -> dict[str, list]:
+        """This call as a one-row `RAW_COLUMNS` dict.
+
+        `arrival_clock`: the planned arrival as the scheduled time (arrival-only
+        models), instead of the departure-preferred time the v2 model uses.
+        """
         train, station = self.train, self.station
-        sched = self.planned_departure_sec
-        if sched is None:
+        if arrival_clock:
             sched = self.planned_arrival_sec
+        else:
+            sched = self.planned_departure_sec
+            if sched is None:
+                sched = self.planned_arrival_sec
         start = train.first_departure_sec
         row = {
             "station_id": station.id,

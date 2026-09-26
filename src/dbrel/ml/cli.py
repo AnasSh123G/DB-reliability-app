@@ -29,11 +29,13 @@ def _stamped_echo(message: str) -> None:
 @ml_app.command("build-dataset")
 def build_dataset_cmd(
     out: Path = typer.Option(None, help="output directory (default: data/ml)"),
+    arrival_only: bool = typer.Option(False, help="write the separate arrival-only experiment view "
+                                                  "(arrival_dataset.npz); dataset.npz is untouched"),
 ) -> None:
     """Read every trustworthy observed stop into data/ml/dataset.npz (~15-30 min nationally)."""
     from dbrel.config import DB_PATH, ML_DATA_DIR
     from dbrel.db import session_scope
-    from dbrel.ml.dataset import build_dataset
+    from dbrel.ml.dataset import build_arrival_dataset, build_dataset
     from dbrel.ml.features import all_directions
 
     out = out or ML_DATA_DIR
@@ -49,7 +51,8 @@ def build_dataset_cmd(
             last[0] = n
             typer.echo(f"  {n:,} rows read")
 
-    meta = build_dataset(DB_PATH, out, directions, progress=progress)
+    meta = (build_arrival_dataset if arrival_only else build_dataset)(
+        DB_PATH, out, directions, progress=progress)
     typer.echo(
         f"dataset: {meta['n_rows']:,} rows ({meta['n_dep_targets']:,} departure / "
         f"{meta['n_arr_targets']:,} arrival targets) over {meta['dates'][0]} .. {meta['dates'][-1]}, "
@@ -229,7 +232,12 @@ def predict_delay_cmd(
     direction: int = typer.Option(None, help="with --line: 0 or 1 (default: both)"),
     count: int = typer.Option(3, help="with --line: calls per direction"),
 ) -> None:
-    """Predict arrival/departure delay (median and p25-p75) from the model and timetable alone."""
+    """Predict delay (an estimate and p25-p75) from the model and timetable alone.
+
+    A v2 TabM artifact predicts both sides, its estimate being the median; an
+    arrival-net artifact predicts arrivals only, its estimate being the centre
+    of the most likely 6-minute window (not the median).
+    """
     from dbrel.config import ML_MODELS_DIR
     from dbrel.db import session_scope
     from dbrel.direction import line_trains_by_direction
@@ -289,6 +297,9 @@ def predict_delay_cmd(
         predictions = model.predict_calls(session, calls)
         typer.echo(f"{st.name}, {day.isoformat()} — model {model.artifact.name} "
                    f"(historical pattern, not a live forecast)")
+        if model.arrival is not None:
+            typer.echo("  arrival only: estimate = centre of the most likely 6-minute window "
+                       "(not the median), band p25 … p75; departures are not predicted")
         for p in sorted(predictions, key=lambda p: (p.call.planned_departure_sec or p.call.planned_arrival_sec or 0)):
             c = p.call
             typer.echo(

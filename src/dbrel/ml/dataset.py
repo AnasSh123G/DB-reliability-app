@@ -44,10 +44,27 @@ from dbrel.ml.features import (
 
 DATASET_NAME = "dataset.npz"
 META_NAME = "dataset.json"
+ARRIVAL_DATASET_NAME = "arrival_dataset.npz"
+ARRIVAL_META_NAME = "arrival_dataset.json"
 _CHUNK = 250_000
 
-_QUERY = f"""
+def _query(*, arrival_only: bool) -> str:
+    sched = "ts.supposed_arrival_utc" if arrival_only else \
+        "COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc)"
+    arrival_filter = f"""
+      AND ts.supposed_arrival_utc IS NOT NULL
+      AND ts.arr_cancelled = 0
+      AND ts.arr_delay_s IS NOT NULL
+      AND ABS(ts.arr_delay_s) <= {MAX_PLAUSIBLE_DELAY_S}
+    """ if arrival_only else ""
+    return f"""
     SELECT
+        ts.id,
+        ts.stop_sequence,
+        ts.supposed_arrival_utc,
+        ts.last_observed_at,
+        t.finalized_at,
+        COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc),
         ts.trip_id,
         t.service_date,
         ts.station_id,
@@ -60,7 +77,7 @@ _QUERY = f"""
         st.lat,
         st.lon,
         ts.is_holiday,
-        COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc),
+        {sched},
         ({_TRIP_START_TTS_SQL}),
         r.stop_rank,
         r.n_stops,
@@ -79,7 +96,11 @@ _QUERY = f"""
             (ts.arr_delay_s IS NOT NULL AND ABS(ts.arr_delay_s) <= {MAX_PLAUSIBLE_DELAY_S})
          OR (ts.dep_delay_s IS NOT NULL AND ABS(ts.dep_delay_s) <= {MAX_PLAUSIBLE_DELAY_S})
       )
+      {arrival_filter}
 """
+
+_QUERY = _query(arrival_only=False)
+_ARRIVAL_QUERY = _query(arrival_only=True)
 
 # The window prediction's `timetable.calls_at` reproduces in Python.
 _RANK_TABLE_SQL = """
@@ -103,6 +124,13 @@ class Dataset:
     trip_id: np.ndarray  # int64
     segment: np.ndarray  # object: FV / RV / S / ""
     meta: dict
+    stop_id: np.ndarray | None = None
+    stop_sequence: np.ndarray | None = None
+    scheduled_arrival_utc: np.ndarray | None = None
+    cutoff_utc: np.ndarray | None = None
+    last_observed_at: np.ndarray | None = None
+    finalized_at: np.ndarray | None = None
+    v2_sched_local_sec: np.ndarray | None = None
 
 
 def _hhmm_to_sec(values: list) -> np.ndarray:
@@ -134,6 +162,17 @@ def build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *, p
     `directions` is `features.all_directions(session)` -- resolved by the
     caller, which has an ORM session; this function only speaks raw sqlite3.
     """
+    return _build_dataset(db_path, out_dir, directions, progress=progress, arrival_only=False)
+
+
+def build_arrival_dataset(db_path: Path, out_dir: Path, directions: dict[int, int],
+                          *, progress=None) -> dict:
+    """Build an arrival-only view alongside, never over, the deployed v2 dataset."""
+    return _build_dataset(db_path, out_dir, directions, progress=progress, arrival_only=True)
+
+
+def _build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *,
+                   progress=None, arrival_only: bool) -> dict:
     started = time.monotonic()
     conn = _connect_readonly(db_path)
     conn.execute("DROP TABLE IF EXISTS temp.ml_stop_rank")
@@ -144,14 +183,15 @@ def build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *, p
     breakpoints = offset_breakpoints(years)
 
     chunks: dict[str, list[np.ndarray]] = {}
-    cursor = conn.execute(_QUERY)
+    cursor = conn.execute(_ARRIVAL_QUERY if arrival_only else _QUERY)
     n_rows = 0
     while True:
         rows = cursor.fetchmany(_CHUNK)
         if not rows:
             break
         cols = list(zip(*rows))
-        (trip_id, service_date, station_id, train_id, line_id, category, operator, segment,
+        (stop_id, stop_sequence, scheduled_arrival_utc, last_observed_at, finalized_at, v2_sched_utc,
+         trip_id, service_date, station_id, train_id, line_id, category, operator, segment,
          state, lat, lon, holiday, sched_utc, trip_start, stop_rank, n_stops, arr_s, dep_s) = cols
 
         arr = np.array([np.nan if v is None else v for v in arr_s], dtype=np.float64)
@@ -177,8 +217,19 @@ def build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *, p
             "stop_rank": np.array([np.nan if v is None else v for v in stop_rank], dtype=np.float64),
             "n_stops": np.array([np.nan if v is None else v for v in n_stops], dtype=np.float64),
             "arr_min": (arr / 60).astype(np.float32),
-            "dep_min": (dep / 60).astype(np.float32),
+            "dep_min": np.full(len(rows), np.nan, dtype=np.float32) if arrival_only
+                       else (dep / 60).astype(np.float32),
         }
+        if arrival_only:
+            piece.update(
+                stop_id=np.asarray(stop_id, dtype=np.int64),
+                stop_sequence=np.asarray(stop_sequence, dtype=np.int32),
+                scheduled_arrival_utc=np.asarray(scheduled_arrival_utc, dtype=np.int64),
+                last_observed_at=np.asarray([v or -1 for v in last_observed_at], dtype=np.int64),
+                finalized_at=np.asarray([v or -1 for v in finalized_at], dtype=np.int64),
+                # the deployed v2 model's clock input (departure-preferred), for scoring it on these rows
+                v2_sched_local_sec=_local_sec_of_day(np.array(v2_sched_utc, dtype=np.int64), breakpoints),
+            )
         for key, value in piece.items():
             chunks.setdefault(key, []).append(value)
         n_rows += len(rows)
@@ -202,7 +253,8 @@ def build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *, p
     encoded = encode_categoricals(features, vocab)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    tmp = out_dir / (DATASET_NAME + ".tmp.npz")
+    dataset_name = ARRIVAL_DATASET_NAME if arrival_only else DATASET_NAME
+    tmp = out_dir / (dataset_name + ".tmp.npz")
     np.savez(
         tmp,
         **{f"f_{name}": encoded[name] for name in encoded},
@@ -211,8 +263,12 @@ def build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *, p
         day=day,
         trip_id=col["trip_id"],
         segment=col["segment"].astype(str),
+        **({name: col[name] for name in (
+            "stop_id", "stop_sequence", "scheduled_arrival_utc", "last_observed_at",
+            "finalized_at", "v2_sched_local_sec",
+        )} if arrival_only else {}),
     )
-    tmp.replace(out_dir / DATASET_NAME)
+    tmp.replace(out_dir / dataset_name)
 
     per_day = np.bincount(day, minlength=len(dates))
     meta = {
@@ -227,14 +283,39 @@ def build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *, p
         "rows_per_date": {d: int(c) for d, c in zip(dates, per_day)},
         "vocab": vocab,
     }
-    (out_dir / META_NAME).write_text(json.dumps(meta, indent=1, ensure_ascii=False))
+    if arrival_only:
+        meta["kind"] = "arrival-only"
+        meta["timetable_asof_verified"] = False
+        meta["cutoff_hours"] = 5
+    (out_dir / (ARRIVAL_META_NAME if arrival_only else META_NAME)).write_text(
+        json.dumps(meta, indent=1, ensure_ascii=False)
+    )
     return meta
 
 
 def load_dataset(out_dir: Path) -> Dataset:
-    meta = json.loads((out_dir / META_NAME).read_text())
-    with np.load(out_dir / DATASET_NAME, allow_pickle=False) as data:
+    return _load_dataset(out_dir, DATASET_NAME, META_NAME)
+
+
+def load_arrival_dataset(out_dir: Path) -> Dataset:
+    """Load the separate arrival-only cache with its individual call identifiers."""
+    result = _load_dataset(out_dir, ARRIVAL_DATASET_NAME, ARRIVAL_META_NAME)
+    if result.meta.get("kind") != "arrival-only":
+        raise ValueError("expected an arrival-only dataset")
+    return result
+
+
+def _load_dataset(out_dir: Path, dataset_name: str, meta_name: str) -> Dataset:
+    meta = json.loads((out_dir / meta_name).read_text())
+    with np.load(out_dir / dataset_name, allow_pickle=False) as data:
         features = {key[2:]: data[key] for key in data.files if key.startswith("f_")}
+        arrival_only = meta.get("kind") == "arrival-only"
+        if arrival_only and (missing := set((
+            "stop_id", "stop_sequence", "scheduled_arrival_utc", "last_observed_at",
+            "finalized_at", "v2_sched_local_sec",
+        )) - set(data.files)):
+            raise ValueError(f"arrival dataset missing {sorted(missing)}")
+        scheduled = data["scheduled_arrival_utc"] if arrival_only else None
         return Dataset(
             features=features,
             arr_min=data["arr_min"],
@@ -243,6 +324,13 @@ def load_dataset(out_dir: Path) -> Dataset:
             trip_id=data["trip_id"],
             segment=data["segment"],
             meta=meta,
+            stop_id=data["stop_id"] if arrival_only else None,
+            stop_sequence=data["stop_sequence"] if arrival_only else None,
+            scheduled_arrival_utc=scheduled,
+            cutoff_utc=scheduled - 5 * 3600 if arrival_only else None,
+            last_observed_at=data["last_observed_at"] if arrival_only else None,
+            finalized_at=data["finalized_at"] if arrival_only else None,
+            v2_sched_local_sec=data["v2_sched_local_sec"] if arrival_only else None,
         )
 
 

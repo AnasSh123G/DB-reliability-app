@@ -6,10 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLineDetail } from "@/hooks/use-dbrel";
-import { useModelPredictions } from "@/hooks/use-tabm";
-import { delayColor } from "@/lib/delay";
 import { copy, type Locale } from "@/lib/i18n";
-import { ModelDelta } from "./ModelDelta";
 import { v2Paths } from "./paths";
 
 interface Props {
@@ -20,12 +17,6 @@ interface Props {
 export function LineV2({ lineId, locale }: Props) {
   const t = copy[locale];
   const { data: detail, isLoading, isError } = useLineDetail(lineId);
-  const predictions = useModelPredictions(
-    detail?.model_stamp,
-    (detail?.directions ?? []).flatMap((dir) =>
-      dir.runs.map((run) => ({ key: run.id, model_input: run.model_input })),
-    ),
-  );
 
   if (isLoading) {
     return (
@@ -103,9 +94,6 @@ export function LineV2({ lineId, locale }: Props) {
                           <TrainFront className="size-3.5" />
                         </span>
                         <div className="min-w-0">
-                          <span className="font-mono text-sm text-mist">
-                            {run.departs ?? "--:--"}
-                          </span>{" "}
                           <Link
                             {...v2Paths.train(run.id)}
                             className="font-display font-semibold text-paper hover:underline"
@@ -132,21 +120,6 @@ export function LineV2({ lineId, locale }: Props) {
                             )}
                           </p>
                         </div>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        {run.pred ? (
-                          <span
-                            className={`block font-mono text-xs font-semibold ${delayColor(run.pred.p50_min)}`}
-                          >
-                            <span className="mr-1 font-normal text-fog">Ø</span>+{run.pred.p50_min}{" "}
-                            min
-                          </span>
-                        ) : (
-                          <span className="block text-[10px] text-fog">{t.noAverage}</span>
-                        )}
-                        {predictions.get(run.id)?.dep && (
-                          <ModelDelta pred={predictions.get(run.id)!.dep} />
-                        )}
                       </div>
                     </li>
                   ))}

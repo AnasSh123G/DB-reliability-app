@@ -395,7 +395,7 @@ export function SearchV2({ locale }: Props) {
                         </span>
                       </span>
                     </span>
-                    <span className="grid shrink-0 grid-cols-2 gap-x-4 text-right">
+                    <span className="flex shrink-0 flex-col items-end gap-1 text-right">
                       <span>
                         <span className="block text-[10px] uppercase font-normal text-fog">
                           {t.arrival}
@@ -410,21 +410,7 @@ export function SearchV2({ locale }: Props) {
                           noAverageLabel={t.noAverage}
                         />
                       </span>
-                      <span>
-                        <span className="block text-[10px] uppercase font-normal text-fog">
-                          {t.departure}
-                        </span>
-                        <span className="mt-1 block font-mono text-sm text-mist">
-                          {trip.sched_dep ?? "—"}
-                        </span>
-                        <DelayBlock
-                          scheduled={trip.sched_dep}
-                          pred={trip.dep_pred}
-                          modelPred={modelPred?.dep}
-                          noAverageLabel={t.noAverage}
-                        />
-                      </span>
-                      <span className="col-span-2 mt-2 flex items-center justify-end gap-1 text-[10px] font-normal text-fog">
+                      <span className="mt-2 flex items-center justify-end gap-1 text-[10px] font-normal text-fog">
                         <Clock3 className="size-3" />
                         {t.openRoute}
                         <ArrowRight className="size-3" />

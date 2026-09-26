@@ -199,21 +199,6 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                     />
                   </p>
                 </div>
-                <div>
-                  <p className="text-[10px] uppercase text-fog">{t.departure}</p>
-                  <p className="mt-1 font-mono text-sm text-mist">{stop.dep ?? "—"}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase text-fog">{t.expectedDeparture}</p>
-                  <p className="mt-1 text-sm">
-                    <DelayCell
-                      scheduled={stop.dep}
-                      pred={stop.dep_pred}
-                      modelPred={predictions.get(stop.seq)?.dep}
-                      noAverageLabel={t.noAverage}
-                    />
-                  </p>
-                </div>
               </div>
             )}
           </li>
@@ -228,10 +213,6 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
               <TableHead className="text-[10px] uppercase text-fog">{t.stop}</TableHead>
               <TableHead className="text-[10px] uppercase text-fog">{t.arrival}</TableHead>
               <TableHead className="text-[10px] uppercase text-fog">{t.expectedArrival}</TableHead>
-              <TableHead className="text-[10px] uppercase text-fog">{t.departure}</TableHead>
-              <TableHead className="text-[10px] uppercase text-fog">
-                {t.expectedDeparture}
-              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -268,18 +249,9 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                         noAverageLabel={t.noAverage}
                       />
                     </TableCell>
-                    <TableCell className="font-mono text-sm text-mist">{stop.dep ?? "—"}</TableCell>
-                    <TableCell className="text-sm">
-                      <DelayCell
-                        scheduled={stop.dep}
-                        pred={stop.dep_pred}
-                        modelPred={predictions.get(stop.seq)?.dep}
-                        noAverageLabel={t.noAverage}
-                      />
-                    </TableCell>
                   </>
                 ) : (
-                  <TableCell colSpan={4}>
+                  <TableCell colSpan={2}>
                     <Badge variant="outline" className="text-[11px] font-normal text-fog">
                       {t.notMonitored}
                     </Badge>

@@ -300,7 +300,6 @@ export function TrainSearch({ locale }: Props) {
             ) : trips.length > 0 ? (
               trips.map((trip) => {
                 const expectedArr = expectedTime(trip.sched_arr, trip.arr_pred);
-                const expectedDep = expectedTime(trip.sched_dep, trip.dep_pred);
                 const label = trip.relation === "after" ? t.selectedService : t.previousService;
                 return (
                   <Button
@@ -318,7 +317,7 @@ export function TrainSearch({ locale }: Props) {
                         <span className="mt-1 block font-display font-semibold text-paper">{trip.name}</span>
                       </span>
                     </span>
-                    <span className="grid shrink-0 grid-cols-2 gap-x-4 text-right">
+                    <span className="flex shrink-0 flex-col items-end gap-1 text-right">
                       <span>
                         <span className="block text-[10px] uppercase font-normal text-fog">{t.arrival}</span>
                         <span className="mt-1 block font-display text-sm text-mist">{trip.sched_arr ?? "—"}</span>
@@ -330,18 +329,7 @@ export function TrainSearch({ locale }: Props) {
                           <span className="block text-[10px] text-fog">{trip.sched_arr ? t.noAverage : "—"}</span>
                         )}
                       </span>
-                      <span>
-                        <span className="block text-[10px] uppercase font-normal text-fog">{t.departure}</span>
-                        <span className="mt-1 block font-display text-sm text-mist">{trip.sched_dep ?? "—"}</span>
-                        {expectedDep && trip.dep_pred ? (
-                          <span className={`block text-[10px] font-semibold ${delayColor(trip.dep_pred.p50_min)}`}>
-                            {expectedDep} · +{trip.dep_pred.p50_min}
-                          </span>
-                        ) : (
-                          <span className="block text-[10px] text-fog">{trip.sched_dep ? t.noAverage : "—"}</span>
-                        )}
-                      </span>
-                      <span className="col-span-2 mt-2 flex items-center justify-end gap-1 text-[10px] font-normal text-fog">
+                      <span className="mt-2 flex items-center justify-end gap-1 text-[10px] font-normal text-fog">
                         <Clock3 className="size-3" />
                         {t.openRoute}
                         <ArrowRight className="size-3" />
