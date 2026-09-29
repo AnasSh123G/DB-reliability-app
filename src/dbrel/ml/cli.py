@@ -60,6 +60,47 @@ def build_dataset_cmd(
     )
 
 
+@ml_app.command("build-full-dataset")
+def build_full_dataset_cmd(
+    out: Path = typer.Option(None, help="output directory (default: data/ml/arrival_full)"),
+    full: bool = typer.Option(False, help="rebuild every month, not just new, changed and the "
+                                          "latest (after a station/train/timetable table change)"),
+) -> None:
+    """Build or refresh the full-history arrival dataset, one shard per calendar month.
+
+    Only new months, months whose rows changed and the latest month are rebuilt.
+    Run a first national build capped: `dbrel ml launch full-dataset --memory 14G --
+    dbrel ml build-full-dataset`.
+    """
+    from dbrel.config import DB_PATH, ML_DATA_DIR
+    from dbrel.db import session_scope
+    from dbrel.ml.features import all_directions
+    from dbrel.ml.full_history import build_full_history
+    from dbrel.ml.memory import format_memory
+
+    out = out or ML_DATA_DIR / "arrival_full"
+    typer.echo("resolving directions ...")
+    with session_scope() as session:
+        directions = all_directions(session)
+    typer.echo(f"  {len(directions):,} trains")
+    last = {"month": None, "rows": 0}
+
+    def progress(event: dict) -> None:
+        if event["done"]:
+            _stamped_echo(f"{event['month']}: {event['rows']:,} rows")
+        elif event["rows"] - (last["rows"] if last["month"] == event["month"] else 0) >= 2_000_000:
+            last.update(month=event["month"], rows=event["rows"])
+            _stamped_echo(f"  {event['month']}: {event['rows']:,} rows read")
+
+    manifest = build_full_history(DB_PATH, out, directions, full=full, progress=progress)
+    typer.echo("rows per month (rebuilt marked *):")
+    for month, shard in manifest["shards"].items():
+        mark = "*" if month in manifest["rebuilt"] else " "
+        typer.echo(f"  {mark} {month}  {shard['rows']:>12,} rows over {len(shard['dates'])} dates")
+    typer.echo(f"total {manifest['n_rows']:,} rows, {manifest['build_seconds'] / 60:.1f} min -> {out}")
+    typer.echo(format_memory())
+
+
 @ml_app.command("bakeoff")
 def bakeoff_cmd(
     libraries: str = typer.Option("lightgbm,catboost,xgboost", help="comma-separated candidates"),
@@ -231,12 +272,15 @@ def predict_delay_cmd(
     time: str = typer.Option(None, help="HH:MM; with --line, the calls nearest this time"),
     direction: int = typer.Option(None, help="with --line: 0 or 1 (default: both)"),
     count: int = typer.Option(3, help="with --line: calls per direction"),
+    artifact: Path = typer.Option(None, help="predict with this artifact directory (e.g. a comparison "
+                                             "model in data/models/v2-comparison/) instead of CURRENT"),
 ) -> None:
     """Predict delay (an estimate and p25-p75) from the model and timetable alone.
 
-    A v2 TabM artifact predicts both sides, its estimate being the median; an
-    arrival-net artifact predicts arrivals only, its estimate being the centre
-    of the most likely 6-minute window (not the median).
+    The estimate is the median. A v2 TabM artifact predicts both sides; an
+    arrival-net artifact predicts arrivals only. The one exception is the
+    window-rule arrival MLP (20260926T113337Z), whose estimate is the centre of
+    the most likely 6-minute window; the output says so when it is used.
     """
     from dbrel.config import ML_MODELS_DIR
     from dbrel.db import session_scope
@@ -250,10 +294,15 @@ def predict_delay_cmd(
         day = date_cls.fromisoformat(date)
     except ValueError:
         _fail(f"--date must be YYYY-MM-DD, got {date!r}")
-    try:
-        model = DelayModel.current(ML_MODELS_DIR)
-    except NoModelError as exc:
-        _fail(str(exc))
+    if artifact is not None:
+        if not (artifact / "manifest.json").exists():
+            _fail(f"{artifact} is not a model artifact (no manifest.json)")
+        model = DelayModel(artifact)
+    else:
+        try:
+            model = DelayModel.current(ML_MODELS_DIR)
+        except NoModelError as exc:
+            _fail(str(exc))
 
     with session_scope() as session:
         stations = _resolve_station(session, station)
@@ -297,9 +346,13 @@ def predict_delay_cmd(
         predictions = model.predict_calls(session, calls)
         typer.echo(f"{st.name}, {day.isoformat()} — model {model.artifact.name} "
                    f"(historical pattern, not a live forecast)")
-        if model.arrival is not None:
+        if model.manifest.get("role") == "comparison":
+            typer.echo("  comparison model: never served on the website")
+        if model.arrival is not None and model.manifest["point_rule"] == "window":
             typer.echo("  arrival only: estimate = centre of the most likely 6-minute window "
                        "(not the median), band p25 … p75; departures are not predicted")
+        elif model.arrival is not None:
+            typer.echo("  arrival only: estimate = median, band p25 … p75; departures are not predicted")
         for p in sorted(predictions, key=lambda p: (p.call.planned_departure_sec or p.call.planned_arrival_sec or 0)):
             c = p.call
             typer.echo(
@@ -315,8 +368,8 @@ def launch_cmd(
     memory: str = typer.Option("18G", help="hard memory cap (MemoryMax); swap is disabled"),
     oom_policy: str = typer.Option("stop", help="stop: end the unit at the cap; continue: only "
                                                  "the offending process dies (memory-check)"),
-    ignore_memory_check: bool = typer.Option(False, help="launch a bake-off even if the memory "
-                                                          "check is missing or says it won't fit"),
+    ignore_memory_check: bool = typer.Option(False, help="launch a bake-off or full-year step even if "
+                                                          "its memory check is missing or says it won't fit"),
 ) -> None:
     """Start a job as a capped systemd user service, outside any editor or terminal."""
     from pathlib import Path

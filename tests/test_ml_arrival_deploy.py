@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 
 import numpy as np
 import pytest
@@ -17,8 +18,8 @@ from dbrel.cli import app
 from dbrel.holidays_de import load_holiday_dates
 from dbrel.ml import features as F
 from dbrel.ml.arrival import (
-    ARRIVAL_KIND, arrival_inputs, bin_edges, browser_meta, fit_input_prep, promote,
-    save_arrival_artifact,
+    ARRIVAL_KIND, ROLE_BUDGETS, arrival_inputs, bin_edges, browser_meta, fit_input_prep, promote,
+    role_models_dir, save_arrival_artifact,
 )
 from dbrel.ml.dataset import build_arrival_dataset, load_arrival_dataset
 from dbrel.ml.nn import CURRENT_NAME
@@ -98,6 +99,64 @@ def test_saving_never_moves_current_and_promote_rolls_back(tabm_artifact, arriva
         save_arrival_artifact(models, manifest, {"model.onnx": arrival_artifact / "model.onnx"}, STAMP)
 
 
+def _quantile_manifest(arrival_artifact):
+    saved = json.loads((arrival_artifact / "manifest.json").read_text())
+    return {"vocab": saved["vocab"], "prep": saved["prep"], "output": "quantiles", "edges": None,
+            "point_rule": "median"}
+
+
+def test_roles_budgets_and_the_comparison_directory(tabm_artifact, arrival_artifact, tmp_path):  # noqa: F811
+    models = arrival_artifact.parent
+    comparison = role_models_dir("comparison", models)
+    assert comparison.name == "v2-comparison" and role_models_dir("deployable", models) == models
+    manifest = _quantile_manifest(arrival_artifact)
+    small = tmp_path / "small.onnx"
+    small.write_bytes(b"x" * 1000)
+    saved = save_arrival_artifact(comparison, manifest, {"model.onnx": small}, "20261001T000000Z",
+                                  role="comparison", served_dir=models)
+    meta = json.loads((saved / "manifest.json").read_text())
+    assert meta["role"] == "comparison" and meta["edges"] is None and meta["output"] == "quantiles"
+    assert meta["download_bytes"] == (saved / "model.onnx").stat().st_size + (saved / "manifest.json").stat().st_size
+    assert browser_meta(meta)["output"] == "quantiles"
+
+    with pytest.raises(ValueError, match="must not be written into the served"):
+        save_arrival_artifact(models, manifest, {"model.onnx": small}, "20261001T000001Z",
+                              role="comparison", served_dir=models)
+    for role, budget in ROLE_BUDGETS.items():
+        big = tmp_path / f"{role}.onnx"
+        with big.open("wb") as fh:
+            fh.truncate(budget)  # sparse: exactly the budget, so the manifest tips it over
+        target = role_models_dir(role, models)
+        with pytest.raises(ValueError, match="over its"):
+            save_arrival_artifact(target, manifest, {"model.onnx": big}, f"2026100{len(role)}T000000Z",
+                                  role=role, served_dir=models)
+        assert not list(target.glob(".*.partial"))
+    with pytest.raises(ValueError, match="edges null"):
+        save_arrival_artifact(comparison, dict(manifest, edges=[0, 1]), {"model.onnx": small}, "bad",
+                              role="comparison", served_dir=models)
+
+
+def test_promote_refuses_comparison_artifacts_even_in_the_served_dir(tabm_artifact, arrival_artifact,  # noqa: F811
+                                                                    tmp_path):
+    models = arrival_artifact.parent
+    pointer = models / CURRENT_NAME
+    before = pointer.read_text()
+    small = tmp_path / "small.onnx"
+    small.write_bytes(b"x" * 1000)
+    saved = save_arrival_artifact(role_models_dir("comparison", models), _quantile_manifest(arrival_artifact),
+                                  {"model.onnx": small}, "20261002T000000Z", role="comparison",
+                                  served_dir=models)
+    copied = models / saved.name
+    shutil.copytree(saved, copied)  # copied into v2 by hand
+    for where in (saved.parent, models):
+        with pytest.raises(ValueError, match="comparison artifact"):
+            promote(where, saved.name)
+        assert pointer.read_text() == before
+    # Roleless artifacts (both existing kinds) still count as deployable.
+    assert promote(models, arrival_artifact.name) == tabm_artifact.name
+    assert promote(models, tabm_artifact.name) == arrival_artifact.name
+
+
 def _line(output: str, train: str = "RE 10070") -> tuple[str, str]:
     row = next(r for r in output.splitlines() if train in r)
     arr, dep = row.split(" dep ")
@@ -117,6 +176,38 @@ def test_predict_delay_prints_arrival_only(arrival_artifact):
     manifest = json.loads((arrival_artifact / "manifest.json").read_text())
     assert feeds["cat"].shape[1] == len(F.CATEGORICAL)
     assert feeds["num"].shape[1] == len(manifest["prep"]["numeric"])
+
+
+class FakeQuantileSession(FakeArrivalSession):
+    def run(self, outputs, feeds):
+        if outputs == ["probs"]:
+            return super().run(outputs, feeds)
+        assert outputs == ["quantiles"]
+        return [np.tile(np.array([[0.5, 1.0, 2.0]], dtype=np.float32), (len(feeds["cat"]), 1))]
+
+
+def test_predict_delay_with_a_comparison_artifact_never_reads_current(arrival_artifact, tmp_path,
+                                                                      monkeypatch):
+    import onnxruntime
+
+    monkeypatch.setattr(onnxruntime, "InferenceSession", FakeQuantileSession)
+    models = arrival_artifact.parent
+    promote(models, arrival_artifact.name)
+    args = ["ml", "predict-delay", "--train", "RE 10070", "--station", "Dortmund Hbf",
+            "--date", START.isoformat()]
+    served = runner.invoke(app, args)
+    small = tmp_path / "small.onnx"
+    small.write_bytes(b"x" * 1000)
+    comparison = save_arrival_artifact(role_models_dir("comparison", models), _quantile_manifest(arrival_artifact),
+                                       {"model.onnx": small}, "20261003T000000Z", role="comparison",
+                                       served_dir=models)
+    (models / CURRENT_NAME).write_text("does-not-exist\n")  # CURRENT unusable: must not be read
+    result = runner.invoke(app, [*args, "--artifact", str(comparison)])
+    assert result.exit_code == 0, result.output
+    assert "comparison model" in result.output and "estimate = median" in result.output
+    assert "+1.0 min (+0.5 … +2.0)" in _line(result.output)[0]
+    assert _line(result.output)[0] != _line(served.output)[0]
+    assert runner.invoke(app, [*args, "--artifact", str(tmp_path)]).exit_code == 1
 
 
 def test_origin_call_has_no_arrival_prediction(arrival_artifact):

@@ -9,13 +9,14 @@ from dbrel.ml.arrival import (
     HIST_COLUMNS, NO_HISTORY, ArrivalForecast, ConditionalHistogram, arrival_inputs, bin_edges, bin_index,
     distribution_point, fit_input_prep, grouped_quantiles, grouped_window, histogram_inputs,
 )
-from dbrel.ml.features import CATEGORICAL, NUMERIC, UNKNOWN
-from dbrel.ml.metrics import score_arrivals
+from dbrel.ml.arrival_runs import rank_trials, trial_rank_key
+from dbrel.ml.features import ARRIVAL_NUMERIC, CATEGORICAL, UNKNOWN
+from dbrel.ml.metrics import point_concentration, score_arrivals, score_arrivals_with_breakdowns
 
 
 def _encoded(n, **columns):
     out = {c: np.zeros(n, dtype=np.int32) for c in CATEGORICAL}
-    for name in NUMERIC:
+    for name in ARRIVAL_NUMERIC:
         out[name] = np.zeros(n, dtype=np.float32)
     out["sched_min"] = np.full(n, 8 * 60, dtype=np.float32)
     for name, values in columns.items():
@@ -38,6 +39,29 @@ def test_forecast_requires_finite_points_or_a_reason():
         ArrivalForecast.build([1.0], [""], "median", [[0.0, 2.0, 3.0]])
     with pytest.raises(ValueError, match="point rule"):
         ArrivalForecast.build([1.0], [""], "p50")
+
+
+# --- selection and reporting ------------------------------------------------------
+
+def test_trials_rank_by_mae_with_full_coverage_first():
+    def trial(mae, coverage, size):
+        return {"summary": {"validation": {"mae_scored": mae, "coverage": coverage}, "asset_bytes": size}}
+    trials = {"partial": trial(1.0, 0.9, 1), "big": trial(2.0, 1.0, 9), "small": trial(2.0, 1.0, 5),
+              "best": trial(1.5, 1.0, 50), "empty": trial(None, 0.0, 1)}
+    assert rank_trials(trials) == ["best", "small", "big", "partial", "empty"]
+    assert trial_rank_key({"mae_scored": 1.0, "coverage": 1.0}, 0) < trial_rank_key(
+        {"mae_scored": 0.5, "coverage": 0.99}, 0)
+
+
+def test_report_flags_a_near_constant_estimate_and_breaks_down_by_month():
+    actual = np.array([0.0, 2.0, 5.0, 9.0])
+    predicted = np.array([3.0, 3.0, 3.04, np.nan])
+    assert point_concentration(predicted) == {"most_common_min": 3.0, "most_common_share": 1.0}
+    out = score_arrivals_with_breakdowns(actual, predicted,
+                                         {"month": np.array(["2025-12", "2025-12", "2026-01", "2026-01"])})
+    assert out["overall"]["most_common_share"] == 1.0
+    assert set(out["by_month"]) == {"2025-12", "2026-01"}
+    assert out["by_month"]["2026-01"]["coverage"] == 0.5
 
 
 # --- decision rules -------------------------------------------------------------
@@ -93,6 +117,28 @@ def test_input_prep_unknowns_and_training_only_statistics():
     assert fit_input_prep(enc2, train, vocab, "robust")["stats"] == prep["stats"]
     with pytest.raises(ValueError, match="scaling"):
         fit_input_prep(enc, train, vocab, scaling="minmax")
+
+
+def test_time_of_year_inputs_pass_through_unscaled_and_are_recorded():
+    vocab = {c: [0, 1] for c in CATEGORICAL}
+    angle = 2 * np.pi * np.array([0, 91, 182, 300]) / 366
+    enc = _encoded(4, doy_sin=np.sin(angle), doy_cos=np.cos(angle))
+    train = np.array([True, True, False, False])
+    prep = fit_input_prep(enc, train, vocab, scaling="robust", numeric=ARRIVAL_NUMERIC)
+    assert prep["features_numeric"] == list(ARRIVAL_NUMERIC)
+    assert prep["stats"]["doy_sin"] == [0.0, 1.0] == prep["stats"]["doy_cos"]
+    _, nums = arrival_inputs(enc, prep)
+    got = nums[:, [prep["numeric"].index("doy_sin"), prep["numeric"].index("doy_cos")]]
+    assert np.allclose(got, np.column_stack([np.sin(angle), np.cos(angle)]), atol=1e-6)
+
+
+def test_prep_without_a_feature_list_still_means_the_original_inputs():
+    vocab = {c: [0, 1] for c in CATEGORICAL}
+    enc = _encoded(3)
+    prep = fit_input_prep(enc, np.array([True, True, False]), vocab)
+    assert "features_numeric" not in prep  # deployed artifacts keep their exact prep
+    _, nums = arrival_inputs(enc, prep)
+    assert nums.shape[1] == len(prep["numeric"]) and "doy_sin" not in prep["numeric"]
 
 
 # --- conditional histogram -------------------------------------------------------

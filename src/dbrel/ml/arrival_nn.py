@@ -20,23 +20,26 @@ Heads:
 input prep), a learned per-input scale in front of the network and a residual
 MLP. It is not the full RealMLP-TD recipe.
 
-Early stopping keeps the epoch with the best validation within-3-minute share
-(ties: lower MAE), the selection metric -- not quantile loss. No GPU tensor is
-allowed to reach 2**31 bytes (ROCm on gfx1201 corrupts the tail beyond that).
+Early stopping keeps the epoch with the lowest validation MAE of the point
+estimate (ties: higher within-3 share), the selection metric -- not the
+training loss. No GPU tensor is allowed to reach 2**31 bytes (ROCm on gfx1201
+corrupts the tail beyond that).
 """
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
 from torch import nn
 
 from dbrel.ml.arrival import (
-    PERCENTILES, ArrivalForecast, arrival_inputs, bin_edges, bin_index, distribution_point,
+    PERCENTILES, ArrivalForecast, arrival_inputs, bin_edges, distribution_point,
 )
 from dbrel.ml.features import CATEGORICAL
 from dbrel.ml.metrics import score_arrivals
@@ -45,6 +48,9 @@ ARCHS = ("tabm", "mlp")
 HEADS = ("quantile", "binned")
 UNKNOWN_DROPOUT_COLUMNS = ("train", "station", "line")
 MAX_ACTIVATION_BYTES = 2 ** 30
+ROCM_TENSOR_LIMIT = 2 ** 31
+BLOCK_ROWS = 1 << 20
+PREDICT_BATCH = 65536
 NON_FINITE = "non_finite_output"
 
 
@@ -155,6 +161,20 @@ def build_net(cfg: NetConfig, cards: list[int], n_num: int, n_bins: int) -> nn.M
     return (ArrivalTabM if cfg.arch == "tabm" else ArrivalMLP)(cfg, cards, n_num, n_out)
 
 
+def estimate_model_bytes(cfg: NetConfig, prep: dict, n_bins: int | None = None) -> int:
+    """float32 weights of the exported network, counted on the meta device (nothing allocated)."""
+    n_bins = len(bin_edges()) - 1 if n_bins is None else n_bins
+    with torch.device("meta"):
+        model = build_net(cfg, prep["cards"], len(prep["numeric"]), n_bins)
+    return 4 * (sum(p.numel() for p in model.parameters()) + sum(b.numel() for b in model.buffers()))
+
+
+def estimate_asset_bytes(cfg: NetConfig, prep: dict, vocab: dict, n_bins: int | None = None) -> int:
+    """What the browser downloads: the weights plus the manifest's prep and vocabulary."""
+    return (estimate_model_bytes(cfg, prep, n_bins) + len(json.dumps(prep, indent=1))
+            + len(json.dumps(vocab, indent=1)))
+
+
 def ordered_quantiles(raw):
     p50 = raw[..., 0]
     lo = p50 - nn.functional.softplus(raw[..., 1])
@@ -175,13 +195,88 @@ def arrival_loss(cfg: NetConfig, raw, y, y_bin):
     return torch.maximum(q * diff, (q - 1) * diff).mean()
 
 
+def bin_index_torch(y, edges):
+    """`arrival.bin_index` on the device (edges are whole minutes, exact in float32)."""
+    return (torch.searchsorted(edges, y, right=True) - 1).clamp_(0, len(edges) - 2)
+
+
+def epoch_rank(val: dict) -> tuple[float, float]:
+    """Higher is better: lowest validation MAE, then the within-3 share."""
+    mae = val["mae_scored"] if val["mae_scored"] is not None else math.inf
+    return (-mae, val["within_3_min"] or 0.0)
+
+
 def safe_batch(cfg: NetConfig, n_bins: int, requested: int) -> int:
     per_row = max(cfg.hidden, n_bins) * 4 * cfg.members
     return max(1, min(requested, MAX_ACTIVATION_BYTES // per_row))
 
 
+class BatchSource:
+    """Rows of (cats, nums, y) -- in memory or memory-mapped -- read in fixed blocks.
+
+    `rows` picks (sorted) rows of the arrays; None means all of them in order,
+    which on a memmap reads each block as one contiguous range. An epoch
+    visits the blocks in a random order and every row exactly once.
+    """
+
+    def __init__(self, cats: np.ndarray, nums: np.ndarray, y: np.ndarray,
+                 rows: np.ndarray | None = None, block_rows: int = BLOCK_ROWS):
+        if not (len(cats) == len(nums) == len(y)):
+            raise ValueError("cats, nums and y must have one row each per arrival")
+        self.cats, self.nums, self.y = cats, nums, y
+        self.rows = None if rows is None else np.asarray(rows, dtype=np.int64)
+        self.block_rows = int(block_rows)
+        self.n = len(y) if self.rows is None else len(self.rows)
+        self.n_num = nums.shape[1]
+
+    def __len__(self) -> int:
+        return self.n
+
+    def spans(self) -> list[tuple[int, int]]:
+        return [(s, min(s + self.block_rows, self.n)) for s in range(0, self.n, self.block_rows)]
+
+    def read(self, start: int, stop: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        idx = slice(start, stop) if self.rows is None else self.rows[start:stop]
+        return (np.ascontiguousarray(self.cats[idx], dtype=np.int32),
+                np.ascontiguousarray(self.nums[idx], dtype=np.float32),
+                np.asarray(self.y[idx], dtype=np.float32))
+
+    def blocks(self, rng: np.random.Generator | None = None):
+        spans = self.spans()
+        order = rng.permutation(len(spans)) if rng is not None else range(len(spans))
+        for i in order:
+            yield self.read(*spans[i])
+
+    def targets(self) -> np.ndarray:
+        return np.concatenate([b[2] for b in self.blocks()]) if self.n else np.zeros(0, np.float32)
+
+
+def tensor_bytes(cfg: NetConfig, n_bins: int, n_num: int, d_in: int, block_rows: int) -> dict[str, int]:
+    """Bytes of the largest tensors one training or validation step creates."""
+    batch = cfg.batch_size
+    return {
+        "block cats (int64 on device)": block_rows * len(CATEGORICAL) * 8,
+        "block nums": block_rows * n_num * 4,
+        "block targets (y, bin)": block_rows * 8,
+        "batch input view": batch * cfg.members * d_in * 4,
+        "batch activations": batch * cfg.members * max(cfg.hidden, n_bins) * 4,
+        "prediction activations": safe_batch(cfg, n_bins, PREDICT_BATCH) * cfg.members * max(cfg.hidden, n_bins) * 4,
+    }
+
+
+def check_tensor_sizes(cfg: NetConfig, n_bins: int, n_num: int, d_in: int, block_rows: int) -> None:
+    """Refuse, before the first step, any setup with a tensor at or above 2**31 bytes."""
+    sizes = tensor_bytes(cfg, n_bins, n_num, d_in, block_rows)
+    too_big = {k: v for k, v in sizes.items() if v >= ROCM_TENSOR_LIMIT}
+    if too_big:
+        raise ValueError("a tensor would reach the 2 GiB ROCm fault: "
+                         + ", ".join(f"{k} {v / 2**30:.2f} GiB" for k, v in too_big.items()))
+    if safe_batch(cfg, n_bins, cfg.batch_size) != cfg.batch_size:
+        raise ValueError("training batch would reach the 2 GiB ROCm activation fault")
+
+
 class ArrivalNet:
-    """One network candidate: fit on training rows, early-stop on validation within-3."""
+    """One network candidate: fit on training rows, early-stop on validation MAE."""
 
     def __init__(self, cfg: NetConfig, prep: dict, edges: np.ndarray | None = None):
         self.cfg = cfg
@@ -203,8 +298,11 @@ class ArrivalNet:
         q = ordered_quantiles(raw.float())
         return q.mean(dim=1) if q.dim() == 3 else q  # a mean of ordered triples stays ordered
 
+    def d_in(self) -> int:
+        return sum(embedding_dims(self.cfg, self.prep["cards"])) + len(self.prep["numeric"])
+
     def predict_arrays(self, cats: np.ndarray, nums: np.ndarray, device="cpu",
-                       batch: int = 65536) -> ArrivalForecast:
+                       batch: int = PREDICT_BATCH) -> ArrivalForecast:
         # A distribution is reduced to its point and percentiles batch by batch:
         # (rows x bins) float64 for a whole validation set is gigabytes.
         batch = safe_batch(self.cfg, self.n_bins, batch)
@@ -214,8 +312,8 @@ class ArrivalNet:
         finite = np.zeros(len(cats), dtype=bool)
         with torch.no_grad():
             for s in range(0, len(cats), batch):
-                c = torch.as_tensor(cats[s:s + batch], device=device)
-                n = torch.as_tensor(nums[s:s + batch], device=device)
+                c = torch.as_tensor(np.asarray(cats[s:s + batch]), device=device).long()
+                n = torch.as_tensor(np.asarray(nums[s:s + batch], dtype=np.float32), device=device)
                 raw = self._raw(c, n).cpu().numpy().astype(np.float64)
                 ok = np.isfinite(raw).all(axis=1)
                 idx = np.arange(s, s + len(raw))[ok]
@@ -229,61 +327,98 @@ class ArrivalNet:
         return ArrivalForecast.build(point, np.where(finite, "", NON_FINITE),
                                      self.cfg.point_rule, pct)
 
+    def predict_source(self, source: BatchSource, device="cpu") -> ArrivalForecast:
+        """`predict_arrays` over a batch source, block by block in row order."""
+        parts = [self.predict_arrays(c, n, device) for c, n, _ in source.blocks()]
+        if not parts:
+            return ArrivalForecast.build(np.zeros(0), np.zeros(0, dtype=str), self.cfg.point_rule,
+                                         np.zeros((0, 3)))
+        return ArrivalForecast.build(
+            np.concatenate([p.point for p in parts]), np.concatenate([p.missing_reason for p in parts]),
+            self.cfg.point_rule, np.concatenate([p.percentiles for p in parts]))
+
     def predict(self, encoded: dict[str, np.ndarray], device="cpu") -> ArrivalForecast:
         return self.predict_arrays(*arrival_inputs(encoded, self.prep), device=device)
 
     def fit(self, cats: np.ndarray, nums: np.ndarray, y: np.ndarray, train_rows: np.ndarray,
             val_rows: np.ndarray, device="cpu", *, log=None) -> list[dict]:
+        """`fit_source` on chosen rows of in-memory (or memory-mapped) arrays."""
+        return self.fit_source(BatchSource(cats, nums, y, np.sort(train_rows)),
+                               BatchSource(cats, nums, y, np.sort(val_rows)), device, log=log)
+
+    def fit_source(self, train: BatchSource, val: BatchSource | None, device="cpu", *,
+                   log=None, epochs: int | None = None) -> list[dict]:
+        """Fit block by block; early-stop on validation MAE, restoring the best epoch.
+
+        Without `val` (the final refit on training + validation), it runs
+        exactly `epochs` epochs and keeps the last.
+        """
         cfg = self.cfg
-        if safe_batch(cfg, self.n_bins, cfg.batch_size) != cfg.batch_size:
-            raise ValueError("training batch would reach the 2 GiB ROCm activation fault")
-        if not (np.isfinite(y[train_rows]).all() and np.isfinite(y[val_rows]).all()):
+        if val is None and epochs is None:
+            raise ValueError("a refit without validation needs a fixed epoch count")
+        epochs = cfg.epochs if epochs is None else epochs
+        check_tensor_sizes(cfg, self.n_bins, train.n_num, self.d_in(), train.block_rows)
+        y_val = val.targets() if val is not None else None
+        for block in train.blocks():
+            if not np.isfinite(block[2]).all():
+                raise ValueError("every training and validation row needs a recorded arrival")
+        if y_val is not None and not np.isfinite(y_val).all():
             raise ValueError("every training and validation row needs a recorded arrival")
         torch.manual_seed(cfg.seed)
+        rng = np.random.default_rng(cfg.seed)
         model = self.model.to(device)
-        cats_t = torch.as_tensor(cats[train_rows], device=device)
-        nums_t = torch.as_tensor(nums[train_rows], device=device)
-        y_t = torch.as_tensor(y[train_rows].astype(np.float32), device=device)
-        yb_t = torch.as_tensor(bin_index(y[train_rows], self.edges), device=device)
+        edges_t = torch.as_tensor(self.edges, dtype=torch.float32, device=device)
         drop_cols = torch.tensor([CATEGORICAL.index(c) for c in UNKNOWN_DROPOUT_COLUMNS],
                                  device=device)
-        steps = math.ceil(len(train_rows) / cfg.batch_size)
+        steps = sum(math.ceil((b - a) / cfg.batch_size) for a, b in train.spans())
         decay = [p for n, p in model.named_parameters() if p.ndim == 2 and not n.startswith("inputs.")]
         other = [p for n, p in model.named_parameters() if not (p.ndim == 2 and not n.startswith("inputs."))]
         opt = torch.optim.AdamW([{"params": decay, "weight_decay": cfg.weight_decay},
                                  {"params": other, "weight_decay": 0.0}], lr=cfg.lr)
-        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg.lr, total_steps=cfg.epochs * steps)
-        autocast = device != "cpu"
-        best, best_state, bad = (-1.0, -math.inf), None, 0
+        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg.lr, total_steps=max(1, epochs * steps))
+        on_gpu = device != "cpu"
+        best, best_state, bad = (-math.inf, -math.inf), None, 0
         self.history = []
-        for epoch in range(cfg.epochs):
+        for epoch in range(epochs):
             model.train()
             started = time.monotonic()
-            perm = torch.randperm(len(train_rows), device=device)
             total = torch.zeros((), device=device)
-            for s in range(steps):
-                b = perm[s * cfg.batch_size:(s + 1) * cfg.batch_size]
-                cat = cats_t[b]
-                if cfg.unknown_rate:
-                    hit = torch.rand(len(b), len(drop_cols), device=device) < cfg.unknown_rate
-                    cat = cat.clone()
-                    cat[:, drop_cols] = torch.where(hit, 0, cat[:, drop_cols])
-                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
-                    raw = model(cat, nums_t[b])
-                loss = arrival_loss(cfg, raw.float(), y_t[b], yb_t[b])
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                opt.step()
-                sched.step()
-                total += loss.detach()
-            val = score_arrivals(y[val_rows], self.predict_arrays(cats[val_rows], nums[val_rows], device).point)
-            entry = {"epoch": epoch + 1, "train_loss": float(total) / steps,
-                     "val_within_3_min": val["within_3_min"], "val_mae_scored": val["mae_scored"],
-                     "val_coverage": val["coverage"], "seconds": round(time.monotonic() - started, 1)}
+            for cats_b, nums_b, y_b in train.blocks(rng):
+                cats_t, nums_t, y_t = (torch.from_numpy(a) for a in (cats_b, nums_b, y_b))
+                if on_gpu:
+                    cats_t, nums_t, y_t = (t.pin_memory() for t in (cats_t, nums_t, y_t))
+                cats_t = cats_t.to(device, non_blocking=True).long()
+                nums_t = nums_t.to(device, non_blocking=True)
+                y_t = y_t.to(device, non_blocking=True)
+                yb_t = bin_index_torch(y_t, edges_t)
+                perm = torch.randperm(len(y_t), device=device)
+                for s in range(0, len(y_t), cfg.batch_size):
+                    b = perm[s:s + cfg.batch_size]
+                    cat = cats_t[b]
+                    if cfg.unknown_rate:
+                        hit = torch.rand(len(b), len(drop_cols), device=device) < cfg.unknown_rate
+                        cat[:, drop_cols] = torch.where(hit, 0, cat[:, drop_cols])
+                    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=on_gpu):
+                        raw = model(cat, nums_t[b])
+                    loss = arrival_loss(cfg, raw.float(), y_t[b], yb_t[b])
+                    opt.zero_grad(set_to_none=True)
+                    loss.backward()
+                    opt.step()
+                    sched.step()
+                    total += loss.detach()
+                del cats_t, nums_t, y_t, yb_t
+            entry = {"epoch": epoch + 1, "train_loss": float(total) / max(1, steps)}
+            if val is not None:
+                scored = score_arrivals(y_val, self.predict_source(val, device).point)
+                entry.update(val_within_3_min=scored["within_3_min"], val_mae_scored=scored["mae_scored"],
+                             val_coverage=scored["coverage"])
+            entry["seconds"] = round(time.monotonic() - started, 1)
             self.history.append(entry)
             if log:
                 log(entry)
-            rank = (val["within_3_min"], -(val["mae_scored"] if val["mae_scored"] is not None else math.inf))
+            if val is None:
+                continue
+            rank = epoch_rank(scored)
             if rank > best:
                 best, bad = rank, 0
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -291,5 +426,72 @@ class ArrivalNet:
                 bad += 1
                 if bad >= cfg.patience:
                     break
-        model.load_state_dict(best_state)
+        if best_state is not None:
+            model.load_state_dict(best_state)
         return self.history
+
+    def best_epoch(self) -> int:
+        """The epoch `fit_source` kept (1-based), for refitting the same length without validation."""
+        scored = [h for h in self.history if "val_mae_scored" in h]
+        if not scored:
+            return len(self.history)
+        return max(scored, key=lambda h: epoch_rank({"mae_scored": h["val_mae_scored"],
+                                                      "within_3_min": h["val_within_3_min"]}))["epoch"]
+
+
+ONNX_TOLERANCE = {"quantiles": 1e-4, "probs": 1e-5}  # minutes / probability, ONNX vs PyTorch
+
+
+def export_onnx(net: ArrivalNet, cats: np.ndarray, nums: np.ndarray, out: Path) -> dict:
+    """Write `out/model.onnx` and `out/prep.json`; check ONNX Runtime against PyTorch on these rows.
+
+    The output is `quantiles` (rows, 3) or `probs` (rows, bins), TabM members averaged.
+    """
+    import onnx
+    import onnxruntime
+
+    output = "probs" if net.cfg.head == "binned" else "quantiles"
+
+    class Exported(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, cat, num):
+            return net._raw(cat, num)
+
+    cats = np.ascontiguousarray(cats, dtype=np.int64)
+    nums = np.ascontiguousarray(nums, dtype=np.float32)
+    model = net.model.cpu().eval()
+    c, n = torch.as_tensor(cats), torch.as_tensor(nums)
+    with torch.no_grad():
+        reference = net._raw(c, n).numpy()
+    out.mkdir(parents=True)
+    torch.onnx.export(Exported(model).eval(), (c[:64], n[:64]), out / "model.onnx",
+                      input_names=["cat", "num"], output_names=[output],
+                      dynamic_axes={"cat": {0: "rows"}, "num": {0: "rows"}, output: {0: "rows"}},
+                      dynamo=False)
+    onnx.checker.check_model(str(out / "model.onnx"))
+    session = onnxruntime.InferenceSession(str(out / "model.onnx"), providers=["CPUExecutionProvider"])
+    got = session.run([output], {"cat": cats, "num": nums})[0]
+    diff = float(np.abs(got - reference).max())
+    (out / "prep.json").write_text(json.dumps({
+        "prep": net.prep, "config": net.cfg.as_dict(), "output": output,
+        "edges": net.edges.tolist() if output == "probs" else None,
+    }, indent=1))
+    raw = got.astype(np.float64)
+    if output == "probs":
+        point, pct = distribution_point(raw, net.edges, net.cfg.point_rule)
+    else:
+        pct, point = raw, raw[:, 1]
+    torch_forecast = net.predict_arrays(cats, nums)
+    return {
+        "kind": "onnx", "files": ["model.onnx", "prep.json"], "output": output,
+        "point_rule": net.cfg.point_rule, "scaling": net.prep["scaling"], "n_parameters": net.n_parameters(),
+        "onnx_vs_torch_max_abs": diff, "onnx_tolerance": ONNX_TOLERANCE[output],
+        "onnx_passed": diff <= ONNX_TOLERANCE[output],
+        "points_differing_torch_vs_onnx": int(np.count_nonzero(
+            np.abs(torch_forecast.point - point.astype(np.float32)) > 1e-4)),
+        "_expected": {"raw": got.astype(np.float32), "point": point.astype(np.float32),
+                      "pct": pct.astype(np.float32)},
+    }

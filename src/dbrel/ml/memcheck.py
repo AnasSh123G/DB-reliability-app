@@ -240,12 +240,70 @@ def needed_bytes(entry: dict, *, tuning_done: bool) -> tuple[int | None, str]:
     return max(peaks), final_kind
 
 
+FULL_YEAR_SCRIPT = "search_full_year.py"
+
+
+def _full_year_step(step: list[str]) -> tuple[str, list[str], Path | None] | None:
+    """(command, tracks, work dir) if `step` runs `search_full_year.py search|final`, else None."""
+    at = next((i for i, token in enumerate(step) if token.endswith(FULL_YEAR_SCRIPT)), None)
+    if at is None or at + 1 >= len(step) or step[at + 1] not in ("search", "final"):
+        return None
+    command, args = step[at + 1], step[at + 2:]
+    options: dict[str, str] = {}
+    for i, token in enumerate(args):
+        if token.startswith("--") and "=" in token:
+            key, value = token[2:].split("=", 1)
+            options[key] = value
+        elif token.startswith("--") and i + 1 < len(args):
+            options[token[2:]] = args[i + 1]
+    tracks = options.get("tracks", "compact,large") if command == "final" else options.get("track", "compact")
+    work = Path(options["work"]) if "work" in options else None
+    return command, [t.strip() for t in tracks.split(",") if t.strip()], work
+
+
+def full_year_gate(step: list[str], cap: int, memory: str, default_work: Path) -> None:
+    """Refuse a full-year search/final step without a current memory check that fits `cap`."""
+    from dbrel.ml.full_history import FullHistory, StaleHistory
+    from dbrel.ml.full_year import history_key, memory_check_path
+    from dbrel.ml.launch import LaunchError
+
+    parsed = _full_year_step(step)
+    if parsed is None:
+        return
+    command, tracks, work = parsed
+    work = work or default_work
+    problems = []
+    for track in tracks:
+        path = memory_check_path(work, track)
+        if not path.exists():
+            raise LaunchError(f"no memory check for the full-year {track} track -- run `{FULL_YEAR_SCRIPT} "
+                              f"memory-check --track {track}` (capped, --oom-policy continue) first, "
+                              f"or pass --ignore-memory-check")
+        check = json.loads(path.read_text())
+        try:
+            current = history_key(FullHistory(Path(check["history_root"])))
+        except (FileNotFoundError, StaleHistory) as exc:
+            raise LaunchError(f"cannot check the {track} memory check against the dataset: {exc}") from exc
+        if current != check["history"]:
+            raise LaunchError(f"the {track} memory check was made on a different full-history build -- rerun it")
+        need = check["projected_final_peak" if command == "final" else "projected_peak"]
+        if need is None:
+            problems.append(f"{track}: a probe hit the cap on its own")
+        elif need * MARGIN > cap:
+            problems.append(f"{track}: projected peak {need / 2**30:.1f} GiB (+{MARGIN - 1:.0%} margin = "
+                            f"{need * MARGIN / 2**30:.1f} GiB) is above the cap {memory}")
+    if problems:
+        raise LaunchError(f"memory check says this full-year {command} would not fit -- "
+                          + "; ".join(problems) + ". (--ignore-memory-check overrides)")
+
+
 def gate(steps: list[list[str]], memory: str, default_dataset_dir: Path) -> None:
-    """Raise LaunchError if a bake-off step would need more memory than `memory` allows."""
+    """Raise LaunchError if a bake-off or full-year step would need more memory than `memory` allows."""
     from dbrel.ml.launch import LaunchError
 
     cap = parse_size(memory)
     for step in steps:
+        full_year_gate(step, cap, memory, default_dataset_dir / "full_year")
         parsed = _bakeoff_libraries(step)
         if parsed is None:
             continue

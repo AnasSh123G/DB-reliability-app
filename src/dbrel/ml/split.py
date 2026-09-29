@@ -12,8 +12,11 @@ under a quarter of the median day's rows is not a representative day.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import time
+from dataclasses import asdict, dataclass
 from collections.abc import Collection
+from pathlib import Path
 
 import numpy as np
 
@@ -53,6 +56,59 @@ def split_dates(rows_per_date: dict[str, int]) -> DateSplit:
         validation=usable[n_train : n_train + n_val],
         test=usable[n_train + n_val :],
     )
+
+
+def complete_dates(rows_per_date: dict[str, int]) -> list[str]:
+    """Dates with at least a quarter of the median day's rows, in order."""
+    if not rows_per_date:
+        return []
+    floor = STUB_DAY_SHARE * float(np.median(list(rows_per_date.values())))
+    return sorted(d for d, n in rows_per_date.items() if n >= floor)
+
+
+def rolling_split(rows_per_date: dict[str, int], inspected: Collection[str], *, test_days: int = 7,
+                  val_days: int = 28, min_train_days: int = 90) -> DateSplit:
+    """The latest complete dates as a sealed test week, the four weeks before as validation.
+
+    Test dates must all come after every inspected date: a date whose outcomes
+    were already looked at can never be a test date again, so a second final
+    test needs newer data. Validation may include inspected dates; everything
+    earlier is training. Stub dates are in no set.
+    """
+    usable = complete_dates(rows_per_date)
+    seen = set(inspected)
+    fresh = [d for d in usable if not seen or d > max(seen)]
+    if len(fresh) < test_days:
+        raise ValueError(f"need {test_days} complete uninspected dates after "
+                         f"{max(seen) if seen else 'the start'} for the test week; have {len(fresh)}")
+    test = fresh[-test_days:]
+    before = [d for d in usable if d < test[0]]
+    needed = val_days + min_train_days
+    if len(before) < needed:
+        raise ValueError(f"need {needed} complete dates before the test week ({val_days} validation + "
+                         f"{min_train_days} training); have {len(before)} ({before[0] if before else '-'}"
+                         f" .. {before[-1] if before else '-'})")
+    return DateSplit(train=before[:-val_days], validation=before[-val_days:], test=test)
+
+
+INSPECTED_NAME = "inspected_dates.json"
+
+
+def load_inspected(path: Path) -> list[str]:
+    """Dates whose outcomes a final test has already read (`data/ml/inspected_dates.json`)."""
+    return sorted(json.loads(path.read_text())["dates"]) if path.exists() else []
+
+
+def record_inspected(path: Path, dates: Collection[str], reason: str) -> list[str]:
+    """Add `dates` to the inspected list, with a log entry saying why; returns the new list."""
+    data = json.loads(path.read_text()) if path.exists() else {"dates": [], "log": []}
+    data["dates"] = sorted(set(data["dates"]) | set(dates))
+    data["log"].append({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "dates": sorted(dates), "reason": reason})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    tmp.replace(path)
+    return data["dates"]
 
 
 def masks_for(day: np.ndarray, dates: list[str], split: DateSplit) -> dict[str, np.ndarray]:
@@ -131,8 +187,44 @@ def arrival_experiment_masks(
     return split, masks
 
 
+@dataclass(frozen=True)
+class TrainPruning:
+    """Which trains keep their own code: enough training arrivals, and recently seen.
+
+    `recent_days` counts back from the last training date, inclusive; a train
+    retired by a timetable change ages out that long after its last run.
+    """
+    min_count: int = 20
+    recent_days: int = 56
+
+    def keeps(self, counts: np.ndarray, last_day: np.ndarray, last_training_day: int) -> np.ndarray:
+        return (counts >= self.min_count) & (last_day > last_training_day - self.recent_days)
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def training_vocabulary(stats: dict[str, tuple[list, np.ndarray, np.ndarray]], last_training_day: int,
+                        pruning: TrainPruning | None = None) -> dict[str, list]:
+    """Vocabulary from per-value training statistics: {name: (values, counts, last epoch day)}.
+
+    The streamed counterpart of `restrict_to_training_vocab`: every value seen
+    in training keeps a code, except trains `pruning` drops. Values come back
+    sorted, as `encode_categoricals` needs.
+    """
+    vocab = {}
+    for name in CATEGORICAL:
+        values, counts, last_day = stats[name]
+        keep = np.ones(len(values), dtype=bool)
+        if name == "train" and pruning is not None:
+            keep = pruning.keeps(np.asarray(counts), np.asarray(last_day), last_training_day)
+        vocab[name] = sorted(v for v, k in zip(values, keep.tolist()) if k)
+    return vocab
+
+
 def restrict_to_training_vocab(
-    features: dict[str, np.ndarray], vocab: dict[str, list], train_mask: np.ndarray
+    features: dict[str, np.ndarray], vocab: dict[str, list], train_mask: np.ndarray, *,
+    epoch_day: np.ndarray | None = None, pruning: TrainPruning | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, list]]:
     """Re-code categoricals so only values seen on training days have a code.
 
@@ -140,13 +232,26 @@ def restrict_to_training_vocab(
     new to the model as it would be at prediction time. Codes are re-packed to
     0..k-1, and the returned vocabulary lists the values in that order, which is
     what the saved manifest carries and prediction encodes against.
+
+    With `pruning` (and each row's `epoch_day`, days since 1970-01-01), rare and
+    retired trains become UNKNOWN too.
     """
+    if pruning is not None and epoch_day is None:
+        raise ValueError("train pruning needs each row's epoch_day")
     out = dict(features)
     new_vocab: dict[str, list] = {}
     for name in CATEGORICAL:
         codes = features[name]
         seen = np.unique(codes[train_mask])
         seen = seen[seen != UNKNOWN]
+        if name == "train" and pruning is not None:
+            train_codes = codes[train_mask]
+            known = train_codes != UNKNOWN
+            counts = np.bincount(train_codes[known], minlength=len(vocab[name]))
+            last_day = np.full(len(vocab[name]), np.iinfo(np.int64).min, dtype=np.int64)
+            np.maximum.at(last_day, train_codes[known], epoch_day[train_mask][known])
+            last_training_day = int(epoch_day[train_mask].max())
+            seen = seen[pruning.keeps(counts[seen], last_day[seen], last_training_day)]
         lookup = np.full(len(vocab[name]) + 1, UNKNOWN, dtype=np.int32)  # +1: slot for UNKNOWN
         lookup[seen] = np.arange(len(seen), dtype=np.int32)
         out[name] = np.where(codes == UNKNOWN, UNKNOWN, lookup[codes]).astype(np.int32)

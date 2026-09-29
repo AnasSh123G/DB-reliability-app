@@ -42,6 +42,25 @@ TRIAL_NAME = "trial.json"
 VALIDATION_NAME = "validation.npz"
 OBJECTIVE = {"primary": "validation within_3_min (inclusive, all eligible arrivals)",
              "tie_breakers": ["mae_scored", "asset_bytes"]}
+MAE_OBJECTIVE = {"primary": "validation mae_scored of the median estimate, full coverage first",
+                 "tie_breakers": ["coverage", "asset_bytes"]}
+
+
+def trial_rank_key(summary: dict, asset_bytes: int) -> tuple:
+    """Sort key, best first: full coverage, then lowest MAE, then coverage, then smaller files.
+
+    A trial that leaves arrivals unpredicted never outranks a full-coverage one
+    on MAE alone -- its MAE is over an easier subset.
+    """
+    coverage = summary.get("coverage") or 0.0
+    mae = summary.get("mae_scored")
+    return (coverage < 1.0, mae if mae is not None else float("inf"), -coverage, asset_bytes)
+
+
+def rank_trials(trials: dict[str, dict]) -> list[str]:
+    """Trial ids from `ArrivalExperiment.completed()`, best first by `trial_rank_key`."""
+    return sorted(trials, key=lambda tid: trial_rank_key(trials[tid]["summary"]["validation"],
+                                                         trials[tid]["summary"].get("asset_bytes", 0)))
 
 
 def _canonical(value) -> str:

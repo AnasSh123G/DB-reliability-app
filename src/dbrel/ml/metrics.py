@@ -46,11 +46,31 @@ def score_arrivals(actual: np.ndarray, predicted: np.ndarray) -> dict:
     }
 
 
+def point_concentration(predicted: np.ndarray, decimals: int = 1) -> dict:
+    """The most frequent estimate (at display precision) and the share of estimates that equal it.
+
+    A share near 1 flags a model that says the same number for nearly every
+    arrival, however good its average error looks.
+    """
+    shown = np.round(np.asarray(predicted, dtype=np.float64), decimals)
+    shown = shown[np.isfinite(shown)]
+    if not len(shown):
+        return {"most_common_min": None, "most_common_share": None}
+    values, counts = np.unique(shown, return_counts=True)
+    top = int(np.argmax(counts))
+    return {"most_common_min": float(values[top]), "most_common_share": float(counts[top] / len(shown))}
+
+
+def month_of(dates: np.ndarray) -> np.ndarray:
+    """'YYYY-MM-DD' service dates -> 'YYYY-MM'."""
+    return np.array([str(d)[:7] for d in dates])
+
+
 def score_arrivals_with_breakdowns(
     actual: np.ndarray, predicted: np.ndarray, groups: dict[str, np.ndarray]
 ) -> dict:
     """Overall and grouped scores from identical per-instance predictions."""
-    out = {"overall": score_arrivals(actual, predicted)}
+    out = {"overall": {**score_arrivals(actual, predicted), **point_concentration(predicted)}}
     for name, values in groups.items():
         if len(values) != len(actual):
             raise ValueError(f"group {name} has {len(values)} rows, expected {len(actual)}")

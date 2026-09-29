@@ -39,6 +39,7 @@ from dbrel.ml.features import (
     UNKNOWN_DIRECTION,
     build_vocabularies,
     compute_features,
+    day_of_year_index,
     encode_categoricals,
 )
 
@@ -48,15 +49,35 @@ ARRIVAL_DATASET_NAME = "arrival_dataset.npz"
 ARRIVAL_META_NAME = "arrival_dataset.json"
 _CHUNK = 250_000
 
-def _query(*, arrival_only: bool) -> str:
-    sched = "ts.supposed_arrival_utc" if arrival_only else \
-        "COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc)"
+def _where(*, arrival_only: bool) -> str:
     arrival_filter = f"""
       AND ts.supposed_arrival_utc IS NOT NULL
       AND ts.arr_cancelled = 0
       AND ts.arr_delay_s IS NOT NULL
       AND ABS(ts.arr_delay_s) <= {MAX_PLAUSIBLE_DELAY_S}
     """ if arrival_only else ""
+    return f"""
+    WHERE ts.quality = 'RECORDED'
+      AND ts.cancelled = 0
+      AND ts.is_holiday IS NOT NULL
+      AND COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc) IS NOT NULL
+      AND (
+            (ts.arr_delay_s IS NOT NULL AND ABS(ts.arr_delay_s) <= {MAX_PLAUSIBLE_DELAY_S})
+         OR (ts.dep_delay_s IS NOT NULL AND ABS(ts.dep_delay_s) <= {MAX_PLAUSIBLE_DELAY_S})
+      )
+      {arrival_filter}
+"""
+
+
+# One service-date range, driven from trip's date index (CROSS JOIN fixes the loop order).
+MONTH_FROM = "FROM trip t CROSS JOIN trip_stop ts ON ts.trip_id = t.id"
+MONTH_RANGE = " AND t.service_date >= ? AND t.service_date < ?"
+
+
+def _query(*, arrival_only: bool, by_date_range: bool = False) -> str:
+    sched = "ts.supposed_arrival_utc" if arrival_only else \
+        "COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc)"
+    source = MONTH_FROM if by_date_range else "FROM trip_stop ts\n    JOIN trip t ON t.id = ts.trip_id"
     return f"""
     SELECT
         ts.id,
@@ -83,21 +104,11 @@ def _query(*, arrival_only: bool) -> str:
         r.n_stops,
         ts.arr_delay_s,
         ts.dep_delay_s
-    FROM trip_stop ts
-    JOIN trip t ON t.id = ts.trip_id
+    {source}
     JOIN train tr ON tr.id = t.train_id
     JOIN station st ON st.id = ts.station_id
     LEFT JOIN ml_stop_rank r ON r.id = ts.station_stop_id
-    WHERE ts.quality = 'RECORDED'
-      AND ts.cancelled = 0
-      AND ts.is_holiday IS NOT NULL
-      AND COALESCE(ts.supposed_departure_utc, ts.supposed_arrival_utc) IS NOT NULL
-      AND (
-            (ts.arr_delay_s IS NOT NULL AND ABS(ts.arr_delay_s) <= {MAX_PLAUSIBLE_DELAY_S})
-         OR (ts.dep_delay_s IS NOT NULL AND ABS(ts.dep_delay_s) <= {MAX_PLAUSIBLE_DELAY_S})
-      )
-      {arrival_filter}
-"""
+    {_where(arrival_only=arrival_only)}""" + (MONTH_RANGE if by_date_range else "")
 
 _QUERY = _query(arrival_only=False)
 _ARRIVAL_QUERY = _query(arrival_only=True)
@@ -245,6 +256,7 @@ def _build_dataset(db_path: Path, out_dir: Path, directions: dict[int, int], *,
 
     raw = {name: col[name] for name in RAW_COLUMNS if name in col}
     raw["weekday"] = weekday
+    raw["day_of_year_idx"] = np.array([day_of_year_index(d) for d in dates], dtype=np.int64)[day]
     raw["direction"] = np.array(
         [directions.get(t, UNKNOWN_DIRECTION) for t in col["train_id"].tolist()], dtype=np.int64
     )

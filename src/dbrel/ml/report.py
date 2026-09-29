@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dbrel.ml.metrics import arrival_errors, score_arrivals_with_breakdowns
+from dbrel.ml.metrics import arrival_errors, month_of, score_arrivals_with_breakdowns
 
 
 def save_arrival_report(out_dir: Path, *, ds, rows: np.ndarray,
@@ -25,6 +25,7 @@ def save_arrival_report(out_dir: Path, *, ds, rows: np.ndarray,
     day = np.array(ds.meta["dates"])[ds.day[rows]]
     groups = {
         "date": day,
+        "month": month_of(day),
         "segment": ds.segment[rows],
         "holiday": ds.features["is_holiday"][rows],
         "actual_delay_band": np.where(np.abs(actual) > 15, "abs(delay)>15min",

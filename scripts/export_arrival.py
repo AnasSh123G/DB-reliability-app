@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import probe_arrival as P  # noqa: E402
 from dbrel.config import ML_MODELS_DIR  # noqa: E402
 from dbrel.ml.arrival import (  # noqa: E402
-    HIST_COLUMNS, ConditionalHistogram, arrival_inputs, bin_edges, distribution_point, fit_input_prep,
+    HIST_COLUMNS, ConditionalHistogram, arrival_inputs, bin_edges, fit_input_prep,
     histogram_inputs,
 )
 from dbrel.ml.dataset import load_arrival_dataset  # noqa: E402
@@ -48,7 +48,6 @@ from dbrel.ml.split import arrival_experiment_masks, restrict_to_training_vocab 
 
 BUDGET_BYTES = 35_000_000
 REFERENCE_ROWS = 1000
-ONNX_TOLERANCE = {"quantiles": 1e-4, "probs": 1e-5}  # minutes / probability, ONNX vs PyTorch
 RUNTIME_WASM = ROOT / "bahn-buddy-predict/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm"
 RUNTIME_JS = ROOT / "bahn-buddy-predict/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs"
 
@@ -69,51 +68,9 @@ def _current() -> str | None:
 
 
 def export_network(torch, onnx, onnxruntime, net, cats, nums, ref_rows, out: Path) -> dict:
-    output = "probs" if net.cfg.head == "binned" else "quantiles"
+    from dbrel.ml.arrival_nn import export_onnx
 
-    class Exported(torch.nn.Module):
-        def __init__(self, inner):
-            super().__init__()
-            self.inner = inner
-
-        def forward(self, cat, num):
-            return net._raw(cat, num)
-
-    model = net.model.cpu().eval()
-    c = torch.as_tensor(cats[ref_rows])
-    n = torch.as_tensor(nums[ref_rows])
-    with torch.no_grad():
-        reference = net._raw(c, n).numpy()
-    out.mkdir(parents=True)
-    torch.onnx.export(Exported(model).eval(), (c[:64], n[:64]), out / "model.onnx",
-                      input_names=["cat", "num"], output_names=[output],
-                      dynamic_axes={"cat": {0: "rows"}, "num": {0: "rows"}, output: {0: "rows"}},
-                      dynamo=False)
-    onnx.checker.check_model(str(out / "model.onnx"))
-    session = onnxruntime.InferenceSession(str(out / "model.onnx"), providers=["CPUExecutionProvider"])
-    got = session.run([output], {"cat": cats[ref_rows], "num": nums[ref_rows]})[0]
-    diff = float(np.abs(got - reference).max())
-    (out / "prep.json").write_text(json.dumps({
-        "prep": net.prep, "config": net.cfg.as_dict(), "output": output,
-        "edges": net.edges.tolist() if output == "probs" else None,
-    }, indent=1))
-    files = ["model.onnx", "prep.json"]
-    raw = got.astype(np.float64)
-    if output == "probs":
-        point, pct = distribution_point(raw, net.edges, net.cfg.point_rule)
-    else:
-        pct, point = raw, raw[:, 1]
-    torch_forecast = net.predict_arrays(cats[ref_rows], nums[ref_rows])
-    return {
-        "kind": "onnx", "files": files, "output": output, "point_rule": net.cfg.point_rule,
-        "scaling": net.prep["scaling"], "n_parameters": net.n_parameters(),
-        "onnx_vs_torch_max_abs": diff, "onnx_tolerance": ONNX_TOLERANCE[output],
-        "onnx_passed": diff <= ONNX_TOLERANCE[output],
-        "points_differing_torch_vs_onnx": int(np.count_nonzero(
-            np.abs(torch_forecast.point - point.astype(np.float32)) > 1e-4)),
-        "_expected": {"raw": got.astype(np.float32), "point": point.astype(np.float32),
-                      "pct": pct.astype(np.float32)},
-    }
+    return export_onnx(net, cats[ref_rows], nums[ref_rows], out)
 
 
 def main() -> int:

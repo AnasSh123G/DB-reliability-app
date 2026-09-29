@@ -16,7 +16,7 @@ from dbrel.ml import baselines
 from dbrel.ml.candidates import CatBoostCandidate, LightGBMCandidate, XGBoostCandidate
 from dbrel.ml.features import CATEGORICAL, FEATURES, NO_LINE, UNKNOWN
 from dbrel.ml.metrics import (
-    arrival_errors, order_quantiles, pinball, score, score_arrivals,
+    arrival_errors, order_quantiles, pinball, point_concentration, score, score_arrivals,
     score_arrivals_with_breakdowns,
 )
 from dbrel.ml.report import save_arrival_report
@@ -187,7 +187,8 @@ def test_arrival_report_recomputes_scores_from_saved_rows(tmp_path):
     assert report["scores"]["formula"]["by_date"]["2026-09-02"]["missing"] == 1
     for name, summary in json.loads((out / "report.json").read_text())["scores"].items():
         with np.load(out / f"{name}.npz") as saved:
-            recomputed = score_arrivals(saved["actual_min"], saved["predicted_min"])
+            recomputed = {**score_arrivals(saved["actual_min"], saved["predicted_min"]),
+                          **point_concentration(saved["predicted_min"])}
             assert recomputed == summary["overall"]
             assert np.allclose(saved["error_min"], arrival_errors(
                 saved["actual_min"], saved["predicted_min"]), equal_nan=True)

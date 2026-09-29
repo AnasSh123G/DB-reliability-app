@@ -59,6 +59,38 @@ def test_time_and_route_position_features():
     assert out["state"][0] == ""
 
 
+def _doy(dates) -> tuple[np.ndarray, np.ndarray]:
+    raw = {name: [0] * len(dates) for name in F.RAW_COLUMNS}
+    raw.update(category=["RE"] * len(dates), operator=["DB"] * len(dates), state=[""] * len(dates),
+               day_of_year_idx=[F.day_of_year_index(d) for d in dates])
+    out = F.compute_features(_one(raw))
+    return out["doy_sin"].astype(np.float64), out["doy_cos"].astype(np.float64)
+
+
+def test_time_of_year_ignores_the_year():
+    s, c = _doy(["2025-11-20", "2026-11-20", "2028-11-20"])
+    assert s[0] == s[1] == s[2] and c[0] == c[1] == c[2]
+    assert F.day_of_year_index("2026-03-01") == F.day_of_year_index("2028-03-01") == 60
+
+
+def test_the_year_boundary_is_one_step_like_any_other_day():
+    s, c = _doy(["2025-12-30", "2025-12-31", "2026-01-01", "2026-06-10", "2026-06-11"])
+    step = np.hypot(np.diff(s), np.diff(c))
+    assert step[1] == pytest.approx(step[0], rel=1e-5)  # 31 Dec -> 1 Jan
+    assert step[1] == pytest.approx(step[3], rel=1e-5)  # like 10 -> 11 Jun
+
+
+def test_non_leap_february_skips_the_29th():
+    assert F.day_of_year_index("2026-03-01") - F.day_of_year_index("2026-02-28") == 2
+    assert F.day_of_year_index("2028-03-01") - F.day_of_year_index("2028-02-29") == 1
+
+
+def test_vectorised_index_matches_the_scalar_one():
+    days = np.arange(np.datetime64("2025-10-01"), np.datetime64("2029-01-02")).astype(np.int64)
+    expected = [F.day_of_year_index(str(np.datetime64(int(d), "D"))) for d in days]
+    assert F.day_of_year_indices(days).tolist() == expected
+
+
 def test_origin_terminus_and_unknown_rank():
     raw = {name: [0, 0, 0] for name in F.RAW_COLUMNS}
     raw.update(category=["RE"] * 3, operator=["DB"] * 3, state=["DE-NW"] * 3,
@@ -108,7 +140,7 @@ def test_dataset_rows_targets_and_meta(db, session, tmp_path):
     # Origins have no arrival, termini no departure: that side is NaN, the other kept.
     assert np.isnan(ds.arr_min).sum() == 5 * len(DATES)
     assert np.isnan(ds.dep_min).sum() == 5 * len(DATES)
-    assert set(ds.features) == set(F.FEATURES)
+    assert set(ds.features) == set(F.FEATURES) | set(F.SEASONAL)
     assert not dataset_is_stale(meta, db)
     json.loads((tmp_path / "ml" / "dataset.json").read_text())
 
@@ -188,7 +220,7 @@ def test_training_and_prediction_build_identical_rows(db, session, tmp_path):
         (call,) = calls_at(session, train, station_id, date.fromisoformat(DATES[2]))
         raw = call.raw(direction=F.direction_for(session, train), holiday_set=load_holiday_dates(session))
         predicted = F.encode_categoricals(F.compute_features(_one(raw)), vocab)
-        for name in F.FEATURES:
+        for name in F.FEATURES + F.SEASONAL:
             a, b = float(ds.features[name][row[0]]), float(predicted[name][0])
             assert (np.isnan(a) and np.isnan(b)) or a == b, (train_id, name, a, b)
 

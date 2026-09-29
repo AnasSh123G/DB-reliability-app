@@ -31,6 +31,7 @@ from dbrel.study.live_accuracy import (
 from dbrel.web.queries import _sched_time_key, _train_trip_start_time, resolve_day_type
 
 from ml_fixture import PATTERNS, START, utc_of
+from test_ml_arrival_deploy import FakeQuantileSession, _quantile_manifest, arrival_artifact  # noqa: F401
 from test_ml_bakeoff import env  # noqa: F401 - the fixture database and dataset
 from test_ml_nn import tabm_artifact  # noqa: F401 - a loadable DelayModel artifact (fake ONNX)
 
@@ -368,6 +369,55 @@ def test_render_report_includes_every_headline_figure():
     assert "Average minutes off" in text and "Within 3 min" in text
     assert "Closer to the real delay: TabM 0 times, stored average 0 times, same 1 times" in text
     assert "Nothing to compare." in text  # arr had none
+
+
+def test_a_median_arrival_model_is_labelled_a_median(tmp_path):
+    arrival = dict(model_kind="arrival-net", point_rule="median", artifact="/m/v2-comparison/20261001T000000Z",
+                   role="comparison")
+    text = render_report(_result(**arrival), created_at="20260101T000000Z")
+    assert "The model's figure is its median guess" in text and "window rule" not in text
+    assert "`/m/v2-comparison/20261001T000000Z` (comparison model: never served on the website)" in text
+    out_dir = save_report(_result(**arrival, scores=score_comparisons([
+        Comparison(side="arr", segment="RV", is_holiday=0, service_date="2026-09-01",
+                   real_delay_min=2.0, tabm=(1.0, 2.0, 3.0), average=(2.0, 2.0, 2.0))]),
+        comparisons=[Comparison(side="arr", segment="RV", is_holiday=0, service_date="2026-09-01",
+                                real_delay_min=2.0, tabm=(1.0, 2.0, 3.0), average=(2.0, 2.0, 2.0))]),
+        tmp_path, stamp="20260101T000000Z")
+    assert "Closer to the real delay: Model median" in (out_dir / REPORT_NAME).read_text()
+    assert "model_p50" in (out_dir / "comparisons.csv").read_text().splitlines()[0]
+    html = (out_dir / "histogram.html").read_text()
+    assert '"model_label": "Model median"' in html and '"n": 1' in html
+
+    window = render_report(_result(model_kind="arrival-net", point_rule="window"), created_at="x")
+    assert "6-minute window (window rule), not a median" in window
+
+
+def test_run_study_scores_a_given_artifact_without_reading_current(env, arrival_artifact, tmp_path,  # noqa: F811
+                                                                  monkeypatch):
+    import onnxruntime
+
+    import dbrel.db as dbmod
+    from dbrel.ml.arrival import role_models_dir, save_arrival_artifact
+    from dbrel.ml.nn import CURRENT_NAME
+
+    monkeypatch.setattr(onnxruntime, "InferenceSession", FakeQuantileSession)
+    models = arrival_artifact.parent
+    onnx = tmp_path / "small.onnx"
+    onnx.write_bytes(b"x" * 1000)
+    comparison = save_arrival_artifact(role_models_dir("comparison", models), _quantile_manifest(arrival_artifact),
+                                       {"model.onnx": onnx}, "20261003T000000Z", role="comparison",
+                                       served_dir=models)
+    (models / CURRENT_NAME).write_text("does-not-exist\n")
+    with dbmod.session_scope() as s:
+        s.get(Station, STATION_ID).eva = 8000002
+        s.flush()
+    with dbmod.session_scope() as s:
+        result = run_study(s, FakeTimetables(8000002), models, sample_size=1, seed=0,
+                           now=utc_of(SERVICE_DATE, DEP_SEC) + 3600, artifact=comparison)
+        assert (result.artifact, result.role) == (str(comparison), "comparison")
+        assert (result.model_kind, result.point_rule) == ("arrival-net", "median")
+        with pytest.raises(NoModelError, match="not a model artifact"):
+            run_study(s, FakeTimetables(8000002), models, sample_size=1, artifact=tmp_path)
 
 
 def test_save_report_writes_both_files_and_refuses_to_overwrite(tmp_path):

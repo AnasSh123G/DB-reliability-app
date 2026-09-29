@@ -29,9 +29,13 @@ def live_accuracy_cmd(
                                                      "not recommended for the full 3,000)"),
     studies_dir: Path = typer.Option(None, help="where to write the report (default: "
                                                 "data/ml/studies)"),
+    artifact: Path = typer.Option(None, help="score this model artifact directory instead of "
+                                             "CURRENT (e.g. a comparison model or the old TabM); "
+                                             "CURRENT is not changed"),
 ) -> None:
-    """Sample stations, fetch their live data from the DB Timetables API, and score TabM and
-    the stored averages against what already happened -- one live request per station, up to
+    """Sample stations, fetch their live data from the DB Timetables API, and score the model
+    (CURRENT, or `--artifact`) and the stored averages against what already happened -- one
+    live request per station, up to
     `--sample-size` in total. Makes real network requests: run it through `dbrel ml launch`
     (e.g. `dbrel ml launch live-accuracy -- dbrel study live-accuracy`), which keeps it off this
     terminal's process tree and caps its memory, rather than running it here directly, unless
@@ -59,7 +63,7 @@ def live_accuracy_cmd(
         try:
             result = run_study(
                 session, client, ML_MODELS_DIR, sample_size=sample_size, seed=seed,
-                progress=typer.echo,
+                artifact=artifact, progress=typer.echo,
             )
         except NoModelError as exc:
             _fail(str(exc))

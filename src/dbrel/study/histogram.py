@@ -26,11 +26,18 @@ def _counts(errors: list[float]) -> list[int]:
     return out
 
 
+def _label(result: dict) -> str:
+    if result.get("model_kind", "tabm") != "arrival-net":
+        return "TabM"
+    return "Model median" if result.get("point_rule") == "median" else "Model estimate (window rule)"
+
+
 def histogram_data(study_dir: Path) -> dict:
     with (study_dir / "comparisons.csv").open(newline="") as fh:
         rows = list(csv.DictReader(fh))
-    # v2 studies store the median as tabm_p50; arrival-only ones a window point as model_point
-    point = "tabm_p50" if rows and "tabm_p50" in rows[0] else "model_point"
+    # v2 studies store the median as tabm_p50; arrival-only ones model_p50 (median rule) or
+    # model_point (window rule)
+    point = next((c for c in ("tabm_p50", "model_p50", "model_point") if rows and c in rows[0]), "model_point")
     data = {}
     for side in ("both", "dep", "arr"):
         rs = [r for r in rows if (side == "both" or r["side"] == side)
@@ -49,8 +56,7 @@ def histogram_data(study_dir: Path) -> dict:
     data["meta"] = {
         "stations": f"{result['stations_sampled']:,}",
         "when": finished.astimezone(TZ).strftime("finishing %d %b %Y at %H:%M"),
-        "model_label": "TabM" if result.get("model_kind", "tabm") != "arrival-net"
-                       else f"Model estimate ({result.get('point_rule')} rule)",
+        "model_label": _label(result),
     }
     return data
 

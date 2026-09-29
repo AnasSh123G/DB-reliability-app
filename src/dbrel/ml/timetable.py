@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dbrel.holidays_de import is_holiday
-from dbrel.ml.features import NO_LINE, RAW_COLUMNS, weekday_of
+from dbrel.ml.features import NO_LINE, RAW_COLUMNS, day_of_year_index, weekday_of
 from dbrel.models import Station, StationStop, Train
 
 
@@ -68,6 +68,7 @@ class ScheduledCall:
             "stop_rank": self.stop_rank,
             "n_stops": self.n_stops,
             "direction": direction,
+            "day_of_year_idx": day_of_year_index(self.service_date),
         }
         assert tuple(row) == RAW_COLUMNS
         return {key: [value] for key, value in row.items()}

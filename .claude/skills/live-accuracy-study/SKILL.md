@@ -20,13 +20,17 @@ For each station:
 1. Ask the DB Timetables API which trains passed through in the **last 2 hours**, with their
    **planned** time and their **real** recorded time.
 2. For every stop that has **already happened**, compute:
-   - **The deployed model's prediction** — from the `CURRENT` artifact, exactly as the app does.
-     Which figure that is depends on the artifact kind (check `manifest.json` → `kind`):
+   - **The model's prediction** — from the `CURRENT` artifact, exactly as the app does, or from
+     the artifact passed with `--artifact PATH` (see 4.2). Which figure that is depends on the
+     artifact (check `manifest.json` → `kind` and `point_rule`):
      - `tabm` (v2, two-sided): TabM's median (p50) for arrivals **and** departures.
-     - `arrival-net`: an **arrival-only** estimate — the centre of the most likely 6-minute window
-       ("window rule"), **not** a median. It makes **no departure predictions**, so the report
-       says departures are not predicted and scores arrivals only. Never call this figure "TabM"
-       or "p50"; the report and CSV label it "Model estimate (window rule)" / `model_point`.
+     - `arrival-net` with `point_rule` `median` (the full-year models): an **arrival-only**
+       median. The report calls it "Model median"; the CSV columns are `model_p25/p50/p75`.
+     - `arrival-net` with `point_rule` `window` (the September-2026 window MLP): an
+       **arrival-only** estimate, the centre of the most likely 6-minute window, **not** a median.
+       The report calls it "Model estimate (window rule)"; the CSV column is `model_point`.
+     An `arrival-net` artifact makes **no departure predictions**, so the report says departures
+     are not predicted and scores arrivals only. Never call an `arrival-net` figure "TabM".
    - **The stored average** (the "Ø" the app shows) — exactly as the station board does.
 3. Compare both against the **real delay** DB recorded.
 
@@ -145,7 +149,7 @@ Expected: more than 5,000,000 kB. If less, tell the user and do not start.
 ```bash
 .venv/bin/python -m pytest -q tests/test_live_accuracy.py
 ```
-Expected: `17 passed` (or more), no failures.
+Expected: `19 passed` (or more), no failures.
 
 **3.6 Note the time.**
 ```bash
@@ -186,6 +190,19 @@ Copy the exact log path. You need it below.
 
 If it says the unit is already running, see rule 1.3 and step 3.3.
 
+**Another model than `CURRENT`** (only when the user asks, e.g. "run it on the large model" or
+"on the old TabM"): add `--artifact <artifact dir>`. The large full-year model lives under
+`data/models/v2-comparison/<stamp>`; the old two-sided TabM is `data/models/v2/20260924T183944Z`.
+`CURRENT` is neither read nor changed. The report names the artifact and says "comparison model:
+never served on the website" for a comparison artifact — pass that on to the user. Use a
+different job name per model so runs don't clash:
+
+```bash
+.venv/bin/dbrel ml launch live-accuracy-large --memory 4G -- .venv/bin/dbrel study live-accuracy --sample-size 10000 --artifact data/models/v2-comparison/<stamp>
+```
+
+In steps 4.3/4.4, replace `live-accuracy` with that job name.
+
 ### 4.3 Wait (one background command, then stop talking)
 
 Run this **once**, with the Bash tool's `run_in_background: true`, replacing `<LOG>` with the log
@@ -211,7 +228,7 @@ Read the log lines (they appear in this order):
 | `sampled 5422 stations` | fetching started | ~0 s |
 | `5135 stations had realized stops; 95360 realized sides fetched` | fetching done | ~7–8 min |
 | `92399 sides resolved to a local timetable match; 2961 had none` | matching done | a few seconds later |
-| `running TabM on 92,399 stops` | model running | seconds |
+| `running the model on 92,399 stops` (older runs: `running TabM on ...`) | model running | seconds |
 | `looking up the stored averages` then `10,000 / 92,399`, `20,000 / ...` | scoring | ~1 min per 30k |
 | `report: data/ml/studies/<STAMP>/report.md` | done | — |
 
@@ -229,7 +246,7 @@ Everything goes into `data/ml/studies/<STAMP>/` (the stamp is the **UTC** finish
 |---|---|
 | `report.md` | plain-language summary per side (departures, arrivals) |
 | `result.json` | the same numbers as JSON |
-| `comparisons.csv` | **one row per stop**: side, station, train, date, segment, holiday, real delay, the model's p25 / point / p75 (`tabm_p25/p50/p75` for a v2 artifact, `model_p25/model_point/model_p75` for an arrival-net one), stored average |
+| `comparisons.csv` | **one row per stop**: side, station, train, date, segment, holiday, real delay, the model's p25 / point / p75 (`tabm_p25/p50/p75` for a v2 artifact; `model_p25/model_p50/model_p75` for a median arrival-net one; `model_p25/model_point/model_p75` for a window-rule one), stored average |
 | `histogram.html` | the histogram page (written automatically) |
 
 If `histogram.html` is missing (the job ran older code), create it:
@@ -247,12 +264,12 @@ cat data/ml/studies/<STAMP>/report.md
 ```
 
 Compare with these normal ranges (from the real runs on 2026-09-25, **v2 TabM artifact only**).
-With an `arrival-net` artifact the model rows below do **not** apply: its window rule trades
+With an `arrival-net` artifact the model rows below do **not** apply. A window-rule one trades
 within-1-minute hits for within-3-minute hits by design, so its "within 1 min" and "minutes off"
-are expected to differ from the average's. Normal ranges for it must be re-established from its
-first real runs — do not judge it against the TabM numbers, and do not invent a range. The
-non-model rows (stations with no realized stops, stops skipped, stops compared, real delays) still
-apply.
+are expected to differ from the average's. A median one (the full-year models) is a different
+model trained on far more data. Normal ranges for either must be re-established from its first
+real runs — do not judge it against the TabM numbers, and do not invent a range. The non-model
+rows (stations with no realized stops, stops skipped, stops compared, real delays) still apply.
 
 | Check | Normal | If outside the normal range |
 |---|---|---|
@@ -309,9 +326,9 @@ Keep it short and plain. Use **only** these numbers:
 Always mention these two facts, because they explain the numbers:
 1. **The stored average is a whole number of minutes, and DB records delays in whole minutes**,
    so the average can match exactly; TabM gives fractions (e.g. 0.9) and never ties. This helps
-   the average on "within 1 min". (With an `arrival-net` artifact, also say that its estimate is
-   chosen to be within 3 minutes as often as possible, not to be exactly right, and that
-   departures are not predicted.)
+   the average on "within 1 min". (With an `arrival-net` artifact, say that departures are not
+   predicted; with a window-rule one, also that its estimate is chosen to be within 3 minutes as
+   often as possible, not to be exactly right.)
 2. **Stops with no stored average** are listed separately — TabM is the only prediction there,
    and those stops are harder (TabM was ~12–13 min off on them).
 
@@ -324,7 +341,7 @@ The <HH:MM> run finished in <N> minutes: <S> stations, <K> had trains that had a
 
 | | Minutes off (avg) | Within 1 min | Within 3 min | Within 5 min |
 |---|---|---|---|---|
-| TabM (or "Model estimate (window rule)" for an arrival-net artifact) | … | … | … | … |
+| TabM (or the report's label for an arrival-net artifact: "Model median" / "Model estimate (window rule)") | … | … | … | … |
 | Stored average | … | … | … | … |
 
 - Closer, stop by stop: stored average <A> times, model <T> times.

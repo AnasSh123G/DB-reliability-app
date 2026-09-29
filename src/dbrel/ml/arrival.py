@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dbrel.ml.features import CATEGORICAL, NUMERIC
+from dbrel.ml.features import CATEGORICAL, NUMERIC, SEASONAL
 
 POINT_RULES = ("median", "window")
 WINDOW_HALF_MIN = 3.0
@@ -166,36 +166,59 @@ def distribution_point(probs: np.ndarray, edges: np.ndarray, rule: str,
 # ---------------------------------------------------------------------------
 
 
+def numeric_stats(v: np.ndarray, scaling: str) -> tuple[float, float]:
+    """(centre, scale) of one numeric column's training values, NaN ignored."""
+    if scaling == "standard":
+        centre, scale = float(np.nanmean(v)), float(np.nanstd(v))
+    else:
+        q25, centre, q75 = (float(x) for x in np.nanquantile(v, [0.25, 0.5, 0.75]))
+        scale = (q75 - q25) / 1.349
+    return centre, scale if scale > 0 else 1.0
+
+
+def prep_layout(scaling: str, cards: list[int], numeric: tuple[str, ...], stats: dict,
+                has_missing: dict[str, bool]) -> dict:
+    """The JSON-able prep from per-column statistics; one definition for in-memory and streamed fits."""
+    names = []
+    for name in numeric:
+        names.append(name)
+        if has_missing[name]:
+            names.append(f"{name}_missing")
+        if name in CYCLIC:
+            names += [f"{name}_sin", f"{name}_cos"]
+    prep = {"scaling": scaling, "cards": cards, "numeric": names, "stats": stats}
+    if tuple(numeric) != NUMERIC:
+        prep["features_numeric"] = list(numeric)
+    return prep
+
+
 def fit_input_prep(encoded: dict[str, np.ndarray], train_mask: np.ndarray, vocab: dict[str, list],
-                   scaling: str = "standard") -> dict:
+                   scaling: str = "standard", numeric: tuple[str, ...] = NUMERIC) -> dict:
     """Input layout and numeric statistics from training rows only (JSON-able).
 
     `vocab` is the training vocabulary (`restrict_to_training_vocab`), so slot
     0 is UNKNOWN and slots 1..len(vocab) are training values. `robust` is the
     RealMLP-style variant: median/IQR scaling followed by smooth clipping.
+    `numeric` is the model's numeric feature list; any other than `NUMERIC` is
+    recorded in the prep so prediction builds the same layout.
     """
     if scaling not in SCALINGS:
         raise ValueError(f"unknown scaling {scaling!r}")
     if not train_mask.any():
         raise ValueError("input preparation needs training rows")
-    names, stats = [], {}
-    for name in NUMERIC:
+    stats, has_missing = {}, {}
+    for name in numeric:
         v = encoded[name].astype(np.float64)[train_mask]
         if np.isnan(v).all():
             raise ValueError(f"{name} is missing on every training row")
-        if scaling == "standard":
-            centre, scale = float(np.nanmean(v)), float(np.nanstd(v))
-        else:
-            q25, centre, q75 = (float(x) for x in np.nanquantile(v, [0.25, 0.5, 0.75]))
-            scale = (q75 - q25) / 1.349
-        stats[name] = [centre, scale if scale > 0 else 1.0]
-        names.append(name)
-        if np.isnan(v).any():
-            names.append(f"{name}_missing")
-        if name in CYCLIC:
-            names += [f"{name}_sin", f"{name}_cos"]
-    return {"scaling": scaling, "cards": [len(vocab[c]) + 1 for c in CATEGORICAL],
-            "numeric": names, "stats": stats}
+        stats[name] = [0.0, 1.0] if name in SEASONAL else list(numeric_stats(v, scaling))
+        has_missing[name] = bool(np.isnan(v).any())
+    return prep_layout(scaling, [len(vocab[c]) + 1 for c in CATEGORICAL], tuple(numeric), stats,
+                       has_missing)
+
+
+def prep_numeric(prep: dict) -> tuple[str, ...]:
+    return tuple(prep.get("features_numeric", NUMERIC))
 
 
 def arrival_inputs(encoded: dict[str, np.ndarray], prep: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -204,12 +227,12 @@ def arrival_inputs(encoded: dict[str, np.ndarray], prep: dict) -> tuple[np.ndarr
     cats = np.column_stack([encoded[c].astype(np.int64) + 1 for c in CATEGORICAL])
     cats = np.where((cats < 0) | (cats >= cards), 0, cats)
     cols = []
-    for name in NUMERIC:
+    for name in prep_numeric(prep):
         v = encoded[name].astype(np.float64)
         miss = np.isnan(v)
         centre, scale = prep["stats"][name]
         z = (v - centre) / scale
-        if prep["scaling"] == "robust":
+        if prep["scaling"] == "robust" and name not in SEASONAL:
             z = z / np.sqrt(1 + (z / 3) ** 2)
         cols.append(np.where(miss, 0.0, z))
         if f"{name}_missing" in prep["numeric"]:
@@ -507,8 +530,29 @@ def browser_meta(manifest: dict) -> dict:
     return {k: manifest[k] for k in _BROWSER_FIELDS}
 
 
-def save_arrival_artifact(models_dir: Path, manifest: dict, files: dict[str, Path], stamp: str) -> Path:
-    """Write a new, complete artifact directory. Never moves `CURRENT` (see `promote`)."""
+# What each artifact role may weigh (model files + manifest, i.e. what a browser would download).
+# A comparison artifact is never served: it lives outside the served directory and `promote`
+# refuses it. Manifests without a role are deployable.
+ROLE_BUDGETS = {"deployable": 35_000_000, "comparison": 100_000_000}
+COMPARISON_DIR_NAME = "v2-comparison"
+OUTPUTS = ("probs", "quantiles")
+
+
+def role_models_dir(role: str, models_dir: Path) -> Path:
+    """Where an artifact of `role` is written: the served directory, or its comparison sibling."""
+    if role not in ROLE_BUDGETS:
+        raise ValueError(f"unknown artifact role {role!r}")
+    return models_dir if role == "deployable" else models_dir.parent / COMPARISON_DIR_NAME
+
+
+def save_arrival_artifact(models_dir: Path, manifest: dict, files: dict[str, Path], stamp: str, *,
+                          role: str | None = None, served_dir: Path | None = None) -> Path:
+    """Write a new, complete artifact directory. Never moves `CURRENT` (see `promote`).
+
+    With a `role`, the manifest records it and the artifact must fit that
+    role's budget; a `comparison` artifact is refused inside `served_dir`
+    (default: `ML_MODELS_DIR`).
+    """
     import shutil
 
     from dbrel.ml.nn import MANIFEST_NAME
@@ -516,6 +560,15 @@ def save_arrival_artifact(models_dir: Path, manifest: dict, files: dict[str, Pat
     missing = {"prep", "vocab", "edges", "point_rule", "output"} - manifest.keys()
     if missing or ARRIVAL_MODEL_FILE not in files:
         raise ValueError(f"incomplete arrival artifact: missing {sorted(missing) or ARRIVAL_MODEL_FILE}")
+    if manifest["output"] not in OUTPUTS or (manifest["output"] == "probs") != (manifest["edges"] is not None):
+        raise ValueError("output must be 'probs' with bin edges or 'quantiles' with edges null")
+    if role is not None:
+        if role not in ROLE_BUDGETS:
+            raise ValueError(f"unknown artifact role {role!r}")
+        if served_dir is None:
+            from dbrel.config import ML_MODELS_DIR as served_dir
+        if role == "comparison" and Path(models_dir).resolve() == Path(served_dir).resolve():
+            raise ValueError(f"a comparison artifact must not be written into the served {served_dir}")
     final = models_dir / stamp
     if final.exists():
         raise FileExistsError(f"{final} already exists")
@@ -524,20 +577,38 @@ def save_arrival_artifact(models_dir: Path, manifest: dict, files: dict[str, Pat
     partial.mkdir(parents=True)
     for name, source in files.items():
         shutil.copyfile(source, partial / name)
+    asset = sum((partial / n).stat().st_size for n in files)
     full = {**manifest, "kind": ARRIVAL_KIND, "model_file": ARRIVAL_MODEL_FILE, "sides": ["arr"],
-            "window_half_min": WINDOW_HALF_MIN,
-            "asset_bytes": sum((partial / n).stat().st_size for n in files)}
+            "window_half_min": WINDOW_HALF_MIN, "asset_bytes": asset}
+    if role is not None:
+        full.update(role=role, budget_bytes=ROLE_BUDGETS[role], download_bytes=0)
+        for _ in range(2):  # the manifest counts itself; its length settles on the second pass
+            full["download_bytes"] = asset + len(json.dumps(full, indent=1).encode())
+        if full["download_bytes"] > ROLE_BUDGETS[role]:
+            shutil.rmtree(partial)
+            raise ValueError(f"{role} artifact is {full['download_bytes']:,} bytes, over its "
+                             f"{ROLE_BUDGETS[role]:,}-byte budget")
     (partial / MANIFEST_NAME).write_text(json.dumps(full, indent=1))
     partial.rename(final)
     return final
 
 
+def artifact_role(manifest: dict) -> str:
+    return manifest.get("role", "deployable")
+
+
 def promote(models_dir: Path, stamp: str) -> str | None:
-    """Atomically point `CURRENT` at a complete artifact; returns the previous stamp for rollback."""
+    """Atomically point `CURRENT` at a complete artifact; returns the previous stamp for rollback.
+
+    Comparison artifacts are refused wherever they are found.
+    """
     from dbrel.ml.nn import CURRENT_NAME, MANIFEST_NAME
 
     if not (models_dir / stamp / MANIFEST_NAME).exists():
         raise FileNotFoundError(f"{models_dir / stamp} is not a complete artifact")
+    role = artifact_role(json.loads((models_dir / stamp / MANIFEST_NAME).read_text()))
+    if role != "deployable":
+        raise ValueError(f"{stamp} is a {role} artifact, which is never served; CURRENT is unchanged")
     pointer = models_dir / CURRENT_NAME
     previous = pointer.read_text().strip() if pointer.exists() else None
     tmp = models_dir / (CURRENT_NAME + ".tmp")

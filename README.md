@@ -415,6 +415,53 @@ per train per station, so the web board does not recompute it per request.
 `show-train` and `show-station` both take `--format tsv` for piping straight into a
 training script.
 
+## Delay model
+
+The web UI's delay forecast runs in the browser (ONNX Runtime Web) from the artifact that
+`data/models/v2/CURRENT` names; the server only encodes each call's inputs. `dbrel ml
+predict-delay --train "RE 10070" --station "Dortmund Hbf" --date D` prints the same forecast
+on the command line, and `--artifact data/models/<dir>/<stamp>` runs any other artifact
+without reading `CURRENT`.
+
+**The full-history dataset.** `dbrel ml build-full-dataset` turns every finalized arrival in
+the database into one shard per calendar month under `data/ml/arrival_full/`, and prints
+each month's row count (`*` marks the months it rebuilt). Reruns rebuild only the latest
+month and any month whose rows changed; `--full` rebuilds everything. It only reads the
+database.
+
+**The full-year search** (`scripts/search_full_year.py`, PyTorch-ROCm venv) trains two
+arrival-only median models on that dataset: a *compact* one (download ≤ 35 MB, may be
+served) and a *large* one (≤ 100 MB, comparison only, never served). Split: the latest 7
+complete days are a sealed test week, the 28 days before are validation, everything earlier
+is training. Every training step runs as a capped job, after a memory check:
+
+```bash
+PY="env PYTHONPATH=src data/build/torch-rocm/venv/bin/python scripts/search_full_year.py"
+dbrel ml launch full-year-memcheck-compact --memory 14G --oom-policy continue -- $PY memory-check --track compact
+dbrel ml launch full-year-compact --memory 14G -- $PY search --track compact   # resumable
+dbrel ml launch full-year-large   --memory 14G -- $PY search --track large     # after its own memory check
+dbrel ml launch full-year-final   --memory 14G -- $PY final --tracks compact,large
+$PY export --track compact --final-dir data/ml/full_year/final/<last test date>
+```
+
+`dbrel ml launch` refuses a `search` or `final` step if the track has no memory check for
+the current dataset, or if the projected peak (plus 15%) is over the cap. `search` writes
+`data/ml/full_year/runs/<track>-<last test date>/ranking.json`: every trial ranked by
+validation average error (MAE), the trials skipped for size, and the reference models (the
+old two-sided TabM and the window MLP) scored on the same rows. `final` refits each track's
+winner and scores it once on the test week, then records those dates in
+`data/ml/inspected_dates.json`, so the next final test needs newer data. `export` writes a
+compact model to `data/models/v2/` and a large one to `data/models/v2-comparison/`. Neither
+moves `CURRENT`. Serving a model is a separate, deliberate step, which refuses comparison
+artifacts:
+
+```bash
+.venv/bin/python -c "import sys; sys.path.insert(0,'src'); from pathlib import Path; from dbrel.ml.arrival import promote; print(promote(Path('data/models/v2'), '<stamp>'))"
+```
+
+It prints the previous stamp; promoting that stamp again rolls back. `dbrel study
+live-accuracy --artifact <dir>` scores any artifact against live trains.
+
 ## Probes
 
 `scripts/probe_match.py` and `scripts/probe_validate.py` measure the feeds rather than

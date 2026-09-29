@@ -57,6 +57,7 @@ RAW_COLUMNS = (
     "stop_rank",  # 0-based position within the route variant; NaN if unknown
     "n_stops",  # stops in that route variant; NaN if unknown
     "direction",  # 0/1, UNKNOWN_DIRECTION if unresolved
+    "day_of_year_idx",  # service date's month/day on a 366-day calendar, 0 = 1 Jan; see day_of_year_index
 )
 
 CATEGORICAL = ("station", "train", "line", "category", "operator", "state", "weekday", "direction")
@@ -72,7 +73,14 @@ NUMERIC = (
     "lat",
     "lon",
 )
+# Time of year as one point on a circle. Only the arrival models trained with the full
+# history use it; the v1/v2 artifacts keep their trained layout (NUMERIC/FEATURES).
+SEASONAL = ("doy_sin", "doy_cos")
+ARRIVAL_NUMERIC = NUMERIC + SEASONAL
 FEATURES = CATEGORICAL + NUMERIC
+DAYS_IN_CYCLE = 366
+# Days before each month in a leap year: the same month/day gets the same index every year.
+_MONTH_OFFSET = np.array([0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335])
 
 # Which raw column each categorical feature is encoded from.
 _CATEGORICAL_SOURCE = {
@@ -121,6 +129,25 @@ def compute_features(raw: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     ones as the raw values `encode_categoricals` maps through a vocabulary.
     """
     n = len(raw["station_id"])
+    out = numeric_features(raw)
+    for feature, source in _CATEGORICAL_SOURCE.items():
+        values = raw[source]
+        if source in ("category", "operator", "state"):
+            values = np.array(["" if v is None else str(v) for v in values], dtype=object)
+        else:
+            values = np.asarray(values, dtype=np.int64)
+        out[feature] = values
+    assert all(len(v) == n for v in out.values())
+    return out
+
+
+# The raw columns the numeric features are computed from.
+NUMERIC_SOURCES = ("is_holiday", "sched_local_sec", "trip_start_sec", "stop_rank", "n_stops",
+                   "lat", "lon", "day_of_year_idx")
+
+
+def numeric_features(raw: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """The `ARRIVAL_NUMERIC` columns of `compute_features`, from `NUMERIC_SOURCES` alone."""
     sched_sec = np.asarray(raw["sched_local_sec"], dtype=np.float64) % 86400
     sched_min = np.floor(sched_sec / 60)
     start_sec = np.asarray(raw["trip_start_sec"], dtype=np.float64) % 86400
@@ -149,14 +176,9 @@ def compute_features(raw: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         "lat": np.asarray(raw["lat"], dtype=np.float32),
         "lon": np.asarray(raw["lon"], dtype=np.float32),
     }
-    for feature, source in _CATEGORICAL_SOURCE.items():
-        values = raw[source]
-        if source in ("category", "operator", "state"):
-            values = np.array(["" if v is None else str(v) for v in values], dtype=object)
-        else:
-            values = np.asarray(values, dtype=np.int64)
-        out[feature] = values
-    assert all(len(v) == n for v in out.values())
+    angle = 2 * np.pi * np.asarray(raw["day_of_year_idx"], dtype=np.float64) / DAYS_IN_CYCLE
+    out["doy_sin"] = np.sin(angle).astype(np.float32)
+    out["doy_cos"] = np.cos(angle).astype(np.float32)
     return out
 
 
@@ -173,20 +195,23 @@ def encode_categoricals(features: dict[str, np.ndarray], vocab: dict[str, list])
     """Replace each categorical column by its int32 code in `vocab`; UNKNOWN if absent."""
     out = dict(features)
     for name in CATEGORICAL:
-        values = features[name]
-        is_text = values.dtype == object
-        known = np.array(vocab[name], dtype=object if is_text else np.int64)
-        if len(known) == 0:
-            out[name] = np.full(len(values), UNKNOWN, dtype=np.int32)
-            continue
-        if is_text:
-            known = known.astype(str)
-            values = values.astype(str)
-        pos = np.searchsorted(known, values)
-        pos_clipped = np.minimum(pos, len(known) - 1)
-        hit = known[pos_clipped] == values
-        out[name] = np.where(hit, pos_clipped, UNKNOWN).astype(np.int32)
+        out[name] = encode_column(features[name], vocab[name])
     return out
+
+
+def encode_column(values: np.ndarray, known: list) -> np.ndarray:
+    """int32 position of each value in the sorted vocabulary list `known`; UNKNOWN if absent."""
+    is_text = values.dtype == object
+    known = np.array(known, dtype=object if is_text else np.int64)
+    if len(known) == 0:
+        return np.full(len(values), UNKNOWN, dtype=np.int32)
+    if is_text:
+        known = known.astype(str)
+        values = values.astype(str)
+    pos = np.searchsorted(known, values)
+    pos_clipped = np.minimum(pos, len(known) - 1)
+    hit = known[pos_clipped] == values
+    return np.where(hit, pos_clipped, UNKNOWN).astype(np.int32)
 
 
 def feature_matrix(encoded: dict[str, np.ndarray]) -> np.ndarray:
@@ -197,6 +222,20 @@ def feature_matrix(encoded: dict[str, np.ndarray]) -> np.ndarray:
 def weekday_of(service_date: str | date) -> int:
     day = date.fromisoformat(service_date) if isinstance(service_date, str) else service_date
     return day.weekday()
+
+
+def day_of_year_index(service_date: str | date) -> int:
+    """0-based position of the date's month/day in a leap year; the year itself is ignored."""
+    day = date.fromisoformat(service_date) if isinstance(service_date, str) else service_date
+    return int(_MONTH_OFFSET[day.month - 1]) + day.day - 1
+
+
+def day_of_year_indices(epoch_days: np.ndarray) -> np.ndarray:
+    """`day_of_year_index` for days since 1970-01-01, vectorised."""
+    d = np.asarray(epoch_days, dtype="int64").astype("datetime64[D]")
+    month = d.astype("datetime64[M]")
+    day = (d - month).astype(np.int64)
+    return _MONTH_OFFSET[(month.astype(np.int64) % 12)] + day
 
 
 # ---------------------------------------------------------------------------

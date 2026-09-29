@@ -5,10 +5,13 @@
 // Two artifact kinds, told apart by /api/model/<stamp>/meta.json:
 // - "tabm" (v2): output "quantiles" (rows, [dep, arr], [p25, p50, p75]); the
 //   point is the median.
-// - "arrival-net": output "probs" (rows, bins), arrival only. The point is the
-//   centre of the most likely 2*half-minute window -- NOT the median -- and
-//   p25/p75 come from the same distribution (dbrel.ml.arrival.distribution_point,
-//   ported exactly; scripts/browser_check verified it bit for bit).
+// - "arrival-net", arrival only, one of two outputs:
+//   - "probs" (rows, bins): the point follows `point_rule` -- the median, or the
+//     centre of the most likely 2*half-minute window -- and p25/p75 come from
+//     the same distribution (dbrel.ml.arrival.distribution_point, ported
+//     exactly; scripts/browser_check verified it bit for bit).
+//   - "quantiles" (rows, [p25, p50, p75]), already ordered by the network: the
+//     point is the median.
 import * as ort from "onnxruntime-web/wasm";
 import type { ModelInput } from "@/lib/api";
 
@@ -41,6 +44,14 @@ type ModelMeta =
       sides: ["arr"];
       point_rule: PointRule;
       edges: number[];
+      window_half_min: number;
+    }
+  | {
+      kind: "arrival-net";
+      output: "quantiles";
+      sides: ["arr"];
+      point_rule: "median";
+      edges: null;
       window_half_min: number;
     };
 
@@ -138,6 +149,16 @@ export async function predictBatch(
   });
   const out = results[meta.output]!.data as Float32Array;
 
+  if (meta.kind === "arrival-net" && meta.output === "quantiles") {
+    return inputs.map((_, row) => ({
+      arr: {
+        p25_min: out[row * QUANTILES]!,
+        point_min: out[row * QUANTILES + 1]!,
+        p75_min: out[row * QUANTILES + 2]!,
+        rule: "median",
+      },
+    }));
+  }
   if (meta.kind === "arrival-net") {
     return inputs.map((_, row) => ({
       arr: distributionPoint(out, row, meta.edges, meta.point_rule, meta.window_half_min),

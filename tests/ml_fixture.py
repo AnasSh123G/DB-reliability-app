@@ -62,7 +62,27 @@ PATTERNS = {
 }
 
 
-def build(path) -> None:
+def add_run(path, train_id: int, service_date: str, delay_s: int = 120) -> None:
+    """One more recorded run of `train_id` on `service_date` (new trip id, same pattern)."""
+    engine = make_engine(path)
+    with Session(engine) as s:
+        trip_id = (s.query(Trip.id).order_by(Trip.id.desc()).first()[0]) + 1
+        s.add(Trip(id=trip_id, train_id=train_id, service_date=service_date, source=SOURCE_TT,
+                   source_run_key=f"{train_id}-extra-{trip_id}", status="FINAL", path_sha1="main"))
+        ss_ids = {r.station_id: r.id for r in s.query(StationStop).filter_by(train_id=train_id)}
+        for seq, (st, arr, dep) in enumerate(PATTERNS[train_id]):
+            s.add(TripStop(
+                trip_id=trip_id, stop_sequence=10 * (seq + 1), station_id=st, station_stop_id=ss_ids[st],
+                supposed_arrival_utc=None if arr is None else utc_of(service_date, arr),
+                supposed_departure_utc=None if dep is None else utc_of(service_date, dep),
+                arr_delay_s=None if arr is None else delay_s, dep_delay_s=None if dep is None else delay_s,
+                quality="RECORDED", rule_version=1, is_holiday=0,
+            ))
+        s.commit()
+    engine.dispose()
+
+
+def build(path, dates: list[str] = DATES) -> None:
     engine = make_engine(path)
     Base.metadata.create_all(engine)
     with Session(engine) as s:
@@ -92,7 +112,7 @@ def build(path) -> None:
         ss_ids = {(r.train_id, r.station_id): r.id for r in s.query(StationStop)}
 
         trip_id = 0
-        for day_i, service_date in enumerate(DATES):
+        for day_i, service_date in enumerate(dates):
             for tid, pattern in PATTERNS.items():
                 trip_id += 1
                 start = pattern[0][2]

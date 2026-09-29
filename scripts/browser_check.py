@@ -2,6 +2,11 @@
 
     .venv/bin/python scripts/browser_check.py [data/ml/arrival_exports/<stamp>]
 
+A full-year final model is checked the same way: `search_full_year.py export`
+writes this layout (its test-week reference rows) next to the model:
+
+    .venv/bin/python scripts/browser_check.py data/ml/full_year/final/<date>/<track>/browser_check
+
 Serves scripts/browser_check/ (the page), onnxruntime-web's dist/ (the WASM
 runtime the frontend ships) and the export directory on localhost, opens the
 page in Playwright's cached Chromium and waits for the page to post its

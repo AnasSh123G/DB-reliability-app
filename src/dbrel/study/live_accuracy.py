@@ -40,7 +40,7 @@ from dbrel.ingest.client import TimetablesClient
 from dbrel.ingest.parser import TtEvent, TtStop, parse_timetable
 from dbrel.ingest.timeutil import epoch_to_gtfs_sec, local_date, read_clock
 from dbrel.ml.arrival import ARRIVAL_KIND
-from dbrel.ml.predict import DelayModel
+from dbrel.ml.predict import DelayModel, NoModelError
 from dbrel.ml.timetable import ScheduledCall, calls_at
 from dbrel.models import DAY_TYPE_SUNDAY_HOLIDAY, Station, Train
 from dbrel.web.queries import _delay_pred, _ModelDirectionCache, _sched_time_key, _train_trip_start_time, resolve_day_type
@@ -248,7 +248,7 @@ def score_stops(session: Session, model: DelayModel, stops: list[ScoredStop], *,
     direction_cache: dict[int, dict[int, int]] = {}  # line_id -> {train_id: direction}
     model_direction = _ModelDirectionCache(direction_cache)
     calls = [s.call for s in stops]
-    progress(f"running TabM on {len(calls):,} stops")
+    progress(f"running the model on {len(calls):,} stops")
     predictions = model.predict_calls(session, calls, direction=model_direction.get) if calls else []
     progress("looking up the stored averages")
     today = local_date(now).isoformat()
@@ -312,10 +312,25 @@ class StudyResult:
     comparisons: list[Comparison] = field(default_factory=list)  # every stop, for comparisons.csv
     model_kind: str = "tabm"  # "arrival-net": arrivals only, no departure predictions
     point_rule: str = "median"  # "window": the model figure is NOT a median
+    artifact: str | None = None  # the artifact scored; None in results saved before it was recorded
+    role: str = "deployable"  # "comparison": never served on the website
 
 
 def model_label(result: StudyResult) -> str:
-    return "TabM" if result.model_kind != ARRIVAL_KIND else f"Model estimate ({result.point_rule} rule)"
+    if result.model_kind != ARRIVAL_KIND:
+        return "TabM"
+    return "Model median" if result.point_rule == "median" else "Model estimate (window rule)"
+
+
+def _model_sentence(result: StudyResult) -> str:
+    if result.model_kind != ARRIVAL_KIND:
+        return ("Real delay = what DB recorded for that stop. TabM's figure is its median guess; the "
+                "stored average is the Ø the app shows.")
+    figure = ("its median guess" if result.point_rule == "median" else
+              "the centre of its most likely 6-minute window (window rule), not a median")
+    return (f"Real delay = what DB recorded for that stop. The model's figure is {figure}; the stored "
+            "average is the Ø the app shows. This model artifact predicts arrivals only -- departures "
+            "are not predicted, so no departure is scored.")
 
 
 WITHIN_MIN = (1, 3, 5)
@@ -367,10 +382,18 @@ def run_study(
     sample_size: int = 3000,
     seed: int | None = None,
     now: int | None = None,
+    artifact: Path | None = None,
     progress=lambda msg: None,
 ) -> StudyResult:
+    """Scores `CURRENT` under `models_dir`, or the artifact directory `artifact` if given
+    (e.g. a comparison model or the old TabM), without touching `CURRENT`."""
+    from dbrel.ml.arrival import artifact_role
+    from dbrel.ml.nn import MANIFEST_NAME
+
     now = read_clock(now)
-    model = DelayModel.current(models_dir)  # raises NoModelError if none is trained
+    if artifact is not None and not (Path(artifact) / MANIFEST_NAME).exists():
+        raise NoModelError(f"{artifact} is not a model artifact (no {MANIFEST_NAME})")
+    model = DelayModel(Path(artifact)) if artifact is not None else DelayModel.current(models_dir)
 
     stations = sample_stations(session, sample_size, seed=seed)
     progress(f"sampled {len(stations)} stations")
@@ -406,6 +429,8 @@ def run_study(
     return StudyResult(
         model_kind=model.manifest.get("kind", "tabm"),
         point_rule=model.manifest.get("point_rule", "median"),
+        artifact=str(model.artifact),
+        role=artifact_role(model.manifest),
         stations_sampled=len(stations),
         stations_skipped=stations_skipped,
         skip_reasons=skip_reasons,
@@ -445,13 +470,11 @@ def render_report(result: StudyResult, *, created_at: str) -> str:
            if result.skip_reasons else ""),
         f"- Stops whose train isn't in the local timetable (skipped): "
         f"{result.stops_skipped_no_local_match}",
+        *([f"- Model artifact: `{result.artifact}`"
+           + (" (comparison model: never served on the website)" if result.role == "comparison" else "")]
+          if result.artifact else []),
         "",
-        "Real delay = what DB recorded for that stop. TabM's figure is its median guess; the "
-        "stored average is the Ø the app shows." if result.model_kind != ARRIVAL_KIND else
-        "Real delay = what DB recorded for that stop. The model's figure is the centre of its most "
-        f"likely 6-minute window ({result.point_rule} rule), not a median; the stored average is "
-        "the Ø the app shows. This model artifact predicts arrivals only -- departures are not "
-        "predicted, so no departure is scored.",
+        _model_sentence(result),
         "",
     ]
     name_model = model_label(result)
@@ -505,8 +528,12 @@ def save_report(result: StudyResult, studies_dir: Path, *, stamp: str) -> Path:
     (out_dir / RESULT_NAME).write_text(json.dumps(payload, indent=1))
     with (out_dir / COMPARISONS_NAME).open("w", newline="") as fh:
         w = csv.writer(fh)
-        model_cols = (["tabm_p25", "tabm_p50", "tabm_p75"] if result.model_kind != ARRIVAL_KIND
-                      else ["model_p25", "model_point", "model_p75"])  # a window point is not p50
+        if result.model_kind != ARRIVAL_KIND:
+            model_cols = ["tabm_p25", "tabm_p50", "tabm_p75"]
+        elif result.point_rule == "median":
+            model_cols = ["model_p25", "model_p50", "model_p75"]
+        else:
+            model_cols = ["model_p25", "model_point", "model_p75"]  # a window point is not p50
         w.writerow(["side", "station", "train", "service_date", "segment", "is_holiday",
                     "real_delay_min", *model_cols, "average_min"])
         for c in result.comparisons:
