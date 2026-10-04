@@ -48,6 +48,7 @@ from dbrel.ml.features import (
     CATEGORICAL, NO_LINE, NUMERIC_SOURCES, UNKNOWN, UNKNOWN_DIRECTION, day_of_year_indices, encode_column,
     numeric_features,
 )
+from dbrel.ml.notice_rates import NoticeRates
 
 CODE_VERSION = 1
 MANIFEST_NAME = "manifest.json"
@@ -348,11 +349,19 @@ class FullHistory:
         return np.array(self.dictionary[name] or [""], dtype=str)[codes]
 
     @staticmethod
-    def numeric(chunk: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """The chunk's `ARRIVAL_NUMERIC` feature columns."""
+    def numeric(chunk: dict[str, np.ndarray], rates: NoticeRates | None = None,
+                fold: bool = False) -> dict[str, np.ndarray]:
+        """The chunk's `ARRIVAL_NUMERIC` feature columns, plus the six notice rates given `rates`.
+
+        `fold=True` is for training rows: each row's own calendar month is left out of its rates.
+        """
         raw = {name: chunk[name] for name in NUMERIC_SOURCES if name != "day_of_year_idx"}
         raw["day_of_year_idx"] = day_of_year_indices(chunk["day"])
-        return numeric_features(raw)
+        out = numeric_features(raw)
+        if rates is not None:
+            out.update(rates.rates(chunk["station_id"], chunk["line_id"], chunk["train_id"], chunk["day"],
+                                   fold=fold))
+        return out
 
     def text_values(self, name: str, values: np.ndarray) -> list:
         """Raw categorical values as the vocabulary stores them (text codes decoded)."""
@@ -360,12 +369,14 @@ class FullHistory:
             return [self.dictionary[name][c] for c in values.tolist()]
         return [int(v) for v in values.tolist()]
 
-    def encode(self, chunk: dict[str, np.ndarray], vocab: dict[str, list]) -> dict[str, np.ndarray]:
+    def encode(self, chunk: dict[str, np.ndarray], vocab: dict[str, list],
+               rates: NoticeRates | None = None, fold: bool = False) -> dict[str, np.ndarray]:
         """Features of a chunk, categoricals coded against `vocab`, numerics as `numeric_features`.
 
-        Equals `encode_categoricals(compute_features(raw), vocab)` for the same calls.
+        Equals `encode_categoricals(compute_features(raw), vocab)` for the same calls. With `rates`
+        the notice-rate columns are added (training rows pass `fold=True`).
         """
-        out = self.numeric(chunk)
+        out = self.numeric(chunk, rates, fold)
         for name, values in self.categorical_values(chunk).items():
             if name in TEXT_COLUMNS:
                 lookup = encode_column(np.array(self.dictionary[name], dtype=object), vocab[name])

@@ -1,7 +1,5 @@
-// The model's own delay figure, shown next to (never merged with) the
-// average -- see openspec/changes/add-browser-delay-predictions/design.md D4.
-// One decimal place, unlike the average's whole minutes, is a deliberate,
-// small visual cue that the two numbers come from different sources.
+// The model's own delay figure, the only delay shown in the v2 views; the
+// historical average is no longer displayed.
 import { delayColor } from "@/lib/delay";
 import type { SidePrediction } from "@/lib/tabm";
 

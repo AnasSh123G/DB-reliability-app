@@ -308,6 +308,14 @@ Recorded 2026-09-29, when the pipeline code was finished and tested on synthetic
     Risks).
   - The ablation and looser-pruning variants run only after all of a track's fixed trials have
     finished or been skipped.
+  - 2026-10-01: both tracks list their TabM trials first, so a track that hits its time cap
+    drops MLP trials rather than TabM ones. The ranking is unchanged (validation MAE).
+  - 2026-10-02: early-stopping patience is 6 epochs instead of 3. In the dry run validation MAE
+    moved by 0.1–0.2 min between epochs (2.98, 2.92, 2.90, 2.78, 2.92, 3.05, 2.79) and training
+    stopped at epoch 7, before the 12-epoch OneCycle schedule reached its low-learning-rate phase.
+    The compact trial that exceeds the 35 MB budget is the MLP 1024×3 (about 39 KB over, 35,039,325
+    estimated bytes before the notice rates, 35,089,654 after); it stays skipped by decision, not
+    resized. The 512×2 TabM (10.8 MB) is within budget and trains.
 - **D4 / task 5.5.**
   - `final` refits and scores every requested track in one run, so all models are scored on
     identical test rows.

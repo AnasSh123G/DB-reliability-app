@@ -260,3 +260,31 @@ def test_incumbent_inputs_equal_the_v2_datasets_own_features(db, session, tmp_pa
     got = incumbent_features(arr, rows, v2.meta["vocab"])
     for name in F.FEATURES:
         np.testing.assert_array_equal(got[name], v2.features[name][match], err_msg=name)
+
+
+def test_the_notice_rate_inputs_extend_the_arrival_numeric_set_without_changing_older_ones():
+    assert F.NUMERIC == (
+        "is_holiday", "sched_min", "trip_start_min", "minutes_since_start", "stop_frac", "n_stops",
+        "is_origin", "is_terminus", "lat", "lon")
+    assert F.ARRIVAL_NUMERIC == F.NUMERIC + ("doy_sin", "doy_cos")
+    assert F.NOTICE_RATES == (
+        "works_rate_station", "works_rate_line", "works_rate_train",
+        "disruption_rate_station", "disruption_rate_line", "disruption_rate_train")
+    assert F.NOTICE_NUMERIC == F.ARRIVAL_NUMERIC + F.NOTICE_RATES
+    assert set(F.NOTICE_RATES).isdisjoint(F.NUMERIC_SOURCES)  # looked up, not computed from raw columns
+
+
+def test_the_prep_layout_adds_the_rates_and_a_missing_column_only_where_training_saw_nan():
+    from dbrel.ml.arrival import fit_input_prep
+
+    n = 40
+    rng = np.random.default_rng(0)
+    vocab = {name: [] for name in F.CATEGORICAL}
+    encoded = {name: rng.random(n).astype(np.float32) for name in F.NOTICE_NUMERIC}
+    encoded["works_rate_train"][::5] = np.nan  # trains new in their month have no rate
+    prep = fit_input_prep(encoded, np.ones(n, bool), vocab, "standard", F.NOTICE_NUMERIC)
+    assert prep["features_numeric"] == list(F.NOTICE_NUMERIC)
+    for name in F.NOTICE_RATES:
+        assert name in prep["numeric"]
+    assert "works_rate_train_missing" in prep["numeric"]
+    assert [c for c in prep["numeric"] if c.endswith("_missing")] == ["works_rate_train_missing"]

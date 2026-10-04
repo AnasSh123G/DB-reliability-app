@@ -77,6 +77,12 @@ NUMERIC = (
 # history use it; the v1/v2 artifacts keep their trained layout (NUMERIC/FEATURES).
 SEASONAL = ("doy_sin", "doy_cos")
 ARRIVAL_NUMERIC = NUMERIC + SEASONAL
+# Historical notice rates of the station, line and train (see ml/notice_rates.py). They are looked up
+# from stored counts, not computed from a call's raw columns, so `numeric_features` does not produce
+# them; a model lists them in its `features_numeric` and the caller supplies the columns.
+NOTICE_LEVELS = ("station", "line", "train")
+NOTICE_RATES = tuple(f"{kind}_rate_{level}" for kind in ("works", "disruption") for level in NOTICE_LEVELS)
+NOTICE_NUMERIC = ARRIVAL_NUMERIC + NOTICE_RATES
 FEATURES = CATEGORICAL + NUMERIC
 DAYS_IN_CYCLE = 366
 # Days before each month in a leap year: the same month/day gets the same index every year.

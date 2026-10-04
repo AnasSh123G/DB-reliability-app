@@ -12,8 +12,9 @@ import json
 import time
 from datetime import date as date_cls
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from dbrel.config import (
@@ -31,10 +32,13 @@ from dbrel.direction import (
     direction_by_train_id,
     direction_of,
     line_trains_by_direction,
+    train_direction_map,
 )
 from dbrel.holidays_de import load_holiday_dates
+from dbrel.derive.passenger_lines import BARE_CATEGORY_LINES, is_bare_category_line
 from dbrel.identity import prefix_range, search_norm
 from dbrel.ml.arrival import ARRIVAL_KIND, arrival_inputs
+from dbrel.ml.notice_rates import add_serving_rates
 from dbrel.ml.bakeoff import MANIFEST_NAME, current_artifact
 from dbrel.ml.features import UNKNOWN_DIRECTION, compute_features, direction_for, encode_categoricals
 from dbrel.ml.nn import model_inputs
@@ -44,6 +48,8 @@ from dbrel.models import (
     DAY_TYPE_WEEKDAY,
     FeedVersion,
     SearchAlias,
+    PassengerLine,
+    PassengerLineMember,
     ServiceLine,
     Station,
     StationStop,
@@ -250,8 +256,12 @@ def _model_input(
     holiday_set: set[tuple[str, str]],
     arr_sec: int | None,
     dep_sec: int | None,
+    variant: str | None = None,
 ) -> dict | None:
     """This call's encoded model input, or None.
+
+    `variant` is the route variant (StationStop.path_sha1) the page shows this
+    call from, so the input describes that same call.
 
     Reuses dbrel.ml.features/dbrel.ml.timetable exactly as predict.py's offline
     path does (compute_features -> encode_categoricals -> model_inputs), so the
@@ -268,7 +278,7 @@ def _model_input(
     """
     if station_id is None:
         return None
-    calls = calls_at(session, train, station_id, service_date)
+    calls = calls_at(session, train, station_id, service_date, variant=variant)
     if not calls:
         return None
     call = calls[0]
@@ -289,6 +299,7 @@ def _model_input(
     raw = call.raw(direction=direction, holiday_set=holiday_set, arrival_clock=arrival_only)
     features = encode_categoricals(compute_features(raw), manifest["vocab"])
     if arrival_only:
+        features = add_serving_rates(features, raw, manifest, session.get_bind())
         cats, nums = arrival_inputs(features, manifest["prep"])
     else:
         cats, nums = model_inputs(
@@ -309,19 +320,25 @@ _SUGGEST_KIND_COLUMN = {
     "train": SearchAlias.train_id,
 }
 
-# A service_line whose "line" is just a generic product code -- IRIS echoing
-# the train category ("RE", "RB", "S", ...) where a real line name belongs. It
-# names no actual route, so it is never offered as a searchable line. Operator
-# codes used as a line name (HSB, MBB, SAB, FEX, SEV, P, ...) are real named
-# services and are deliberately NOT in this set.
-_BARE_CATEGORY_LINES = frozenset(
-    {"RE", "RB", "S", "R", "RS", "E", "EX", "D", "IR", "IRE", "IC", "ICE", "EC", "ECE",
-     "EN", "NJ", "BUS"}
-)
-
-
 def _is_bare_category_line(line: ServiceLine) -> bool:
-    return (line.line or "").strip().upper() in _BARE_CATEGORY_LINES
+    return is_bare_category_line(line.line)
+
+
+def passenger_name(session: Session, train: Train) -> str:
+    """The name a passenger sees on the platform display.
+
+    Regional and S-Bahn trains are signed by their line ("RB22", "S1"), not
+    their operational number ("RB 10478"), which is internal. Long-distance
+    trains really are signed by number ("ICE 599"), and a line that is just a
+    bare category ("RB") says nothing, so both keep the number.
+    """
+    number_name = train.display_name or f"#{train.id}"
+    if train.segment == "FV" or train.line_id is None:
+        return number_name
+    line = session.get(ServiceLine, train.line_id)
+    if line is None or not line.display_name or _is_bare_category_line(line):
+        return number_name
+    return line.display_name
 
 
 def _line_endpoints(session: Session, line_ids: list[int]) -> dict[int, str]:
@@ -348,6 +365,85 @@ def _line_endpoints(session: Session, line_ids: list[int]) -> dict[int, str]:
     }
 
 
+def _passenger_line_results(
+    session: Session, service_line_ids: list[int], *, exact_line_ids: set[int]
+) -> list[dict]:
+    """Search results for the passenger lines behind matched service_line rows.
+
+    Exact name matches first, trains before replacement buses, then the
+    busiest line first -- "RE4" should open on the RE4 most people mean.
+    """
+    bare = {
+        line.id
+        for line in session.execute(
+            select(ServiceLine).where(ServiceLine.id.in_(service_line_ids))
+        ).scalars()
+        if _is_bare_category_line(line)
+    }
+    wanted = [i for i in service_line_ids if i not in bare]
+    if not wanted:
+        return []
+    cutoff = _active_cutoff(session)
+    still_running = (
+        ()
+        if cutoff is None
+        else (Train.last_seen_date.is_(None) | (Train.last_seen_date >= cutoff),)
+    )
+    via: dict[int, set[int]] = {}
+    for service_line_id, passenger_line_id in session.execute(
+        select(Train.line_id, PassengerLineMember.passenger_line_id)
+        .join(PassengerLineMember, PassengerLineMember.train_id == Train.id)
+        .where(Train.line_id.in_(wanted), *still_running)
+        .distinct()
+    ).all():
+        via.setdefault(passenger_line_id, set()).add(service_line_id)
+    if not via:
+        return []
+    runs = dict(
+        session.execute(
+            select(PassengerLineMember.passenger_line_id, func.count())
+            .join(Train, Train.id == PassengerLineMember.train_id)
+            .where(PassengerLineMember.passenger_line_id.in_(list(via)), *still_running)
+            .group_by(PassengerLineMember.passenger_line_id)
+        ).all()
+    )
+    lines = session.execute(select(PassengerLine).where(PassengerLine.id.in_(list(via)))).scalars()
+    out = []
+    for line in lines:
+        n = runs.get(line.id, 0)
+        # IRIS publishes rail-replacement buses under the line they replace,
+        # so the same label can name both. Saying which is the difference
+        # between a useful result and a baffling duplicate.
+        is_bus = (line.category or "").upper() == "BUS"
+        out.append(
+            {
+                "kind": "line",
+                "rank": _KIND_RANK["line"],
+                "exact": bool(via[line.id] & exact_line_ids),
+                "id": line.id,
+                "name": line.name,
+                "sub": (
+                    f"Replacement bus · {n} run{'s' if n != 1 else ''}"
+                    if is_bus
+                    else f"Line · {n} run{'s' if n != 1 else ''}"
+                ),
+                "replacement_bus": is_bus,
+                "stops": line.endpoints,
+                "url": f"/line/{line.id}/",
+                "_runs": n,
+            }
+        )
+    out.sort(key=lambda r: (not r["exact"], r["replacement_bus"], -r["_runs"]))
+    for r in out:
+        del r["_runs"]
+    return out
+
+
+# Line numbers stop at two digits (RB22, S41); three or more means the user
+# is typing a train's own number, so its individual runs are worth listing.
+_TRAIN_NUMBER_MIN_DIGITS = 3
+
+
 def suggest(
     session: Session, term: str, *, limit: int = 8, only: str | None = None
 ) -> list[dict]:
@@ -367,6 +463,26 @@ def suggest(
     conditions = [SearchAlias.alias_norm >= lo, SearchAlias.alias_norm < hi]
     if only is not None:
         conditions.append(_SUGGEST_KIND_COLUMN[only].is_not(None))
+    number_search = sum(ch.isdigit() for ch in normalised) >= _TRAIN_NUMBER_MIN_DIGITS
+    if not number_search:
+        # Not (yet) a train-number search: a run named by its line ("RB22",
+        # see passenger_name) would only repeat that line once per run, so it
+        # is left to the line's own result. An exact number still finds it.
+        signed_by_line = (
+            select(Train.id)
+            .join(ServiceLine, ServiceLine.id == Train.line_id)
+            .where(
+                func.coalesce(Train.segment, "") != "FV",
+                func.upper(func.trim(func.coalesce(ServiceLine.line, ""))).not_in(
+                    BARE_CATEGORY_LINES
+                ),
+            )
+        )
+        conditions.append(
+            (SearchAlias.alias_norm == normalised)
+            | SearchAlias.train_id.is_(None)
+            | SearchAlias.train_id.not_in(signed_by_line)
+        )
 
     rows = session.execute(
         select(
@@ -380,6 +496,8 @@ def suggest(
         .where(*conditions)
         .order_by(
             (SearchAlias.alias_norm == normalised).desc(),
+            # "rb" means a line far more often than one of thousands of runs.
+            *(() if number_search else (SearchAlias.line_id.is_(None),)),
             SearchAlias.weight.desc(),
             SearchAlias.alias_norm,
         )
@@ -444,6 +562,17 @@ def suggest(
         )
     line_endpoints = _line_endpoints(session, wanted["line"])
 
+    # With passenger lines built, a matched service_line stands for every
+    # passenger line its trains belong to (one "RE/4" row covers RE4s all over
+    # Germany), each listed once and only while it still runs.
+    passenger_results: list[dict] | None = None
+    if wanted["line"] and _passenger_lines_ready(session):
+        passenger_results = _passenger_line_results(
+            session,
+            [ident for kind, ident in order if kind == "line"],
+            exact_line_ids={ident for kind, ident in exact if kind == "line"},
+        )
+
     results: list[dict] = []
     for kind, ident in order:
         if kind == "station":
@@ -465,6 +594,10 @@ def suggest(
                     "url": f"/station/{station.id}/",
                 }
             )
+        elif kind == "line" and passenger_results is not None:
+            # All of them at the first line match's position, then never again.
+            results.extend(passenger_results)
+            passenger_results = []
         elif kind == "line":
             line = lines.get(ident)
             if line is None or _is_bare_category_line(line):
@@ -502,7 +635,8 @@ def suggest(
                     "rank": _KIND_RANK["train"],
                     "exact": (kind, ident) in exact,
                     "id": train.id,
-                    "name": train.display_name or f"#{train.id}",
+                    "name": passenger_name(session, train),
+                    "number_name": train.display_name or f"#{train.id}",
                     "sub": f"Train · {journey}" if journey else "Train",
                     "stops": " – ".join(x for x in (train.origin_name, train.dest_name) if x)
                     or None,
@@ -511,10 +645,20 @@ def suggest(
             )
 
     results.sort(key=lambda r: (not r["exact"], r["rank"]))
+    # One number can be stored as many trains (an operator disagreement parks
+    # each route variant on its own identity, see ingest/runs.py), which would
+    # list e.g. "ICE 100 · Interlaken Ost – Dortmund Hbf" dozens of times.
+    unique: list[dict] = []
+    shown: set[tuple] = set()
     for r in results:
+        key = (r["kind"], r["name"], r.get("number_name"), r.get("stops"))
+        if key in shown:
+            continue
+        shown.add(key)
         r.pop("exact", None)
         r.pop("rank", None)
-    return results[:limit]
+        unique.append(r)
+    return unique[:limit]
 
 
 def board_slices(now_epoch: int, back_s: int, fwd_s: int) -> list[tuple[date_cls, int, int]]:
@@ -606,6 +750,11 @@ def station_board(
     # is a *pattern* rather than a dated run, so the same row can legitimately land
     # on two service dates once the window is widened past a day.
     calls: dict[tuple[int, str], dict] = {}
+    active_cutoff = _active_cutoff(session)
+    # One variant per train, or one trip is listed once per variant. Filled per
+    # batch for just the trains in it: a hub has thousands of trains, the board
+    # shows a few dozen.
+    variant_of: dict[int, str | None] = {}
 
     for service_date, lo, hi in board_slices(now, back_s, fwd_s):
         anchor = service_date_anchor(service_date)
@@ -621,12 +770,26 @@ def station_board(
                     StationStop.feed_version_id == fv_id,
                     column >= lo,
                     column < hi,
+                    # A retired train (see ACTIVE_WINDOW_DAYS) is not on today's board.
+                    *(
+                        ()
+                        if active_cutoff is None
+                        else (
+                            Train.last_seen_date.is_(None)
+                            | (Train.last_seen_date >= active_cutoff),
+                        )
+                    ),
                 )
                 .order_by(column)
                 .limit(limit)
             ).all()
 
+            unseen = {stop.train_id for stop, _train in rows} - variant_of.keys()
+            if unseen:
+                variant_of.update(_variant_per_train_at(session, station_id, fv_id, unseen))
             for stop, train in rows:
+                if stop.path_sha1 != variant_of.get(stop.train_id):
+                    continue
                 key = (stop.id, service_date.isoformat())
                 entry = calls.get(key)
                 if entry is None:
@@ -676,6 +839,7 @@ def station_board(
                             holiday_set=holiday_set,
                             arr_sec=stop.planned_arrival_sec,
                             dep_sec=stop.planned_departure_sec,
+                            variant=stop.path_sha1,
                         )
 
                     entry = {
@@ -688,7 +852,8 @@ def station_board(
                             else (train.dest_name and f"to {train.dest_name}")
                         )
                         or "",
-                        "train": train.display_name or train.search_name or f"#{train.id}",
+                        "train": passenger_name(session, train),
+                        "number_name": train.display_name or train.search_name or f"#{train.id}",
                         "category": train.category,
                         "segment": train.segment,
                         "number": train.train_number,
@@ -721,14 +886,12 @@ def station_board(
 def train_route(
     session: Session, train_id: int, *, day_type: str = DAY_TYPE_WEEKDAY
 ) -> dict | None:
-    """One train's whole journey, with scheduled times.
+    """One train's journey: the stops it has scheduled times at.
 
-    The full route comes from train.route_path — IRIS's own ppth, every stop the
-    service makes. Times come from station_stop, which exists only for the
-    stations we actually poll, so most rows carry a name and nothing else.
-    Showing the whole journey and marking which parts are measured is more
-    honest than showing only the stops we happen to watch and letting it read
-    like the entire route.
+    Only stops with a station_stop row (in the one route variant chosen below)
+    are returned -- a stop with no times reads as noise to a passenger. The
+    bare ppth (train.route_path) is used only when no stop has times at all,
+    so the page still has something to show.
     """
     train = session.get(Train, train_id)
     if train is None:
@@ -761,6 +924,7 @@ def train_route(
         model_direction = direction_for(session, train)
 
     measured: dict[int, tuple] = {}
+    variant = None
     if fv_id is not None:
         # A numbered TT train can hold more than one station_stop variant --
         # e.g. a wing/coupled service some days, solo others (see
@@ -793,13 +957,25 @@ def train_route(
         ).all():
             measured[stop.stop_sequence] = (stop, station)
 
-    # stop_sequence is the 1-based index into ppth, so the two line up directly.
     names = [part for part in (train.route_path or "").split("|") if part]
-    if not names and measured:
-        names = [""] * max(measured)
+    # stop_sequence is the 1-based index into the ppth of ITS OWN variant, and
+    # route_path is the ppth of train.path_sha1's variant only. Reading another
+    # variant's sequence numbers against it puts times on the wrong station
+    # names, so route_path names are trusted only when the variants match;
+    # otherwise the station row's own name is used.
+    names_align = variant is None or variant == train.path_sha1
+    if measured:
+        sequence = sorted(measured)
+    else:
+        sequence = list(range(1, len(names) + 1))
 
     stops: list[dict] = []
-    for index, name in enumerate(names, start=1):
+    for index in sequence:
+        hit = measured.get(index)
+        if hit is not None and not (names_align and index <= len(names)):
+            name = hit[1].name
+        else:
+            name = names[index - 1]
         entry = {
             "seq": index,
             "name": name,
@@ -812,7 +988,6 @@ def train_route(
             "dep_pred": None,
             "model_input": None,
         }
-        hit = measured.get(index)
         if hit is not None:
             stop, station = hit
             entry.update(
@@ -862,6 +1037,7 @@ def train_route(
                             holiday_set=holiday_set,
                             arr_sec=stop.planned_arrival_sec,
                             dep_sec=stop.planned_departure_sec,
+                            variant=stop.path_sha1,
                         )
                         if model is not None
                         else None
@@ -870,20 +1046,22 @@ def train_route(
             )
         stops.append(entry)
 
-    line = session.get(ServiceLine, train.line_id) if train.line_id else None
+    line_id = public_line_id(session, train)
+    line = _line_header(session, line_id) if line_id is not None else None
 
     return {
         "train": {
             "id": train.id,
-            "name": train.display_name or f"#{train.id}",
+            "name": passenger_name(session, train),
+            "number_name": train.display_name or f"#{train.id}",
             "category": train.category,
             "segment": train.segment,
             "number": train.train_number,
             "operator": train.operator,
             "origin": train.origin_name,
             "destination": train.dest_name,
-            "n_stops": train.n_stops or len(names),
-            "line": {"id": line.id, "name": line.display_name} if line else None,
+            "n_stops": len(stops),
+            "line": {"id": line["id"], "name": line["name"]} if line else None,
             "replacement_bus": (train.category or "").upper() == "BUS",
         },
         "n_monitored": sum(1 for s in stops if s["monitored"]),
@@ -911,16 +1089,196 @@ def _direction_of(train, index: dict[str, int]) -> int:
     return direction_of(train, index)
 
 
+# A train not seen running for this long is taken to be out of the timetable
+# (the December timetable change retires thousands of numbers at once), so the
+# pages stop offering it for dates it will not run on.
+ACTIVE_WINDOW_DAYS = 14
+_ACTIVE_CUTOFF_TTL_S = 600
+# (engine, computed at, cutoff): one cached value per database, ~40 ms to compute.
+_active_cutoff_cache: tuple[object, float, str | None] | None = None
+
+
+def _active_cutoff(session: Session) -> str | None:
+    """The oldest last_seen_date that still counts as running, 'YYYY-MM-DD'.
+
+    Measured back from the newest data rather than from today, so a paused
+    collector does not make every train look retired.
+    """
+    global _active_cutoff_cache
+    now = time.time()
+    engine = session.get_bind()
+    if (
+        _active_cutoff_cache is not None
+        and _active_cutoff_cache[0] is engine
+        and now - _active_cutoff_cache[1] < _ACTIVE_CUTOFF_TTL_S
+    ):
+        return _active_cutoff_cache[2]
+    newest = session.execute(select(func.max(Train.last_seen_date))).scalar_one_or_none()
+    cutoff = None
+    if newest:
+        cutoff = (date_cls.fromisoformat(newest) - timedelta(days=ACTIVE_WINDOW_DAYS)).isoformat()
+    _active_cutoff_cache = (engine, now, cutoff)
+    return cutoff
+
+
+def _is_active(train: Train, cutoff: str | None) -> bool:
+    return cutoff is None or train.last_seen_date is None or train.last_seen_date >= cutoff
+
+
+def _only_active(session: Session, halves: list[list[Train]]) -> list[list[Train]]:
+    cutoff = _active_cutoff(session)
+    return [[t for t in half if _is_active(t, cutoff)] for half in halves]
+
+
+_passenger_lines_cache: tuple[object, float, bool] | None = None
+
+
+def _passenger_lines_ready(session: Session) -> bool:
+    """Whether build-passenger-lines has run, so public line ids are
+    passenger_line ids. Until then they stay service_line ids, as before."""
+    global _passenger_lines_cache
+    now = time.time()
+    engine = session.get_bind()
+    if (
+        _passenger_lines_cache is not None
+        and _passenger_lines_cache[0] is engine
+        and now - _passenger_lines_cache[1] < _ACTIVE_CUTOFF_TTL_S
+    ):
+        return _passenger_lines_cache[2]
+    has_table = session.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='passenger_line'")
+    ).first()
+    ready = bool(has_table) and session.execute(select(PassengerLine.id).limit(1)).first() is not None
+    _passenger_lines_cache = (engine, now, ready)
+    return ready
+
+
+def _line_header(session: Session, line_id: int) -> dict | None:
+    """A public line id's name and kind, for a page header."""
+    if _passenger_lines_ready(session):
+        line = session.get(PassengerLine, line_id)
+        if line is None:
+            return None
+        return {
+            "id": line.id,
+            "name": line.name,
+            "category": line.category,
+            "operator": None,
+            "replacement_bus": (line.category or "").upper() == "BUS",
+        }
+    line = session.get(ServiceLine, line_id)
+    if line is None:
+        return None
+    return {
+        "id": line.id,
+        "name": line.display_name or line.identity_key,
+        "category": line.category,
+        "operator": line.operator,
+        "replacement_bus": (line.category or "").upper() == "BUS",
+    }
+
+
+def public_line_id(session: Session, train: Train) -> int | None:
+    """The line a train's pages link to: its passenger line once built."""
+    if _passenger_lines_ready(session):
+        return session.execute(
+            select(PassengerLineMember.passenger_line_id).where(
+                PassengerLineMember.train_id == train.id
+            )
+        ).scalar_one_or_none()
+    return train.line_id
+
+
+def _split_by_direction(trains: list[Train]) -> tuple[list[str], list[list[Train]]]:
+    """canonical axis + the two directions, for one passenger line's trains.
+
+    Clusters distinct routes rather than trains: a busy line has thousands of
+    trains but a few dozen routes, and _connected_components is pairwise.
+    """
+    reps: dict[tuple, SimpleNamespace] = {}
+    rep_of: dict[int, tuple] = {}
+    for t in trains:
+        key = (t.route_path, t.origin_name, t.dest_name)
+        if key not in reps:
+            reps[key] = SimpleNamespace(
+                id=len(reps), route_path=t.route_path, origin_name=t.origin_name,
+                dest_name=t.dest_name,
+            )
+        rep_of[t.id] = key
+    rep_direction = train_direction_map(list(reps.values()))
+    canonical = canonical_order(list(reps.values()))
+    halves: list[list[Train]] = [[], []]
+    for t in trains:
+        halves[rep_direction[reps[rep_of[t.id]].id]].append(t)
+    return canonical, halves
+
+
 def _line_trains_by_direction(
-    session: Session, line_id: int, *, limit: int = 300
+    session: Session, line_id: int, *, limit: int | None = None
 ) -> tuple[list[str], list[list[Train]]]:
-    """Every numbered run on a line, split into its two directions of travel.
+    """Every run on a line still running, split into its two directions of travel.
 
     Shared by every view that needs "the runs going this way": the line page, the
     direction/station pickers, and the around-this-time lookup all have to agree
-    on which train goes which way, so the split lives here once.
+    on which train goes which way, so the split lives here once. Retired runs
+    are dropped (ACTIVE_WINDOW_DAYS).
+
+    With passenger lines built, `line_id` is a passenger_line id and, unless a
+    `limit` is given, every still-running member counts: a busy line's runs
+    past the first 300 are the ones a passenger asking about the evening needs.
+    Only the line page caps, since it builds a model input per run. Otherwise
+    it is a service_line id, split as before.
     """
-    return line_trains_by_direction(session, line_id, limit=limit)
+    if not _passenger_lines_ready(session):
+        canonical, halves = line_trains_by_direction(session, line_id, limit=limit or 300)
+        return canonical, _only_active(session, halves)
+    cutoff = _active_cutoff(session)
+    trains = session.execute(
+        select(Train)
+        .join(PassengerLineMember, PassengerLineMember.train_id == Train.id)
+        .where(PassengerLineMember.passenger_line_id == line_id)
+        .order_by(Train.first_departure_sec, Train.train_number)
+    ).scalars().all()
+    trains = [t for t in trains if _is_active(t, cutoff)]
+    canonical, halves = _split_by_direction(trains)
+    if limit is not None and len(trains) > limit:
+        # Split first, then cap: the direction split must see the whole line.
+        kept = {t.id for t in trains[:limit]}
+        halves = [[t for t in half if t.id in kept] for half in halves]
+    return canonical, halves
+
+
+class _AveragesDirection:
+    """A train's direction as the averages tables key it: per service_line,
+    which is not the passenger line a page is showing."""
+
+    def __init__(self, line_direction_cache: dict[int, dict[int, int]] | None = None) -> None:
+        # Share the dict with the call site's _ModelDirectionCache: both need
+        # direction_by_train_id per service_line, which costs seconds on a
+        # national line like "S/1", so neither may compute it twice.
+        self._by_line: dict[int, dict[int, int]] = (
+            line_direction_cache if line_direction_cache is not None else {}
+        )
+
+    def get(self, session: Session, train: Train) -> int | None:
+        if train.line_id is None:
+            return None
+        dirs = self._by_line.get(train.line_id)
+        if dirs is None:
+            dirs = direction_by_train_id(session, train.line_id)
+            self._by_line[train.line_id] = dirs
+        return dirs.get(train.id)
+
+
+def _corridor_trains_by_direction(
+    session: Session, train_id: int
+) -> tuple[list[str], list[list[Train]]] | None:
+    """corridor_trains_by_direction, keeping only runs still running."""
+    grouped = corridor_trains_by_direction(session, train_id)
+    if grouped is None:
+        return None
+    canonical, halves = grouped
+    return canonical, _only_active(session, halves)
 
 
 def _direction_label(canonical: list[str], direction: int) -> str:
@@ -940,20 +1298,20 @@ def _directions_list(canonical: list[str], halves: list[list[Train]]) -> list[di
 
 def line_directions(session: Session, line_id: int) -> dict | None:
     """The line's two directions, for a picker to show once a line is chosen."""
-    line = session.get(ServiceLine, line_id)
-    if line is None:
+    header = _line_header(session, line_id)
+    if header is None:
         return None
 
     canonical, halves = _line_trains_by_direction(session, line_id)
     return {
-        "line": {"id": line.id, "name": line.display_name or line.identity_key},
+        "line": {"id": header["id"], "name": header["name"]},
         "directions": _directions_list(canonical, halves),
     }
 
 
 def corridor_directions(session: Session, train_id: int) -> dict | None:
     """line_directions for a line-less train's route (see corridor_trains_by_direction)."""
-    grouped = corridor_trains_by_direction(session, train_id)
+    grouped = _corridor_trains_by_direction(session, train_id)
     if grouped is None:
         return None
     canonical, halves = grouped
@@ -979,8 +1337,7 @@ def line_stations(session: Session, line_id: int, direction: int) -> list[dict] 
     station_id instead. This does the same -- order by stop_sequence on whichever
     train in this direction covers the most stations, id-to-id throughout.
     """
-    line = session.get(ServiceLine, line_id)
-    if line is None or direction not in (0, 1):
+    if _line_header(session, line_id) is None or direction not in (0, 1):
         return None
 
     _, halves = _line_trains_by_direction(session, line_id)
@@ -991,10 +1348,52 @@ def corridor_stations(session: Session, train_id: int, direction: int) -> list[d
     """line_stations for a line-less train's route."""
     if direction not in (0, 1):
         return None
-    grouped = corridor_trains_by_direction(session, train_id)
+    grouped = _corridor_trains_by_direction(session, train_id)
     if grouped is None:
         return None
     return _stations_in_travel_order(session, grouped[1][direction], main_variant_only=True)
+
+
+def _variant_per_train_at(
+    session: Session, station_id: int, fv_id: int, train_ids=None
+) -> dict[int, str | None]:
+    """The one route variant (StationStop.path_sha1) to show each train by at
+    a station.
+
+    A train holds one station_stop row per variant it has run as, so the same
+    call at a station is often stored two or three times, sometimes a minute
+    apart. Showing every row lists one trip several times. The variant chosen
+    is the one the train ran as most recently (then most often) among those
+    that call here at all, so a short variant that skips this station never
+    hides the train.
+    """
+    stop_query = select(StationStop.train_id, StationStop.path_sha1).where(
+        StationStop.station_id == station_id,
+        StationStop.feed_version_id == fv_id,
+    )
+    if train_ids is not None:
+        stop_query = stop_query.where(StationStop.train_id.in_(list(train_ids)))
+    present: dict[int, set] = {}
+    for train_id, variant in session.execute(stop_query.distinct()).all():
+        present.setdefault(train_id, set()).add(variant)
+
+    contested = [t for t, variants in present.items() if len(variants) > 1]
+    rank: dict[tuple[int, str | None], tuple] = {}
+    for start in range(0, len(contested), 500):
+        for train_id, variant, last, n in session.execute(
+            select(Trip.train_id, Trip.path_sha1, func.max(Trip.service_date), func.count())
+            .where(Trip.train_id.in_(contested[start : start + 500]))
+            .group_by(Trip.train_id, Trip.path_sha1)
+        ).all():
+            rank[(train_id, variant)] = (last, n)
+
+    chosen: dict[int, str | None] = {}
+    for train_id, variants in present.items():
+        chosen[train_id] = max(
+            variants,
+            key=lambda v: (rank.get((train_id, v), ("", 0)), v or ""),
+        )
+    return chosen
 
 
 def _on_main_variant(trains: list[Train]):
@@ -1130,13 +1529,13 @@ def trips_around(
     first, and pass that same date on as `service_date` for the model (which,
     unlike the averages, needs an actual date rather than a day-type bucket).
     """
-    line = session.get(ServiceLine, line_id)
+    line = _line_header(session, line_id)
     station = session.get(Station, station_id)
     if line is None or station is None or direction not in (0, 1):
         return None
 
     _, halves = _line_trains_by_direction(session, line_id)
-    header = {"id": line.id, "name": line.display_name or line.identity_key}
+    header = {"id": line["id"], "name": line["name"]}
     return _trips_around_in(
         session, header, halves[direction], direction, station, time_of_day_s,
         day_type=day_type, line_id=line_id, service_date=service_date,
@@ -1157,7 +1556,7 @@ def corridor_trips_around(
     station = session.get(Station, station_id)
     if station is None or direction not in (0, 1):
         return None
-    grouped = corridor_trains_by_direction(session, train_id)
+    grouped = _corridor_trains_by_direction(session, train_id)
     if grouped is None:
         return None
     anchor = session.get(Train, train_id)
@@ -1191,7 +1590,8 @@ def _trips_around_in(
     model = current_model()
     model_service_date = service_date or local_date(int(time.time()))
     holiday_set = load_holiday_dates(session) if model is not None else None
-    model_direction = _ModelDirectionCache()
+    line_directions_cache: dict[int, dict[int, int]] = {}
+    model_direction = _ModelDirectionCache(line_directions_cache)
 
     payload = {
         "line": header,
@@ -1214,6 +1614,10 @@ def _trips_around_in(
     if line_id is None:
         keep = _on_main_variant(trains)
         rows = [(stop,) for (stop,) in rows if keep(stop.train_id, stop.path_sha1)]
+    else:
+        # One variant per train, or one trip is listed once per variant.
+        variant_of = _variant_per_train_at(session, station_id, fv_id, trains_by_id)
+        rows = [(stop,) for (stop,) in rows if stop.path_sha1 == variant_of.get(stop.train_id)]
 
     candidates = []
     for (stop,) in rows:
@@ -1252,14 +1656,19 @@ def _trips_around_in(
         picked.append((stop, relation))
 
     is_holiday_flag = _is_holiday_flag(day_type)
+    averages_direction = _AveragesDirection(line_directions_cache)
     trips = []
     for stop, relation in picked:
         train = trains_by_id[stop.train_id]
         trip_start_time = _train_trip_start_time(train)
+        # The averages are keyed by service_line and its own direction split,
+        # not by the (passenger) line this page shows.
         pred_kwargs = dict(
             station_id=station_id,
-            line_id=line_id,
-            direction=direction,
+            line_id=None if line_id is None else train.line_id,
+            direction=(
+                direction if line_id is None else averages_direction.get(session, train)
+            ),
             trip_start_time=trip_start_time,
             sched_time=_sched_time_key(stop.planned_arrival_sec, stop.planned_departure_sec),
             is_holiday=is_holiday_flag,
@@ -1278,12 +1687,14 @@ def _trips_around_in(
                 holiday_set=holiday_set,
                 arr_sec=stop.planned_arrival_sec,
                 dep_sec=stop.planned_departure_sec,
+                variant=stop.path_sha1,
             )
 
         trips.append(
             {
                 "train_id": train.id,
-                "name": train.display_name or f"#{train.id}",
+                "name": passenger_name(session, train),
+                "number_name": train.display_name or f"#{train.id}",
                 "url": f"/train/{train.id}/",
                 "sched_arr": _hhmm(stop.planned_arrival_sec),
                 "sched_dep": _hhmm(stop.planned_departure_sec),
@@ -1313,7 +1724,7 @@ def line_detail(
     before -- hides that, and reads as one service running twice as often.
     """
     is_holiday_flag = _is_holiday_flag(day_type)
-    line = session.get(ServiceLine, line_id)
+    line = _line_header(session, line_id)
     if line is None:
         return None
 
@@ -1322,7 +1733,11 @@ def line_detail(
     model = current_model()
     model_service_date = local_date(int(time.time()))
     holiday_set = load_holiday_dates(session) if model is not None else None
-    model_direction = _ModelDirectionCache()
+    line_directions_cache: dict[int, dict[int, int]] = {}
+    model_direction = _ModelDirectionCache(line_directions_cache)
+
+    canonical, halves = _line_trains_by_direction(session, line_id, limit=limit)
+    line_train_ids = [t.id for trains in halves for t in trains]
 
     fv_id = tt_feed_version_id(session)
     monitored = (
@@ -1334,16 +1749,16 @@ def line_detail(
                 # monitored-station count added up across variants instead of
                 # reflecting distinct stations actually covered.
                 select(StationStop.train_id, func.count(func.distinct(StationStop.station_id)))
-                .join(Train, Train.id == StationStop.train_id)
-                .where(Train.line_id == line_id, StationStop.feed_version_id == fv_id)
+                .where(
+                    StationStop.train_id.in_(line_train_ids),
+                    StationStop.feed_version_id == fv_id,
+                )
                 .group_by(StationStop.train_id)
             ).all()
         )
-        if fv_id is not None
+        if fv_id is not None and line_train_ids
         else {}
     )
-
-    canonical, halves = _line_trains_by_direction(session, line_id, limit=limit)
 
     # Train.origin_station_id is unreliable -- NULL even for trains whose
     # origin is a fully tracked station with its own station_stop row (a
@@ -1363,6 +1778,7 @@ def line_detail(
             ).all():
                 origin_station_by_train.setdefault(train_id, station_id)
 
+    averages_direction = _AveragesDirection(line_directions_cache)
     result_halves: list[list[dict]] = [[], []]
     for direction, trains in enumerate(halves):
         for t in trains:
@@ -1404,8 +1820,9 @@ def line_detail(
                     "pred": _delay_pred(
                         session,
                         station_id=origin_station_id,
-                        line_id=line_id,
-                        direction=direction,
+                        # Averages are keyed by service_line, not the passenger line.
+                        line_id=t.line_id,
+                        direction=averages_direction.get(session, t),
                         trip_start_time=trip_start_time,
                         sched_time=trip_start_time,
                         is_holiday=is_holiday_flag,
@@ -1416,13 +1833,7 @@ def line_detail(
             )
 
     return {
-        "line": {
-            "id": line.id,
-            "name": line.display_name or line.identity_key,
-            "category": line.category,
-            "operator": line.operator,
-            "replacement_bus": (line.category or "").upper() == "BUS",
-        },
+        "line": line,
         "n_runs": sum(len(runs) for runs in result_halves),
         "model_stamp": model[0] if model is not None else None,
         "directions": [

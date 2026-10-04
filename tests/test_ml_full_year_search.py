@@ -61,9 +61,20 @@ def test_search_final_and_export_end_to_end(run, monkeypatch):
     assert len(s.split.test) == 2 and len(s.split.validation) == 2 and len(s.split.train) >= 2
 
     compact = S.search_track(s, COMPACT, device="cpu", models_dir=models)
-    assert len(compact["trials"]) == 3 and not compact["skipped"] and not compact["not_run"]
-    ablation = [t for t in compact["trials"] if t["params"]["numeric"] == "no-doy"]
-    assert len(ablation) == 1 and ablation[0]["params"]["family"] == "net"
+    assert len(compact["trials"]) == 4 and not compact["skipped"] and not compact["not_run"]
+    for name in ("no-doy", "no-notice-rates"):  # the two ablations, of the best fixed trial
+        ablation = [t for t in compact["trials"] if t["params"]["numeric"] == name]
+        assert len(ablation) == 1 and ablation[0]["params"]["family"] == "net"
+    assert [t["params"]["numeric"] for t in compact["trials"]].count(S.DEFAULT_NUMERIC) == 2
+    assert set(compact["ablations"]) == {"no-doy", "no-notice-rates"}  # both ranked on the same rows
+    by_id = {t["id"]: t for t in compact["trials"]}
+    for name, entry in compact["ablations"].items():
+        base = by_id[entry["base_trial"]]
+        assert base["params"]["numeric"] == S.DEFAULT_NUMERIC and entry["validation"]["eligible"] == \
+            base["validation"]["eligible"]
+        assert entry["vs_base_mae"] == pytest.approx(
+            entry["validation"]["mae_scored"] - base["validation"]["mae_scored"])
+    assert S.search_track(s, LARGE, device="cpu", models_dir=models)["ablations"] == {}
     assert all(t["validation"]["coverage"] == 1.0 and t["asset_basis"] == "estimate" for t in compact["trials"])
     assert set(compact["references"]) == set(S.REFERENCES)
     assert all("missing" in r for r in compact["references"].values())
@@ -87,6 +98,9 @@ def test_search_final_and_export_end_to_end(run, monkeypatch):
                            models_dir=models, sizes=sizes, log=lambda m: None)
     assert [p["killed"] for p in check["probes"]] == [False, False]
     assert check["projected_peak"] > 0 and check["projected_final_peak"] >= check["projected_peak"]
+    assert 0 < check["notice_rates_bytes"]["search"] <= check["notice_rates_bytes"]["final"]
+    assert check["projected_peak"] >= S.project_peak(check["probes"], check["full_train_rows"]) \
+        + check["notice_rates_bytes"]["search"]  # the rate tables are on top of the probed peak
     step = ["python", "scripts/search_full_year.py", "search", "--track", "compact", "--work", str(work)]
     gate([step], "64G", tmp / "ml")
 
@@ -95,6 +109,8 @@ def test_search_final_and_export_end_to_end(run, monkeypatch):
     final_dir = work / "final" / s.split.test[-1]
     assert (final_dir / "final.json").exists() and result["test_dates"] == list(s.split.test)
     assert set(result["scores"]) == {"compact-winner", "large-winner", "hist-winner"}
+    assert set(result["winners"]["compact"]["ablations"]) == {"no-doy", "no-notice-rates"}
+    assert result["winners"]["large"]["ablations"] == {}
     assert all(list(scores["by_month"]) == ["2026-09"] for scores in result["scores"].values())
     assert result["missing_references"].keys() == S.REFERENCES.keys()
     assert load_inspected(inspected) == list(s.split.test)
@@ -107,7 +123,14 @@ def test_search_final_and_export_end_to_end(run, monkeypatch):
     assert deployable.parent == models
     manifest = json.loads((deployable / "manifest.json").read_text())
     assert manifest["role"] == "deployable" and manifest["download_bytes"] <= 35_000_000
-    assert manifest["onnx_check"]["onnx_passed"] and manifest["prep"]["features_numeric"][-2:] == ["doy_sin", "doy_cos"]
+    assert manifest["onnx_check"]["onnx_passed"] and manifest["prep"]["features_numeric"] == list(
+        S.NUMERIC_SETS[result["winners"]["compact"]["params"]["numeric"]])
+    from dbrel.ml.features import NOTICE_RATES
+
+    uses = any(n in NOTICE_RATES for n in manifest["prep"]["features_numeric"])
+    assert ("notice_rates" in manifest) == uses  # recorded exactly when the inputs include the rates
+    if uses:
+        assert set(manifest["notice_rates"]) == {"dates", "weight", "fingerprint"}
     check_dir = final_dir / "compact" / "browser_check"
     assert set(json.loads((check_dir / "manifest.json").read_text())["candidates"]) == {"compact"}
     reference = json.loads((check_dir / "reference" / "reference.json").read_text())

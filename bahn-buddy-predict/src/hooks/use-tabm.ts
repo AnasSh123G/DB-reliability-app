@@ -18,10 +18,13 @@ export function useModelPredictions(
   const withInput = items.filter(
     (item): item is Keyed & { model_input: ModelInput } => item.model_input !== null,
   );
-  const keys = withInput.map((item) => item.key);
+  // Keyed by the encoded inputs themselves, not just the rows' ids: the same
+  // trains on another date (weekday, holiday) are different inputs, and keying
+  // by id alone handed back the first date's cached predictions.
+  const inputs = withInput.map((item) => [item.key, item.model_input]);
 
   const { data } = useQuery({
-    queryKey: ["model-predictions", stamp, keys],
+    queryKey: ["model-predictions", stamp, inputs],
     queryFn: async () => {
       const predictions = await predictBatch(
         stamp as string,

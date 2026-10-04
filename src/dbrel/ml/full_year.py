@@ -27,11 +27,12 @@ from pathlib import Path
 
 import numpy as np
 
-from dbrel.ml.arrival import SCALINGS, arrival_inputs, prep_layout
+from dbrel.ml.arrival import SCALINGS, arrival_inputs, prep_layout, prep_numeric
 from dbrel.ml.checkpoint import CheckpointMismatch, _write_json, key_differences
-from dbrel.ml.features import ARRIVAL_NUMERIC, CATEGORICAL, SEASONAL
+from dbrel.ml.features import ARRIVAL_NUMERIC, CATEGORICAL, NOTICE_RATES, SEASONAL
 from dbrel.ml.full_history import COLUMNS, CUTOFF_HOURS, CODE_VERSION, FullHistory
 from dbrel.ml.metrics import score_arrivals_with_breakdowns
+from dbrel.ml.notice_rates import NoticeRates
 
 SAMPLE_ROWS = 2_000_000
 PREPARED_VERSION = 1
@@ -115,8 +116,15 @@ def _merge_moments(acc: tuple[int, float, float], x: np.ndarray) -> tuple[int, f
 
 
 def training_statistics(history: FullHistory, rows: RowSet, *, numeric: tuple[str, ...] = ARRIVAL_NUMERIC,
-                        sample_rows: int = SAMPLE_ROWS, seed: int = 0) -> dict:
-    """Category and numeric statistics of the training rows, in one streamed pass."""
+                        sample_rows: int = SAMPLE_ROWS, seed: int = 0, rates: NoticeRates | None = None,
+                        fold: bool = True) -> dict:
+    """Category and numeric statistics of the training rows, in one streamed pass.
+
+    Notice-rate columns in `numeric` need `rates`; their statistics are of what the model is
+    trained on, i.e. each row's leave-one-month-out values (`fold`).
+    """
+    if rates is None and any(name in NOTICE_RATES for name in numeric):
+        raise ValueError("notice-rate inputs need the notice rates (NoticeRates)")
     expected = sum(history.rows_per_date.get(d, 0) for d in rows.dates)
     share = min(1.0, sample_rows / max(1, expected))
     rng = np.random.default_rng(seed)
@@ -137,7 +145,7 @@ def training_statistics(history: FullHistory, rows: RowSet, *, numeric: tuple[st
             for v, c, lday in zip(uniq.tolist(), counts.tolist(), last.tolist()):
                 old = acc.get(v)
                 acc[v] = (c, lday) if old is None else (old[0] + c, max(old[1], lday))
-        feats = history.numeric(chunk)
+        feats = history.numeric(chunk, rates, fold)
         take = rng.random(len(day)) < share if share < 1 else slice(None)
         for name in numeric:
             v = feats[name].astype(np.float64)
@@ -259,10 +267,19 @@ class PreparedSet:
 
 
 def prepare(history: FullHistory, rows: RowSet, vocab: dict[str, list], prep: dict, root: Path,
-            name: str, *, replace: bool = False, log=None) -> PreparedSet:
-    """Write (or reuse) the model inputs of `rows` under `root/name`."""
+            name: str, *, replace: bool = False, log=None, rates: NoticeRates | None = None,
+            fold: bool = False) -> PreparedSet:
+    """Write (or reuse) the model inputs of `rows` under `root/name`.
+
+    A prep that lists notice-rate inputs needs `rates`; training rows pass `fold=True`. The
+    rates' fingerprint is part of the key, so changed counts rebuild the inputs.
+    """
+    uses_rates = any(col in NOTICE_RATES for col in prep_numeric(prep))
+    if uses_rates and rates is None:
+        raise ValueError("this prep lists notice-rate inputs; pass the notice rates")
     key = {"version": PREPARED_VERSION, "history": history_key(history), "rows": rows.as_dict(),
-           "vocab": _sha(vocab), "prep": _sha(prep)}
+           "vocab": _sha(vocab), "prep": _sha(prep),
+           "notice_rates": {"fingerprint": rates.fingerprint(), "fold": fold} if uses_rates else None}
     directory = Path(root) / name
     if (directory / KEY_NAME).exists():
         saved = json.loads((directory / KEY_NAME).read_text())
@@ -280,7 +297,7 @@ def prepare(history: FullHistory, rows: RowSet, vocab: dict[str, list], prep: di
     n = 0
     try:
         for chunk in rows.chunks(history):
-            enc = history.encode(chunk, vocab)
+            enc = history.encode(chunk, vocab, rates if uses_rates else None, fold)
             cats, nums = arrival_inputs(enc, prep)
             values = {"cats": cats, "nums": nums, "y": chunk["arr_min"], "stop_id": chunk["stop_id"],
                       "day": chunk["day"], "segment": chunk["segment"], "sched_min": enc["sched_min"],

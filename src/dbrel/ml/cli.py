@@ -101,6 +101,48 @@ def build_full_dataset_cmd(
     typer.echo(format_memory())
 
 
+@ml_app.command("build-notice-rates")
+def build_notice_rates_cmd(
+    first: str = typer.Option(None, "--from", help="first service date, YYYY-MM-DD (default: all)"),
+    last: str = typer.Option(None, "--to", help="last service date, YYYY-MM-DD (default: all)"),
+) -> None:
+    """(Re)build notice_rate_daily, the per-day notice counts behind the notice-rate inputs.
+
+    Reads trip, trip_stop and tt_message, writes only notice_rate_daily; a date's rows are
+    replaced, so it can be re-run. About 20 minutes and 0.3 GiB on the national database; run it
+    capped: `dbrel ml launch notice-rates --memory 4G -- dbrel ml build-notice-rates`.
+    """
+    from dbrel.db import get_engine
+    from dbrel.derive.notice_rates import build_notice_rates, notices_per_1000_trips, sparse_months
+    from dbrel.ml.memory import format_memory
+
+    def progress(service_date: str, rows: int) -> None:
+        if service_date.endswith(("-01", "-15")):
+            _stamped_echo(f"  {service_date}: {rows:,} rows")
+
+    summary = build_notice_rates(get_engine(), first=first, last=last, progress=progress)
+    flagged = set(sparse_months(summary))
+    typer.echo("month    trips      arrivals  works/1k trips  disruption/1k trips")
+    for month, totals in summary.items():
+        trips = totals["trips"] or 1
+        mark = "  <- far fewer notices than the median month" if month in flagged else ""
+        typer.echo(f"{month}  {totals['trips']:>8,}  {totals['arrivals']:>12,}  "
+                   f"{1000 * totals['works_notices'] / trips:>14.0f}  "
+                   f"{1000 * totals['disruption_notices'] / trips:>19.0f}{mark}")
+    if flagged:
+        typer.echo(f"WARNING: {len(flagged)} month(s) have under 1/3 of the median notice density "
+                   f"({', '.join(sorted(flagged))}); their rates may be too low.")
+    typer.echo(f"{sum(t['arrivals'] for t in summary.values()):,} arrivals counted over "
+               f"{len(summary)} months; overall {notices_per_1000_trips(_overall(summary)):.0f} "
+               f"notices per 1,000 trips")
+    typer.echo(format_memory())
+
+
+def _overall(summary: dict) -> dict:
+    keys = ("trips", "arrivals", "works_notices", "disruption_notices")
+    return {k: sum(t[k] for t in summary.values()) for k in keys}
+
+
 @ml_app.command("bakeoff")
 def bakeoff_cmd(
     libraries: str = typer.Option("lightgbm,catboost,xgboost", help="comma-separated candidates"),
@@ -273,7 +315,7 @@ def predict_delay_cmd(
     direction: int = typer.Option(None, help="with --line: 0 or 1 (default: both)"),
     count: int = typer.Option(3, help="with --line: calls per direction"),
     artifact: Path = typer.Option(None, help="predict with this artifact directory (e.g. a comparison "
-                                             "model in data/models/v2-comparison/) instead of CURRENT"),
+                                             "model in models/v2-comparison/) instead of CURRENT"),
 ) -> None:
     """Predict delay (an estimate and p25-p75) from the model and timetable alone.
 

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dbrel.ml.features import CATEGORICAL, NUMERIC, SEASONAL
+from dbrel.ml.features import CATEGORICAL, NOTICE_RATES, NUMERIC, SEASONAL
 
 POINT_RULES = ("median", "window")
 WINDOW_HALF_MIN = 3.0
@@ -560,6 +560,10 @@ def save_arrival_artifact(models_dir: Path, manifest: dict, files: dict[str, Pat
     missing = {"prep", "vocab", "edges", "point_rule", "output"} - manifest.keys()
     if missing or ARRIVAL_MODEL_FILE not in files:
         raise ValueError(f"incomplete arrival artifact: missing {sorted(missing) or ARRIVAL_MODEL_FILE}")
+    if any(n in NOTICE_RATES for n in manifest["prep"].get("features_numeric", ())) \
+            and "notice_rates" not in manifest:
+        raise ValueError("incomplete arrival artifact: its inputs include notice rates but it records no "
+                         "notice_rates (dates, weight, fingerprint)")
     if manifest["output"] not in OUTPUTS or (manifest["output"] == "probs") != (manifest["edges"] is not None):
         raise ValueError("output must be 'probs' with bin edges or 'quantiles' with edges null")
     if role is not None:

@@ -286,6 +286,8 @@ def full_year_gate(step: list[str], cap: int, memory: str, default_work: Path) -
             raise LaunchError(f"cannot check the {track} memory check against the dataset: {exc}") from exc
         if current != check["history"]:
             raise LaunchError(f"the {track} memory check was made on a different full-history build -- rerun it")
+        if "notice_rates_bytes" not in check:
+            raise LaunchError(f"the {track} memory check predates the notice-rate inputs -- rerun it")
         need = check["projected_final_peak" if command == "final" else "projected_peak"]
         if need is None:
             problems.append(f"{track}: a probe hit the cap on its own")

@@ -245,6 +245,7 @@ they could not cover, and a hole becomes a measured `poll_gap_s` rather than a s
 | `build-aliases` | Index every station for search; run once after `import-static` |
 | `compute-averages [--full]` | Average each train's delay at each station into `train_station_delay` |
 | `compute-stop-averages [--full]` | Average each train's delay at each of its stops into `train_stop_average` |
+| `build-passenger-lines` | Regroup trains into the lines passengers know (one RE4 per region, however operators spell it); the web's line pages and search use these. Rerun after new data |
 | `serve [--host H --port P]` | Run the web UI |
 | `show-train <number> --date D [--format tsv]` | Every stop of one run, scheduled against actual |
 | `show-station <name> --date D [--format tsv]` | Everything that called at one station on one day |
@@ -418,9 +419,9 @@ training script.
 ## Delay model
 
 The web UI's delay forecast runs in the browser (ONNX Runtime Web) from the artifact that
-`data/models/v2/CURRENT` names; the server only encodes each call's inputs. `dbrel ml
+`models/v2/CURRENT` names; the server only encodes each call's inputs. `dbrel ml
 predict-delay --train "RE 10070" --station "Dortmund Hbf" --date D` prints the same forecast
-on the command line, and `--artifact data/models/<dir>/<stamp>` runs any other artifact
+on the command line, and `--artifact models/<dir>/<stamp>` runs any other artifact
 without reading `CURRENT`.
 
 **The full-history dataset.** `dbrel ml build-full-dataset` turns every finalized arrival in
@@ -429,6 +430,22 @@ each month's row count (`*` marks the months it rebuilt). Reruns rebuild only th
 month and any month whose rows changed; `--full` rebuilds everything. It only reads the
 database.
 
+**Notice rates.** The full-year models also take six historical *notice rates*: the share of
+past arrivals whose trip had a construction notice ("Bauarbeiten") or a disruption notice
+("Störung", "Großstörung"), for the arrival's station, line and train. `dbrel ml
+build-notice-rates` fills the `notice_rate_daily` table from `trip`, `trip_stop` and
+`tt_message` (about 20 minutes and 0.3 GiB; it only writes that table, and a date's rows are
+replaced, so it can be re-run; `--from D --to D` limits it to those service dates). Run it
+capped, before a search: `dbrel ml launch notice-rates --memory 4G -- dbrel ml
+build-notice-rates`. It prints notices per 1,000 trips for each month and warns about a month
+far below the median. A training row's rates leave out its own calendar month, and validation,
+test and live predictions use the training dates only, so a notice caused by a delay never
+reaches its own arrival. Prediction reads the stored counts and makes no API call. The
+artifact's manifest records the training dates and a fingerprint of their counts; if
+those dates' counts in `notice_rate_daily` change later (for example a full rebuild after old
+notices were corrected), the model refuses to predict until the rows are restored or it is
+retrained. Add new days with `--from <first new date>`.
+
 **The full-year search** (`scripts/search_full_year.py`, PyTorch-ROCm venv) trains two
 arrival-only median models on that dataset: a *compact* one (download ≤ 35 MB, may be
 served) and a *large* one (≤ 100 MB, comparison only, never served). Split: the latest 7
@@ -436,6 +453,7 @@ complete days are a sealed test week, the 28 days before are validation, everyth
 is training. Every training step runs as a capped job, after a memory check:
 
 ```bash
+dbrel ml launch notice-rates --memory 4G -- dbrel ml build-notice-rates   # once, and after new days
 PY="env PYTHONPATH=src data/build/torch-rocm/venv/bin/python scripts/search_full_year.py"
 dbrel ml launch full-year-memcheck-compact --memory 14G --oom-policy continue -- $PY memory-check --track compact
 dbrel ml launch full-year-compact --memory 14G -- $PY search --track compact   # resumable
@@ -451,15 +469,18 @@ validation average error (MAE), the trials skipped for size, and the reference m
 old two-sided TabM and the window MLP) scored on the same rows. `final` refits each track's
 winner and scores it once on the test week, then records those dates in
 `data/ml/inspected_dates.json`, so the next final test needs newer data. `export` writes a
-compact model to `data/models/v2/` and a large one to `data/models/v2-comparison/`. Neither
+compact model to `models/v2/` and a large one to `models/v2-comparison/`. Neither
 moves `CURRENT`. Serving a model is a separate, deliberate step, which refuses comparison
 artifacts:
 
 ```bash
-.venv/bin/python -c "import sys; sys.path.insert(0,'src'); from pathlib import Path; from dbrel.ml.arrival import promote; print(promote(Path('data/models/v2'), '<stamp>'))"
+.venv/bin/python -c "import sys; sys.path.insert(0,'src'); from pathlib import Path; from dbrel.ml.arrival import promote; print(promote(Path('models/v2'), '<stamp>'))"
 ```
 
-It prints the previous stamp; promoting that stamp again rolls back. `dbrel study
+It prints the previous stamp; promoting that stamp again rolls back (only the deployed model is
+committed, so a rollback target has to be kept or retrained). The committed model uses notice
+rates, so a fresh clone needs `dbrel ml build-notice-rates` on a database holding the same data
+before it can predict; serving refuses if the counts differ from the manifest's fingerprint. `dbrel study
 live-accuracy --artifact <dir>` scores any artifact against live trains.
 
 ## Probes

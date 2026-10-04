@@ -14,11 +14,11 @@ import {
   useSuggest,
 } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
-import { delayColor, expectedTime } from "@/lib/delay";
 import { copy, type Locale } from "@/lib/i18n";
-import { trainRoute, type DelayPred, type RouteRef, type SuggestResult } from "@/lib/api";
+import { trainRoute, type RouteRef, type SuggestResult } from "@/lib/api";
 import type { SidePrediction } from "@/lib/tabm";
 import { ModelDelta } from "./ModelDelta";
+import { TrainNumber } from "./TrainNumber";
 import { v2Paths } from "./paths";
 
 interface Props {
@@ -27,32 +27,17 @@ interface Props {
 
 function DelayBlock({
   scheduled,
-  pred,
   modelPred,
-  noAverageLabel,
+  noPredictionLabel,
 }: {
   scheduled: string | null;
-  pred: DelayPred | null;
   modelPred: SidePrediction | undefined;
-  noAverageLabel: string;
+  noPredictionLabel: string;
 }) {
-  const expected = expectedTime(scheduled, pred);
-  const hasModel = Boolean(scheduled) && modelPred !== undefined;
-  if (expected && pred) {
-    return (
-      <>
-        <span className={`block font-mono text-[10px] font-semibold ${delayColor(pred.p50_min)}`}>
-          <span className="mr-1 font-normal text-fog">Ø</span>
-          {expected} · +{pred.p50_min}
-        </span>
-        {hasModel && <ModelDelta pred={modelPred as SidePrediction} />}
-      </>
-    );
+  if (scheduled && modelPred !== undefined) {
+    return <ModelDelta pred={modelPred} />;
   }
-  if (hasModel) {
-    return <ModelDelta pred={modelPred as SidePrediction} />;
-  }
-  return <span className="block text-[10px] text-fog">{scheduled ? noAverageLabel : "—"}</span>;
+  return <span className="block text-[10px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
 }
 
 function kindIcon(kind: SuggestResult["kind"]) {
@@ -234,6 +219,7 @@ export function SearchV2({ locale }: Props) {
                         <span className="flex min-w-0 flex-col">
                           <span className="font-display font-semibold text-paper">
                             {result.name}
+                            <TrainNumber name={result.name} numberName={result.number_name} />
                           </span>
                           {result.stops && (
                             <span className="whitespace-normal text-[11px] font-normal text-fog">
@@ -392,6 +378,7 @@ export function SearchV2({ locale }: Props) {
                         </span>
                         <span className="mt-1 block font-display font-semibold text-paper">
                           {trip.name}
+                          <TrainNumber name={trip.name} numberName={trip.number_name} />
                         </span>
                       </span>
                     </span>
@@ -405,9 +392,8 @@ export function SearchV2({ locale }: Props) {
                         </span>
                         <DelayBlock
                           scheduled={trip.sched_arr}
-                          pred={trip.arr_pred}
                           modelPred={modelPred?.arr}
-                          noAverageLabel={t.noAverage}
+                          noPredictionLabel={t.noPrediction}
                         />
                       </span>
                       <span className="mt-2 flex items-center justify-end gap-1 text-[10px] font-normal text-fog">

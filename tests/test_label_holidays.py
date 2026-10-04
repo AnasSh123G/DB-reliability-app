@@ -83,3 +83,10 @@ def test_labelling_is_deterministic_across_reruns(engine):
     label_trip_stop_holidays(engine)
     second = _labels(engine)
     assert first == second
+
+
+def test_each_service_date_is_committed_and_reported(engine):
+    seen = []
+    touched = label_trip_stop_holidays(engine, progress=lambda d, n: seen.append((d, n)))
+    assert seen == [("2026-06-04", 3), ("2026-09-15", 1), ("2026-09-20", 1), ("2026-10-03", 1)]
+    assert touched == 6

@@ -20,11 +20,11 @@ import {
 } from "@/components/ui/table";
 import { useStationBoard } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
-import type { DelayPred, StationBoardCall } from "@/lib/api";
-import { delayColor, expectedTime } from "@/lib/delay";
+import type { StationBoardCall } from "@/lib/api";
 import { copy, type Locale } from "@/lib/i18n";
 import type { SidePrediction } from "@/lib/tabm";
 import { ModelDelta } from "./ModelDelta";
+import { TrainNumber } from "./TrainNumber";
 import { v2Paths } from "./paths";
 
 interface Props {
@@ -32,15 +32,7 @@ interface Props {
   locale: Locale;
 }
 
-function CallTags({
-  call,
-  endsHereLabel,
-  platformLabel,
-}: {
-  call: StationBoardCall;
-  endsHereLabel: string;
-  platformLabel: string;
-}) {
+function CallTags({ call, endsHereLabel }: { call: StationBoardCall; endsHereLabel: string }) {
   return (
     <p className="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[11px] text-fog">
       <span className="truncate">{call.headline}</span>
@@ -49,43 +41,23 @@ function CallTags({
           {endsHereLabel}
         </Badge>
       )}
-      {call.platform && (
-        <Badge variant="secondary" className="font-mono text-[10px] font-normal">
-          {platformLabel} {call.platform}
-        </Badge>
-      )}
     </p>
   );
 }
 
 function DelayBlock({
   scheduled,
-  pred,
   modelPred,
-  noAverageLabel,
+  noPredictionLabel,
 }: {
   scheduled: string | null;
-  pred: DelayPred | null;
   modelPred: SidePrediction | undefined;
-  noAverageLabel: string;
+  noPredictionLabel: string;
 }) {
-  const expected = expectedTime(scheduled, pred);
-  const hasModel = Boolean(scheduled) && modelPred !== undefined;
-  if (expected && pred) {
-    return (
-      <>
-        <span className={`block font-mono text-[10px] font-semibold ${delayColor(pred.p50_min)}`}>
-          <span className="mr-1 font-normal text-fog">Ø</span>
-          {expected} · +{pred.p50_min}
-        </span>
-        {hasModel && <ModelDelta pred={modelPred as SidePrediction} />}
-      </>
-    );
+  if (scheduled && modelPred !== undefined) {
+    return <ModelDelta pred={modelPred} />;
   }
-  if (hasModel) {
-    return <ModelDelta pred={modelPred as SidePrediction} />;
-  }
-  return <span className="block text-[10px] text-fog">{scheduled ? noAverageLabel : "—"}</span>;
+  return <span className="block text-[10px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
 }
 
 export function BoardV2({ stationId, locale }: Props) {
@@ -191,7 +163,8 @@ export function BoardV2({ stationId, locale }: Props) {
                       >
                         {call.train}
                       </Link>
-                      <CallTags call={call} endsHereLabel={t.endsHere} platformLabel={t.platform} />
+                      <TrainNumber name={call.train} numberName={call.number_name} />
+                      <CallTags call={call} endsHereLabel={t.endsHere} />
                     </div>
                   </div>
                   <div className="shrink-0 text-right">
@@ -203,9 +176,8 @@ export function BoardV2({ stationId, locale }: Props) {
                     </span>
                     <DelayBlock
                       scheduled={call.arr}
-                      pred={call.arr_pred}
                       modelPred={predictions.get(call.station_stop_id)?.arr}
-                      noAverageLabel={t.noAverage}
+                      noPredictionLabel={t.noPrediction}
                     />
                   </div>
                 </li>
@@ -238,11 +210,8 @@ export function BoardV2({ stationId, locale }: Props) {
                             >
                               {call.train}
                             </Link>
-                            <CallTags
-                              call={call}
-                              endsHereLabel={t.endsHere}
-                              platformLabel={t.platform}
-                            />
+                            <TrainNumber name={call.train} numberName={call.number_name} />
+                            <CallTags call={call} endsHereLabel={t.endsHere} />
                           </div>
                         </div>
                       </TableCell>
@@ -250,9 +219,8 @@ export function BoardV2({ stationId, locale }: Props) {
                         <span className="block font-mono text-sm text-mist">{call.arr ?? "—"}</span>
                         <DelayBlock
                           scheduled={call.arr}
-                          pred={call.arr_pred}
                           modelPred={predictions.get(call.station_stop_id)?.arr}
-                          noAverageLabel={t.noAverage}
+                          noPredictionLabel={t.noPrediction}
                         />
                       </TableCell>
                     </TableRow>

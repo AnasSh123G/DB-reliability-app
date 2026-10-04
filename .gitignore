@@ -223,3 +223,6 @@ data/
 # The Python template's `lib/` rule above also matches the frontend's source
 # folder; that one is real code, not a packaging artifact.
 !bahn-buddy-predict/src/lib/
+
+# Comparison-only models (larger than the 35 MB budget) are never served or committed.
+models/v*-comparison/

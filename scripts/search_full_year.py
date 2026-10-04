@@ -23,8 +23,8 @@ Every training step runs as a capped job, after a memory check for its track:
         env PYTHONPATH=src data/build/torch-rocm/venv/bin/python scripts/search_full_year.py \\
         final --tracks compact,large
 
-    # 4. write a final model as an artifact: compact -> data/models/v2/, large ->
-    #    data/models/v2-comparison/. Neither moves CURRENT (`dbrel ml promote` does, and
+    # 4. write a final model as an artifact: compact -> models/v2/, large ->
+    #    models/v2-comparison/. Neither moves CURRENT (`dbrel ml promote` does, and
     #    refuses comparison artifacts).
     env PYTHONPATH=src data/build/torch-rocm/venv/bin/python scripts/search_full_year.py \\
         export --track compact --final-dir data/ml/full_year/final/<last test date>
@@ -84,6 +84,10 @@ def cmd_search(args) -> int:
     for name, ref in ranking["references"].items():
         S.log_line(f"reference {name}: " + (f"MAE {_mae(ref['validation'])}"
                                             if "validation" in ref else ref["missing"]))
+    for name, ab in ranking["ablations"].items():
+        delta = ab["vs_base_mae"]
+        S.log_line(f"ablation {name}: MAE {_mae(ab['validation'])}"
+                   + ("" if delta is None else f" ({delta:+.3f} min against the same network with every input)"))
     S.log_line(f"chosen: {ranking['chosen']}; {len(ranking['skipped'])} skipped, "
                f"{len(ranking['not_run'])} not run -> {ranking['experiment']}/ranking.json")
     return 0

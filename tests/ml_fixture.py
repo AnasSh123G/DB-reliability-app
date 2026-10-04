@@ -9,6 +9,9 @@ Two lines' worth of structure:
 - ICE 10/11 (no line): 10 runs Köln -> Berlin, 11 runs Berlin -> Köln, 12 runs
   within the stretch (Hannover -> Berlin).
 
+Notices follow one too: train 70 has a construction notice every second day and
+the ICE 10/11 a disruption notice every third day; `notice_rate_daily` is built.
+
 Delays follow a simple, deterministic rule (they are fixture values in a
 throwaway test database, never written anywhere real).
 """
@@ -23,7 +26,8 @@ from sqlalchemy.orm import Session
 from dbrel.db import Base, make_engine
 from dbrel.identity import SOURCE_TT
 from dbrel.ingest.runs import tt_feed_version
-from dbrel.models import ServiceLine, Station, StationStop, Train, Trip, TripStop
+from dbrel.derive.notice_rates import build_notice_rates
+from dbrel.models import ServiceLine, Station, StationStop, Train, Trip, TripStop, TtMessage
 
 BERLIN = ZoneInfo("Europe/Berlin")
 START = date(2026, 9, 1)
@@ -112,9 +116,14 @@ def build(path, dates: list[str] = DATES) -> None:
         ss_ids = {(r.train_id, r.station_id): r.id for r in s.query(StationStop)}
 
         trip_id = 0
+        notices: list[tuple[int, str]] = []
         for day_i, service_date in enumerate(dates):
             for tid, pattern in PATTERNS.items():
                 trip_id += 1
+                if tid == 70 and day_i % 2 == 0:
+                    notices.append((trip_id, "Bauarbeiten"))
+                if tid in (10, 11) and day_i % 3 == 0:
+                    notices.append((trip_id, "Störung"))
                 start = pattern[0][2]
                 stamp = datetime.fromisoformat(service_date).strftime("%y%m%d") + \
                     f"{(start // 3600) % 24:02d}{(start % 3600) // 60:02d}"
@@ -133,4 +142,8 @@ def build(path, dates: list[str] = DATES) -> None:
                         is_holiday=1 if datetime.fromisoformat(service_date).weekday() == 6 else 0,
                     ))
         s.commit()
+        s.add_all(TtMessage(trip_id=t, stop_sequence=10, msg_id=f"m{t}", msg_type="h", category=c, ts=1)
+                  for t, c in notices)
+        s.commit()
+    build_notice_rates(engine)
     engine.dispose()

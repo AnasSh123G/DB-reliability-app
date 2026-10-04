@@ -1,9 +1,9 @@
 """The train route view.
 
-The load-bearing assumption is that station_stop.stop_sequence is the 1-based
-index into train.route_path, which is what lets a journey with three monitored
-stops still render all twenty-five. Measured against the live database it holds
-for every row; here it is pinned so a change to either side fails loudly.
+Only stops with scheduled times are shown. station_stop.stop_sequence is the
+1-based index into the ppth of its own route variant, so route_path names are
+only trusted for train.path_sha1's variant -- another variant's numbering would
+put times on the wrong stations.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from dbrel.models import (
     Station,
     StationStop,
     Train,
+    Trip,
 )
 from dbrel.ingest.runs import tt_feed_version
 from dbrel.web import queries
@@ -61,10 +62,11 @@ def session():
         yield s
 
 
-def test_whole_route_is_returned_not_just_monitored_stops(session):
+def test_only_stops_with_times_are_returned(session):
     route = queries.train_route(session, TRAIN_ID)
-    assert [s["name"] for s in route["stops"]] == ROUTE
+    assert [s["name"] for s in route["stops"]] == ["Duisburg Hbf", "Bochum Hbf"]
     assert route["n_monitored"] == 2
+    assert route["train"]["n_stops"] == 2
 
 
 def test_times_land_on_the_right_stop(session):
@@ -74,8 +76,30 @@ def test_times_land_on_the_right_stop(session):
     assert stops["Duisburg Hbf"]["dep"] == "09:38"
     assert stops["Duisburg Hbf"]["platform"] == "12"
     assert stops["Bochum Hbf"]["arr"] == "10:00"
-    assert stops["Aachen Hbf"]["monitored"] is False
-    assert stops["Aachen Hbf"]["dep"] is None
+
+
+def test_another_variants_numbering_is_not_read_against_route_path(session):
+    """The latest run's variant numbers its stops by its OWN ppth: seq 1 here is
+    Bochum, not route_path[0] (Aachen). The name must follow the station row."""
+    fv_id = tt_feed_version(session)
+    session.get(Train, TRAIN_ID).path_sha1 = "full"
+    session.query(StationStop).update({"path_sha1": "full"})
+    session.add(StationStop(feed_version_id=fv_id, train_id=TRAIN_ID, stop_sequence=1,
+                            station_id=4, planned_arrival_sec=10 * 3600,
+                            planned_departure_sec=BOCHUM_DEP_SEC, path_sha1="short"))
+    session.add(Trip(train_id=TRAIN_ID, service_date="2026-10-01", source_run_key="run-1",
+                     path_sha1="short"))
+    session.flush()
+    stops = queries.train_route(session, TRAIN_ID)["stops"]
+    assert [(s["name"], s["arr"]) for s in stops] == [("Bochum Hbf", "10:00")]
+
+
+def test_route_names_are_the_fallback_when_nothing_has_times(session):
+    session.query(StationStop).delete()
+    session.flush()
+    route = queries.train_route(session, TRAIN_ID)
+    assert [s["name"] for s in route["stops"]] == ROUTE
+    assert route["n_monitored"] == 0
 
 
 def test_no_forecast_without_average_data(session):
@@ -138,3 +162,34 @@ def test_suggest_returns_lines_and_trains_not_only_stations(session):
     station_hit = queries.suggest(session, "bochum")
     assert station_hit[0]["kind"] == "station"
     assert station_hit[0]["url"] == "/station/4/"
+
+
+def test_regional_train_is_named_by_its_line_with_the_number_kept(session):
+    train = queries.train_route(session, TRAIN_ID)["train"]
+    assert (train["name"], train["number_name"]) == ("RE1", "NX 26811")
+
+
+def test_long_distance_train_keeps_its_number(session):
+    session.get(Train, TRAIN_ID).segment = "FV"
+    session.flush()
+    assert queries.train_route(session, TRAIN_ID)["train"]["name"] == "NX 26811"
+
+
+def test_bare_category_line_is_not_used_as_a_name(session):
+    session.get(ServiceLine, 9).line = "RE"
+    session.get(ServiceLine, 9).display_name = "RE"
+    session.flush()
+    assert queries.train_route(session, TRAIN_ID)["train"]["name"] == "NX 26811"
+
+
+def test_search_lists_a_line_once_rather_than_each_of_its_runs(session):
+    session.add_all([
+        SearchAlias(alias_norm="re1", alias_display="RE1", kind="CAT_LINE", weight=90, line_id=9),
+        SearchAlias(alias_norm="nx26811", alias_display="NX 26811", kind="CAT_NUMBER",
+                    weight=100, train_id=TRAIN_ID),
+    ])
+    session.flush()
+    assert [r["kind"] for r in queries.suggest(session, "nx")] == []
+    assert [r["kind"] for r in queries.suggest(session, "re")] == ["line"]
+    by_number = queries.suggest(session, "nx 268")
+    assert [(r["name"], r["number_name"]) for r in by_number] == [("RE1", "NX 26811")]

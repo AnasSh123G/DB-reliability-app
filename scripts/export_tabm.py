@@ -13,7 +13,7 @@ the weights were trained against. Before anything is written it checks:
 2. the loaded weights reproduce the saved test MAE of both sides
 3. the ONNX file computes what PyTorch computes, on a sample of test rows
 
-Then it writes a new artifact under data/models/v<N>/ and moves CURRENT to it;
+Then it writes a new artifact under models/v<N>/ and moves CURRENT to it;
 earlier artifacts stay as they are.
 """
 

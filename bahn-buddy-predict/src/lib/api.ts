@@ -23,6 +23,7 @@ export interface SuggestResult {
   kind: "station" | "line" | "train";
   id: number;
   name: string;
+  number_name?: string;
   sub: string;
   url: string;
   stops?: string | null;
@@ -42,6 +43,7 @@ export interface StationBoardCall {
   terminates: boolean;
   headline: string;
   train: string;
+  number_name: string;
   category: string | null;
   segment: string | null;
   number: number | null;
@@ -81,6 +83,7 @@ export interface TrainRoute {
   train: {
     id: number;
     name: string;
+    number_name: string;
     category: string | null;
     segment: string | null;
     number: number | null;
@@ -115,6 +118,7 @@ export interface LineStation {
 export interface TripAround {
   train_id: number;
   name: string;
+  number_name: string;
   url: string;
   sched_arr: string | null;
   sched_dep: string | null;

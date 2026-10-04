@@ -36,6 +36,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from dbrel.db import make_engine
 from dbrel.ml.arrival import (
     ArrivalNetPredictor, ConditionalHistogram, incumbent_forecast, prep_numeric, role_models_dir,
     save_arrival_artifact,
@@ -44,16 +45,22 @@ from dbrel.ml.arrival_nn import (
     ArrivalNet, BatchSource, NetConfig, estimate_asset_bytes, estimate_model_bytes, export_onnx,
 )
 from dbrel.ml.arrival_runs import MAE_OBJECTIVE, ArrivalExperiment, rank_trials, run_trials, trial_id
-from dbrel.ml.features import ARRIVAL_NUMERIC, CATEGORICAL, NUMERIC, encode_categoricals
+from dbrel.ml.features import (
+    ARRIVAL_NUMERIC, CATEGORICAL, NOTICE_NUMERIC, NOTICE_RATES, NUMERIC, encode_categoricals,
+)
 from dbrel.ml.full_history import CUTOFF_HOURS, FullHistory
 from dbrel.ml.full_year import (
     PreparedSet, RowSet, evaluation_cutoff, evaluation_report, history_key, memory_check_path,
     prep_from_statistics, prepare, training_statistics,
 )
 from dbrel.ml.metrics import point_concentration, score_arrivals
+from dbrel.ml.notice_rates import NoticeRates, table_signature, uses_notice_rates
 from dbrel.ml.split import DateSplit, TrainPruning, record_inspected, rolling_split, training_vocabulary
 
-NUMERIC_SETS = {"with-doy": ARRIVAL_NUMERIC, "no-doy": NUMERIC}
+# with-notice: everything; no-notice-rates and no-doy are the two ablations of the compact track.
+NUMERIC_SETS = {"with-notice": NOTICE_NUMERIC, "no-notice-rates": ARRIVAL_NUMERIC,
+                "no-doy": NUMERIC + NOTICE_RATES}
+DEFAULT_NUMERIC = "with-notice"
 DEFAULT_PRUNING = TrainPruning()
 LOOSE_PRUNING = TrainPruning(min_count=10)
 REFERENCES = {"tabm-two-sided": "20260924T183944Z", "window-mlp": "20260926T113337Z"}
@@ -68,7 +75,7 @@ DISCLOSURE = [
 
 
 def net(arch: str, head: str, hidden: int, blocks: int, train_emb: int, *, k: int = 8,
-        emb_max: int = 32, numeric: str = "with-doy", pruning: TrainPruning = DEFAULT_PRUNING) -> dict:
+        emb_max: int = 32, numeric: str = DEFAULT_NUMERIC, pruning: TrainPruning = DEFAULT_PRUNING) -> dict:
     cfg = NetConfig(arch=arch, head=head, point_rule="median", hidden=hidden, blocks=blocks,
                     train_emb_dim=train_emb, tabm_k=k, embedding_max_dim=emb_max)
     return {"family": "net", "config": cfg.as_dict(), "scaling": "robust" if arch == "mlp" else "standard",
@@ -77,7 +84,7 @@ def net(arch: str, head: str, hidden: int, blocks: int, train_emb: int, *, k: in
 
 def histogram(min_support: int = 20) -> dict:
     return {"family": "histogram", "min_support": min_support, "point_rule": "median",
-            "scaling": "standard", "numeric": "with-doy", "pruning": DEFAULT_PRUNING.as_dict()}
+            "scaling": "standard", "numeric": DEFAULT_NUMERIC, "pruning": DEFAULT_PRUNING.as_dict()}
 
 
 @dataclass(frozen=True)
@@ -86,29 +93,36 @@ class Track:
     role: str
     budget: int
     trials: tuple[dict, ...]
-    variant: str  # "ablation": best network without time of year; "loose-pruning": min_count 10
+    # "ablation": the best network without time of year, and without the notice rates;
+    # "loose-pruning": the best network with min_count 10
+    variant: str
     max_hours: float = 10.0
 
-    def variant_of(self, params: dict) -> dict:
+    def variants_of(self, params: dict) -> list[dict]:
         if self.variant == "ablation":
-            return {**params, "numeric": "no-doy"}
-        return {**params, "pruning": LOOSE_PRUNING.as_dict()}
+            return [{**params, "numeric": "no-doy"}, {**params, "numeric": "no-notice-rates"}]
+        return [{**params, "pruning": LOOSE_PRUNING.as_dict()}]
+
+    @property
+    def n_variants(self) -> int:
+        return 2 if self.variant == "ablation" else 1
 
 
 TRACKS = {
+    # TabM first: a track that runs out of time drops MLP trials, not the TabM ones.
     "compact": Track("compact", "deployable", 35_000_000, (
+        net("tabm", "quantile", 256, 2, 32, k=8),
+        net("tabm", "quantile", 512, 2, 32, k=16),
         net("mlp", "quantile", 512, 3, 16),
         net("mlp", "quantile", 512, 3, 32),
         net("mlp", "quantile", 1024, 3, 32),
         net("mlp", "binned", 512, 3, 32),
-        net("tabm", "quantile", 256, 2, 32, k=8),
-        net("tabm", "quantile", 512, 2, 32, k=16),
         histogram(20),
     ), variant="ablation"),
     "large": Track("large", "comparison", 100_000_000, (
+        net("tabm", "quantile", 1024, 3, 64, k=16, emb_max=64),
         net("mlp", "quantile", 1024, 4, 64, emb_max=64),
         net("mlp", "quantile", 2048, 3, 64, emb_max=64),
-        net("tabm", "quantile", 1024, 3, 64, k=16, emb_max=64),
     ), variant="loose-pruning"),
 }
 
@@ -126,20 +140,42 @@ def peak_rss() -> int:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
 
 
+def history_engine(history: FullHistory):
+    """The database the shards were built from, where `notice_rate_daily` lives."""
+    return make_engine(Path(history.manifest["db_path"]))
+
+
 class SearchData:
     """Statistics, vocabularies, preps and prepared inputs of one split, built on first use."""
 
     def __init__(self, history: FullHistory, train: RowSet, evaluate: RowSet, work: Path, *,
-                 tag: str, replace_inputs: bool = False, log=log_line):
+                 tag: str, replace_inputs: bool = False, log=log_line, fold: bool = True):
+        """`fold=False` is for the memory probe only: its few training dates sit in one calendar
+        month, which leave-one-month-out would blank; its rates' values don't matter there."""
         self.history, self.train, self.evaluate = history, train, evaluate
         self.work, self.tag, self.replace_inputs, self.log = Path(work), tag, replace_inputs, log
+        self.fold = fold
         self._stats = None
+        self._rates = None
+
+    @property
+    def rates(self) -> NoticeRates:
+        """Notice rates over exactly this split's training dates (never validation or test days)."""
+        if self._rates is None:
+            months = {d[:7] for d in self.train.dates}
+            if self.fold and len(months) < 2:
+                raise ValueError("notice rates leave each training row's own calendar month out, so the "
+                                 f"training dates need at least two months; got {sorted(months)}")
+            self.log(f"notice rates over {len(self.train.dates)} training dates ...")
+            self._rates = NoticeRates.from_database(history_engine(self.history), list(self.train.dates))
+        return self._rates
 
     @property
     def stats(self) -> dict:
         if self._stats is None:
             self.log(f"training statistics over {len(self.train.dates)} dates ...")
-            self._stats = training_statistics(self.history, self.train)
+            self._stats = training_statistics(self.history, self.train, numeric=NOTICE_NUMERIC,
+                                              rates=self.rates, fold=self.fold)
             self.log(f"  {self._stats['rows']:,} training rows")
         return self._stats
 
@@ -159,10 +195,10 @@ class SearchData:
         vocab, prep = self.vocab(params), self.prep(params)
         root = self.work / "prepared"
         sets = []
-        for role, rows in (("fit", self.train), ("eval", self.evaluate)):
+        for role, rows, fold in (("fit", self.train, self.fold), ("eval", self.evaluate, False)):
             self.log(f"prepared inputs {name}-{role} ...")
             sets.append(prepare(self.history, rows, vocab, prep, root, f"{name}-{role}",
-                                replace=self.replace_inputs))
+                                replace=self.replace_inputs, rates=self.rates, fold=fold))
         return sets[0], sets[1]
 
 
@@ -284,7 +320,8 @@ def experiment_key(history: FullHistory, split: DateSplit, cutoff: int, track: T
         "dataset": {"kind": "arrival-full", **history_key(history)},
         "split": split.as_dict(),
         "cutoff": {"hours": CUTOFF_HOURS, "finalized_before": cutoff, "timetable_asof_verified": False},
-        "features": list(CATEGORICAL + ARRIVAL_NUMERIC),
+        "features": list(CATEGORICAL + NOTICE_NUMERIC),
+        "notice_rates": table_signature(history_engine(history), split.train[0], split.train[-1]),
         "search_space": {"track": track.name, "role": track.role, "budget": track.budget,
                          "trials": list(track.trials), "variant": track.variant},
         "objective": MAE_OBJECTIVE,
@@ -319,7 +356,7 @@ def search_track(s: SearchSetup, track: Track, *, device: str, models_dir: Path,
     exp = ArrivalExperiment(s.work / "runs", experiment_name(track, s.split),
                             experiment_key(s.history, s.split, s.cutoff, track))
     exp.open()
-    max_trials = max_trials if max_trials is not None else len(track.trials) + 1
+    max_trials = max_trials if max_trials is not None else len(track.trials) + track.n_variants
     max_seconds = 3600 * (max_hours if max_hours is not None else track.max_hours)
     skipped = {}
 
@@ -338,13 +375,15 @@ def search_track(s: SearchSetup, track: Track, *, device: str, models_dir: Path,
 
     runnable = [p for p in track.trials if within_budget(p)]
     run_trials(exp, runnable, run, max_trials=max_trials, max_seconds=max_seconds, log=log)
-    nets = _network_trials(exp.completed())
+    fixed_ids = {trial_id(p) for p in track.trials}
+    nets = {tid: t for tid, t in _network_trials(exp.completed()).items() if tid in fixed_ids}
     planned = list(track.trials)
     if nets and all(exp.has(p) or trial_id(p) in skipped for p in track.trials):
-        variant = track.variant_of(nets[rank_trials(nets)[0]]["params"])
-        planned.append(variant)
-        if within_budget(variant):
-            run_trials(exp, [variant], run, max_trials=max_trials, max_seconds=max_seconds, log=log)
+        # variants of the best fixed trial, so a resumed run never derives them from a variant
+        variants = track.variants_of(nets[rank_trials(nets)[0]]["params"])
+        planned += variants
+        run_trials(exp, [v for v in variants if within_budget(v)], run, max_trials=max_trials,
+                   max_seconds=max_seconds, log=log)
 
     references, missing = reference_artifacts(models_dir)
     ref_file = exp.dir / "references.json"
@@ -361,6 +400,31 @@ def search_track(s: SearchSetup, track: Track, *, device: str, models_dir: Path,
         ref_scores.update({name: {"missing": why} for name, why in missing.items()})
         ref_file.write_text(json.dumps(ref_scores, indent=1))
     return write_ranking(exp, track, s, planned, skipped, ref_scores)
+
+
+ABLATIONS = ("no-doy", "no-notice-rates")
+
+
+def ablation_scores(track: Track, completed: dict[str, dict]) -> dict[str, dict]:
+    """Validation scores of the compact track's ablation trials, each against the trial it ablates.
+
+    `vs_base_mae` is the ablation's average error minus the same network's with everything
+    included: positive means the dropped inputs helped.
+    """
+    if track.variant != "ablation":
+        return {}
+    out = {}
+    for tid, t in completed.items():
+        numeric = t["params"].get("numeric")
+        if t["params"]["family"] != "net" or numeric not in ABLATIONS:
+            continue
+        base = completed.get(trial_id({**t["params"], "numeric": DEFAULT_NUMERIC}))
+        mae = t["summary"]["validation"]["mae_scored"]
+        base_mae = base["summary"]["validation"]["mae_scored"] if base else None
+        out[numeric] = {"trial": tid, "validation": t["summary"]["validation"],
+                        "base_trial": trial_id({**t["params"], "numeric": DEFAULT_NUMERIC}) if base else None,
+                        "vs_base_mae": None if base_mae is None or mae is None else mae - base_mae}
+    return out
 
 
 def write_ranking(exp: ArrivalExperiment, track: Track, s: SearchSetup, planned: list[dict], skipped: dict,
@@ -380,6 +444,7 @@ def write_ranking(exp: ArrivalExperiment, track: Track, s: SearchSetup, planned:
         "skipped": list(skipped.values()),
         "not_run": [p for p in planned if trial_id(p) not in completed and trial_id(p) not in skipped],
         "references": references,
+        "ablations": ablation_scores(track, completed),
         "chosen": choose_winner(completed) if completed else None,
     }
     (exp.dir / "ranking.json").write_text(json.dumps(ranking, indent=1))
@@ -446,12 +511,16 @@ def final(s: SearchSetup, tracks: list[Track], *, device: str, models_dir: Path,
             point = network.predict_source(_sources(test_set, None)[0], device).point
             torch.save(network.model.state_dict(), model_dir / "model.pt")
             asset = {"bytes": estimate_asset_bytes(cfg, prep, vocab), "basis": "estimate"}
-        (model_dir / "inputs.json").write_text(json.dumps({"prep": prep, "vocab": vocab, "params": params}))
+        inputs = {"prep": prep, "vocab": vocab, "params": params}
+        if uses_notice_rates({"prep": prep}):
+            inputs["notice_rates"] = data.rates.record()  # the dates and counts serving must reproduce
+        (model_dir / "inputs.json").write_text(json.dumps(inputs))
         np.save(model_dir / "sample_cats.npy", test_set.cats[:EXPORT_SAMPLE_ROWS])
         np.save(model_dir / "sample_nums.npy", test_set.nums[:EXPORT_SAMPLE_ROWS])
         predictions[f"{track.name}-winner"] = point
         winners[track.name] = {"trial": tid, "params": params, "validation": summary["validation"],
-                               "best_epoch": summary.get("best_epoch"), "asset": asset, "role": track.role}
+                               "best_epoch": summary.get("best_epoch"), "asset": asset, "role": track.role,
+                               "ablations": ablation_scores(track, completed)}
     stop_ids = _stop_ids(test_set)
     references, missing = reference_artifacts(models_dir)
     predictions.update(reference_points(s.history, s.split.test, stop_ids, references))
@@ -532,6 +601,8 @@ def export_final(final_dir: Path, track: Track, *, models_dir: Path, served_dir:
                    "test": result["scores"][f"{track.name}-winner"]["overall"]},
         "disclosure": result["disclosure"], "onnx_check": {k: v for k, v in check.items() if k != "_expected"},
     }
+    if "notice_rates" in inputs:
+        manifest["notice_rates"] = inputs["notice_rates"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     target = role_models_dir(track.role, Path(models_dir))
     target.mkdir(parents=True, exist_ok=True)
@@ -569,7 +640,7 @@ def probe(s: SearchSetup, track: Track, train_rows: int, *, device: str, models_
     train_dates = probe_dates(s.split.train, per_date, train_rows)
     val_dates = probe_dates(s.split.validation, per_date, int(train_rows * full_val / max(1, full_train)))
     data = SearchData(s.history, RowSet(train_dates, s.cutoff), RowSet(val_dates), work, tag="probe",
-                      replace_inputs=True, log=lambda m: None)
+                      replace_inputs=True, log=lambda m: None, fold=False)
     started = time.monotonic()
     params = widest_trial(track, data)
     fit_set, eval_set = data.prepared(params)
@@ -622,12 +693,17 @@ def memory_check(history_root: Path, work: Path, track: Track, *, inspected: lis
     train_rows = sum(per_date[d] for d in s.split.train)
     refit_rows = train_rows + sum(per_date[d] for d in s.split.validation)
     killed = any(p["killed"] for p in probes)
+    # The probes' few dates hold only a sliver of the notice-rate tables; the real runs hold all of them.
+    engine = history_engine(s.history)
+    rate_bytes = {"search": NoticeRates.from_database(engine, list(s.split.train)).peak_bytes(),
+                  "final": NoticeRates.from_database(engine, list(s.split.train + s.split.validation)).peak_bytes()}
     check = {
         "checked_at": time.time(), "track": track.name, "history_root": str(history_root),
         "history": history_key(s.history), "test_last": s.split.test[-1], "device": device,
         "probes": probes, "full_train_rows": train_rows, "full_refit_rows": refit_rows,
-        "projected_peak": None if killed else project_peak(probes, train_rows),
-        "projected_final_peak": None if killed else project_peak(probes, refit_rows),
+        "notice_rates_bytes": rate_bytes,
+        "projected_peak": None if killed else project_peak(probes, train_rows) + rate_bytes["search"],
+        "projected_final_peak": None if killed else project_peak(probes, refit_rows) + rate_bytes["final"],
     }
     Path(work).mkdir(parents=True, exist_ok=True)
     memory_check_path(work, track.name).write_text(json.dumps(check, indent=1))

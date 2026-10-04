@@ -33,6 +33,7 @@ from dbrel.ml.features import (
 )
 from dbrel.ml.nn import KIND as TABM_KIND
 from dbrel.ml.nn import TabMPredictor
+from dbrel.ml.notice_rates import add_serving_rates
 from dbrel.ml.timetable import ScheduledCall
 
 
@@ -96,6 +97,7 @@ class DelayModel:
                                  else np.float64) for name, values in raw.items()}
         features = encode_categoricals(compute_features(arrays), self.manifest["vocab"])
         if self.arrival is not None:
+            features = add_serving_rates(features, arrays, self.manifest, session.get_bind())
             forecast = self.arrival.predict(features)
             rule = forecast.rule
             return [

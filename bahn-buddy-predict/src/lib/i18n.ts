@@ -36,6 +36,7 @@ export const copy = {
     loading: "Lädt…",
     notMonitored: "Nicht überwacht",
     noAverage: "Kein Durchschnitt",
+    noPrediction: "Keine Prognose",
     noMonitoredStops:
       "Keiner der Halte dieses Zuges liegt im überwachten Bereich – nur die von IRIS veröffentlichte Route, ohne Zeiten oder Durchschnittswerte.",
     replacementBus: "Ersatzverkehr (Bus)",
@@ -92,6 +93,7 @@ export const copy = {
     loading: "Loading…",
     notMonitored: "Not monitored",
     noAverage: "No average",
+    noPrediction: "No prediction",
     noMonitoredStops:
       "None of this train's stops are in the monitored corridor — only the route IRIS publishes, with no times or averages.",
     replacementBus: "Replacement bus",

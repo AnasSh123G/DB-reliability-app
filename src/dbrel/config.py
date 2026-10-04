@@ -35,6 +35,8 @@ def _first_env(*names: str) -> tuple[str | None, str]:
 _load_dotenv()
 
 DATA_DIR = Path(os.environ.get("DBREL_DATA_DIR", "data"))
+# The served model lives outside data/ (which is git-ignored) so the deployed artifact is committed.
+MODELS_DIR = Path(os.environ.get("DBREL_MODELS_DIR", "models"))
 CACHE_DIR = DATA_DIR / "feeds"
 # Downloaded partitions of the public IRIS response archive. Large (~112-176 MB
 # per day), so it is kept out of the database directory's backup path deliberately
@@ -111,11 +113,11 @@ RAIL_EVA_RANGE = range(8_000_000, 8_100_000)
 # Bump when the feature set or the label definition changes. A model indexes its
 # features positionally, so a model trained against a different set would not
 # fail — it would predict confidently from the wrong columns. The version is a
-# directory name under data/models, which makes older models unreachable rather
+# directory name under models/, which makes older models unreachable rather
 # than merely out of date. v1 was the pipeline deleted on 2026-09-22.
 ML_MODEL_VERSION = 2
 ML_DATA_DIR = DATA_DIR / "ml"
-ML_MODELS_DIR = DATA_DIR / "models" / f"v{ML_MODEL_VERSION}"
+ML_MODELS_DIR = MODELS_DIR / f"v{ML_MODEL_VERSION}"
 
 # --- Station board ---------------------------------------------------------
 # A service day runs past midnight; GTFS seconds-of-day exceed 86400 accordingly.

@@ -36,6 +36,9 @@ class ScheduledCall:
     planned_departure_sec: int | None
     stop_rank: int
     n_stops: int
+    # The trip's origin departure (service-day seconds) on THIS call's route
+    # variant -- see _variant_trip_start. None if unknown.
+    trip_start_sec: int | None = None
 
     def raw(self, *, direction: int, holiday_set: set[tuple[str, str]],
             arrival_clock: bool = False) -> dict[str, list]:
@@ -51,7 +54,7 @@ class ScheduledCall:
             sched = self.planned_departure_sec
             if sched is None:
                 sched = self.planned_arrival_sec
-        start = train.first_departure_sec
+        start = self.trip_start_sec
         row = {
             "station_id": station.id,
             "train_id": train.id,
@@ -74,8 +77,44 @@ class ScheduledCall:
         return {key: [value] for key, value in row.items()}
 
 
-def calls_at(session: Session, train: Train, station_id: int, service_date: date) -> list[ScheduledCall]:
+def _variant_trip_start(train: Train, stops: list[StationStop]) -> int | None:
+    """When a run of this route variant leaves its origin, from the timetable.
+
+    Training takes each run's own start time, so serving must take it from the
+    same variant: train.first_departure_sec is the start of whichever run was
+    seen first, and on another variant it can even fall after the call being
+    predicted (an 08:09 call on an "08:22" train reads as 23h47m into the trip).
+
+    `stops` is the variant's rows in stop_sequence order. Sequence 1 is the
+    origin itself, so its departure is exact. Otherwise first_departure_sec is
+    kept when it is at least possible (no later than the variant's first
+    tracked call), and that first call is the closest timetable-only bound when
+    it is not.
+    """
+    first = stops[0]
+    first_sec = first.planned_departure_sec
+    if first_sec is None:
+        first_sec = first.planned_arrival_sec
+    if first.stop_sequence == 1 and first_sec is not None:
+        return first_sec
+    stored = train.first_departure_sec
+    if stored is None or (first_sec is not None and stored > first_sec):
+        return first_sec
+    return stored
+
+
+def calls_at(
+    session: Session,
+    train: Train,
+    station_id: int,
+    service_date: date,
+    *,
+    variant: str | None = None,
+) -> list[ScheduledCall]:
     """Every call `train` makes at `station_id`, on its main route variant if it has one.
+
+    `variant`, when given, is tried first: the route variant a page is already
+    showing this call from, so the prediction describes the same call.
 
     Usually one call; a train that passes a station twice (a loop) gives two.
     Empty when the timetable has no such stop.
@@ -90,14 +129,18 @@ def calls_at(session: Session, train: Train, station_id: int, service_date: date
     variants: dict[tuple, list[StationStop]] = {}
     for row in rows:
         variants.setdefault((row.feed_version_id, row.path_sha1), []).append(row)
-    main = [key for key in variants if key[1] == train.path_sha1]
-    ordered_keys = main + [key for key in variants if key not in main]
+    shown = [key for key in variants if variant is not None and key[1] == variant]
+    main = [key for key in variants if key[1] == train.path_sha1 and key not in shown]
+    ordered_keys = shown + main + [key for key in variants if key not in shown + main]
 
     station = session.get(Station, station_id)
     if station is None:
         return []
     for key in ordered_keys:
         stops = variants[key]
+        if not any(stop.station_id == station_id for stop in stops):
+            continue
+        trip_start_sec = _variant_trip_start(train, stops)
         calls = [
             ScheduledCall(
                 train=train,
@@ -107,6 +150,7 @@ def calls_at(session: Session, train: Train, station_id: int, service_date: date
                 planned_departure_sec=stop.planned_departure_sec,
                 stop_rank=rank,
                 n_stops=len(stops),
+                trip_start_sec=trip_start_sec,
             )
             for rank, stop in enumerate(stops)
             if stop.station_id == station_id

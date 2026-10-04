@@ -933,7 +933,11 @@ def label_holidays() -> None:
     from dbrel.db import get_engine
     from dbrel.derive.label_holidays import label_trip_stop_holidays
 
-    touched = label_trip_stop_holidays(get_engine())
+    def progress(service_date: str, rows: int) -> None:
+        if service_date.endswith("-01") or service_date.endswith("-15"):
+            typer.echo(f"  {service_date}: {rows:,} rows")
+
+    touched = label_trip_stop_holidays(get_engine(), progress=progress)
     typer.echo(f"{touched:,} trip_stop rows labelled.")
 
 
@@ -951,6 +955,26 @@ def build_stop_averages_cmd() -> None:
         f"(trains with no line) built from years {report['years']} "
         f"in {report['elapsed_s']:.1f}s "
         f"({report['excluded_no_start_time']:,} trip_stop rows excluded: no derivable start time)."
+    )
+
+
+@app.command("build-passenger-lines")
+def build_passenger_lines_cmd() -> None:
+    """(Re)build passenger_line: trains regrouped into the lines passengers know.
+
+    Full rebuild every run. Rerun after collecting new data, so new trains
+    join their line (the web falls back to service_line ids until it has run).
+    """
+    from dbrel.derive.passenger_lines import build_passenger_lines
+
+    create_all()  # the two passenger_line tables, on a database that predates them
+    with session_scope() as session:
+        _require_schema(session)
+        report = build_passenger_lines(session)
+    typer.echo(
+        f"{report['lines']:,} passenger lines from {report['names']:,} line names, "
+        f"{report['trains']:,} trains ({report['skipped']:,} skipped: no usable line name "
+        f"or route) in {report['elapsed_s']:.1f}s"
     )
 
 

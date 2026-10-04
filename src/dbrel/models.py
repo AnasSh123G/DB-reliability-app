@@ -133,6 +133,43 @@ class ServiceLine(Base):
         return f"<ServiceLine {self.id} {self.display_name!r}>"
 
 
+class PassengerLine(Base):
+    """One line as a passenger knows it: "RE4 Aachen – Dortmund".
+
+    `service_line` is keyed by category + line text, which both merges and
+    splits real lines: every "RE"+"4" in Germany shares one row, while the
+    Aachen-Dortmund RE4 is spread over "RE/4", "NX/RE4" and "RE/RE4". This
+    full-rebuild table (derive/passenger_lines.py) regroups trains by
+    normalised line name AND shared route, so it is what the web pages show.
+    The model and the averages keep using service_line.
+
+    `id` is the smallest member train id, so a rebuild keeps a line's URL.
+    """
+
+    __tablename__ = "passenger_line"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(32))  # 'RE4'
+    name_norm: Mapped[str] = mapped_column(String(32), index=True)  # 'RE4'
+    category: Mapped[str | None] = mapped_column(String(8))
+    endpoints: Mapped[str | None] = mapped_column(Text)  # 'Aachen Hbf – Dortmund Hbf'
+    n_trains: Mapped[int] = mapped_column(Integer, default=0)
+
+    def __repr__(self) -> str:
+        return f"<PassengerLine {self.id} {self.name!r} {self.endpoints!r}>"
+
+
+class PassengerLineMember(Base):
+    """Which passenger line a train belongs to (at most one)."""
+
+    __tablename__ = "passenger_line_member"
+
+    train_id: Mapped[int] = mapped_column(ForeignKey("train.id"), primary_key=True)
+    passenger_line_id: Mapped[int] = mapped_column(
+        ForeignKey("passenger_line.id"), index=True
+    )
+
+
 class Train(Base):
     """A train as a recurring service, identified the way the railway identifies it."""
 
@@ -545,6 +582,34 @@ class TrainStopDelayAverage(Base):
     n_dep: Mapped[int] = mapped_column(Integer, default=0)
     mean_dep_delay_s: Mapped[float | None] = mapped_column(Float)
     built_at: Mapped[int] = mapped_column(Integer)
+
+
+class NoticeRateDaily(Base):
+    """Per-day counts of arrivals and of arrivals on trips with a notice, per key.
+
+    One row per (level, key_id, service_date): `level` is 'station', 'line' or
+    'train' and `key_id` the matching id. `n` counts the day's eligible
+    arrivals (the training-target filter of `ml/dataset.py`), `k_works` those
+    whose trip has a construction notice ("Bauarbeiten") and `k_disruption`
+    those with a disruption notice ("Störung"/"Großstörung"). The notice-rate
+    model inputs (`ml/notice_rates.py`) are sums of these rows over chosen
+    dates. Daily, because the validation window starts mid-month.
+
+    Built by `derive/notice_rates.py`; reads trip, trip_stop and tt_message
+    and writes only this table.
+    """
+
+    __tablename__ = "notice_rate_daily"
+
+    level: Mapped[str] = mapped_column(String(8), primary_key=True)
+    key_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    service_date: Mapped[str] = mapped_column(String(10), primary_key=True)
+
+    n: Mapped[int] = mapped_column(Integer)
+    k_works: Mapped[int] = mapped_column(Integer)
+    k_disruption: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (Index("ix_notice_rate_date", "service_date"),)
 
 
 # ---------------------------------------------------------------------------

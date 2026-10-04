@@ -70,7 +70,7 @@ class NetConfig:
     weight_decay: float = 1e-2
     batch_size: int = 8192
     epochs: int = 12
-    patience: int = 3
+    patience: int = 6  # 12 epochs on a OneCycle schedule: 3 stopped the dry run (best epoch 4) before the low-LR phase
     seed: int = 0
 
     def __post_init__(self):

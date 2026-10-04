@@ -92,15 +92,18 @@ def session():
         yield s
 
 
+def _stop(session, name):
+    return next(s for s in queries.train_route(session, TRAIN_ID)["stops"] if s["name"] == name)
+
+
 def test_dep_pred_uses_the_coalesced_sched_time(session):
-    stop = queries.train_route(session, TRAIN_ID)["stops"][1]
-    assert stop["name"] == "Duisburg Hbf"
+    stop = _stop(session, "Duisburg Hbf")
     assert stop["dep_pred"] == {"p50_min": 3, "lo_min": 3, "hi_min": 3}
 
 
 def test_arr_pred_looks_up_the_same_row_as_dep_pred(session):
     """Not the arrival's own raw time (09:36) -- the row lives at 09:38."""
-    stop = queries.train_route(session, TRAIN_ID)["stops"][1]
+    stop = _stop(session, "Duisburg Hbf")
     assert stop["arr_pred"] is None  # n_arr is 0 on that row
 
 
@@ -109,7 +112,7 @@ def test_arr_pred_populates_once_the_row_has_arrival_samples(session):
     row.n_arr = 5
     row.mean_arr_delay_s = 60.0
     session.flush()
-    stop = queries.train_route(session, TRAIN_ID)["stops"][1]
+    stop = _stop(session, "Duisburg Hbf")
     assert stop["arr_pred"] == {"p50_min": 1, "lo_min": 1, "hi_min": 1}
     assert stop["dep_pred"] == {"p50_min": 3, "lo_min": 3, "hi_min": 3}
 

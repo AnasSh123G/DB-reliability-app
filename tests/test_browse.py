@@ -8,6 +8,8 @@ cope with fewer than 3 total candidates.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -24,6 +26,7 @@ from dbrel.models import (
     Train,
 )
 from dbrel.ingest.runs import tt_feed_version
+from dbrel.ingest.timeutil import service_date_anchor
 from dbrel.web import queries
 
 LINE_ID = 1
@@ -131,13 +134,13 @@ def test_between_two_calls_picks_the_nearest_on_each_side(session):
     # further back -- the last two at/before are 06:00 and 12:00, not 12:00
     # twice.
     trips = around(session, "14:00")["trips"]
-    assert [t["name"] for t in trips] == ["RE 10", "RE 11", "RE 12"]
+    assert [t["number_name"] for t in trips] == ["RE 10", "RE 11", "RE 12"]
     assert [t["relation"] for t in trips] == ["before", "before", "after"]
 
 
 def test_exactly_on_a_scheduled_time_counts_as_before(session):
     trips = around(session, "12:00")["trips"]
-    assert [t["name"] for t in trips] == ["RE 10", "RE 11", "RE 12"]
+    assert [t["number_name"] for t in trips] == ["RE 10", "RE 11", "RE 12"]
     assert trips[1]["relation"] == "before"
 
 
@@ -147,31 +150,31 @@ def test_before_the_first_call_wraps_to_the_end_of_the_day(session):
     # keep their slot's label (before/before/after) even though every one of
     # them falls later in the clock than 02:00.
     trips = around(session, "02:00")["trips"]
-    assert [t["name"] for t in trips] == ["RE 11", "RE 12", "RE 10"]
+    assert [t["number_name"] for t in trips] == ["RE 11", "RE 12", "RE 10"]
     assert [t["relation"] for t in trips] == ["before", "before", "after"]
 
 
 def test_after_the_last_call_wraps_to_tomorrows_first(session):
     trips = around(session, "23:00")["trips"]
-    assert [t["name"] for t in trips] == ["RE 11", "RE 12", "RE 10"]
+    assert [t["number_name"] for t in trips] == ["RE 11", "RE 12", "RE 10"]
     assert trips[-1]["relation"] == "after"
 
 
 def test_the_lone_run_the_other_way_is_never_mixed_in(session):
     trips = around(session, "14:00")["trips"]
-    assert "RE 20" not in {t["name"] for t in trips}
-    assert around(session, "10:00", direction=1)["trips"][0]["name"] == "RE 20"
+    assert "RE 20" not in {t["number_name"] for t in trips}
+    assert around(session, "10:00", direction=1)["trips"][0]["number_name"] == "RE 20"
 
 
 def test_fewer_than_three_runs_does_not_fabricate_a_third(session):
     """Direction 1 has exactly one run -- it must appear once, not three times."""
     trips = around(session, "10:00", direction=1)["trips"]
-    assert [t["name"] for t in trips] == ["RE 20"]
+    assert [t["number_name"] for t in trips] == ["RE 20"]
 
 
 def test_scheduled_times_are_the_ones_at_the_chosen_station(session):
     trips = around(session, "14:00")["trips"]
-    re11 = next(t for t in trips if t["name"] == "RE 11")
+    re11 = next(t for t in trips if t["number_name"] == "RE 11")
     assert re11["sched_arr"] == "11:59"
     assert re11["sched_dep"] == "12:00"
 
@@ -230,3 +233,47 @@ class TestResolveDayType:
         assert queries.resolve_day_type(session, "not-a-date") is None
 
 
+
+
+def test_runs_are_named_by_their_line_as_signed_on_the_platform(session):
+    trips = around(session, "10:30")["trips"]
+    assert {t["name"] for t in trips} == {"RE1"}
+
+
+def _add_second_variant_of_re11_at_krefeld(session):
+    """RE 11 seen on a second route variant: a second station_stop row for the
+    very same Krefeld call, timed a minute later as variants often are."""
+    original = session.query(StationStop).filter_by(train_id=11, station_id=2).one()
+    session.add(StationStop(
+        feed_version_id=original.feed_version_id, train_id=11, stop_sequence=7,
+        station_id=2, planned_arrival_sec=original.planned_arrival_sec + 60,
+        planned_departure_sec=original.planned_departure_sec + 60, path_sha1="other",
+    ))
+    session.flush()
+
+
+def test_a_trip_on_two_route_variants_is_listed_once(session):
+    _add_second_variant_of_re11_at_krefeld(session)
+    trips = around(session, "14:00")["trips"]
+    assert [t["number_name"] for t in trips] == ["RE 10", "RE 11", "RE 12"]
+
+
+def test_a_trip_on_two_route_variants_is_on_the_board_once(session):
+    _add_second_variant_of_re11_at_krefeld(session)
+    now = service_date_anchor(date.today()) + 12 * 3600
+    calls = queries.station_board(session, 2, now=now)["calls"]
+    assert [c["number_name"] for c in calls].count("RE 11") == 1
+
+
+def test_a_train_retired_from_the_timetable_is_no_longer_offered(session):
+    """Last seen well before the newest data: a December timetable change
+    retired it, so it must not be listed for dates it will not run on."""
+    for train in session.query(Train):
+        train.last_seen_date = "2026-09-28"
+    session.get(Train, 11).last_seen_date = "2025-12-13"
+    session.flush()
+    trips = around(session, "14:00")["trips"]
+    assert "RE 11" not in [t["number_name"] for t in trips]
+    now = service_date_anchor(date.today()) + 12 * 3600
+    calls = queries.station_board(session, 2, now=now)["calls"]
+    assert "RE 11" not in [c["number_name"] for c in calls]

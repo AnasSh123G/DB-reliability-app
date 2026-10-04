@@ -4,7 +4,7 @@
 
 Copies the exact ONNX file the fresh holdout was scored with
 (<experiment>/fresh-test/chosen/model.onnx), its input prep and the training
-vocabulary into a new data/models/v2/<UTC>/ with an `arrival-net` manifest.
+vocabulary into a new models/v2/<UTC>/ with an `arrival-net` manifest.
 It does NOT move `CURRENT` -- `dbrel.ml.arrival.promote` does, after review.
 Then reloads the artifact through `ArrivalNetPredictor` (the CLI/server path)
 and checks it reproduces the saved fresh-test predictions on a sample.

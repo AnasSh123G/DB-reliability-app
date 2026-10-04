@@ -118,7 +118,7 @@ def _check(history, work, track, peak, final_peak=None):
     work.mkdir(parents=True, exist_ok=True)
     memory_check_path(work, track).write_text(json.dumps({
         "track": track, "history_root": str(history.root), "history": history_key(history),
-        "projected_peak": peak, "projected_final_peak": final_peak if final_peak is not None else peak}))
+        "notice_rates_bytes": {"search": 1, "final": 1}, "projected_peak": peak, "projected_final_peak": final_peak if final_peak is not None else peak}))
 
 
 def test_launch_gate_needs_a_current_fitting_memory_check(history, tmp_path):
@@ -162,3 +162,124 @@ def test_evaluation_report_breaks_down_by_month_and_segment(history, tmp_path):
     assert report["zero"]["overall"]["most_common_share"] == 1.0
     with pytest.raises(ValueError, match="expected"):
         evaluation_report(history, prepared, {"short": np.zeros(3)})
+
+
+# -- notice-rate inputs (add-notice-inputs) -----------------------------------------------------------
+
+def _rates(db, dates=TRAIN):  # noqa: F811
+    from dbrel.db import make_engine
+    from dbrel.ml.notice_rates import NoticeRates
+
+    engine = make_engine(db)
+    try:
+        return NoticeRates.from_database(engine, list(dates))
+    finally:
+        engine.dispose()
+
+
+def _execute(db, sql):  # noqa: F811
+    conn = sqlite3.connect(db)
+    conn.execute(sql)
+    conn.commit()
+    conn.close()
+
+
+def _train_chunk(history):
+    parts = list(history.chunks(TRAIN))
+    return {name: np.concatenate([p[name] for p in parts]) for name in parts[0]}
+
+
+@pytest.mark.parametrize("scaling", ["standard", "robust"])
+def test_streamed_prep_with_notice_rates_equals_the_in_memory_fit(history, db, scaling):  # noqa: F811
+    from dbrel.ml.features import NOTICE_NUMERIC, NOTICE_RATES
+
+    rates = _rates(db)
+    stats = training_statistics(history, RowSet(tuple(TRAIN)), numeric=NOTICE_NUMERIC, rates=rates, fold=True,
+                                sample_rows=10_000)
+    vocab = training_vocabulary(stats["categories"], stats["last_day"])
+    streamed = prep_from_statistics(stats, vocab, scaling, NOTICE_NUMERIC)
+    encoded = history.encode(_train_chunk(history), vocab, rates, True)
+    in_memory = fit_input_prep(encoded, np.ones(len(encoded["is_holiday"]), bool), vocab, scaling, NOTICE_NUMERIC)
+    assert streamed["numeric"] == in_memory["numeric"]
+    assert streamed["features_numeric"] == list(NOTICE_NUMERIC)
+    for name in NOTICE_RATES:
+        assert name in streamed["numeric"]
+        assert streamed["stats"][name] == pytest.approx(in_memory["stats"][name], rel=1e-6, abs=1e-9), name
+
+
+def test_a_training_rows_rates_leave_its_own_month_out_and_other_rows_do_not(history, db):  # noqa: F811
+    from dbrel.ml.features import NOTICE_RATES
+
+    rates = _rates(db)
+    chunk = _train_chunk(history)
+    vocab = training_vocabulary(training_statistics(history, RowSet(tuple(TRAIN)))["categories"], 0)
+    folded = history.encode(chunk, vocab, rates, True)
+    plain = history.encode(chunk, vocab, rates, False)
+    assert any(not np.array_equal(folded[n], plain[n], equal_nan=True) for n in NOTICE_RATES)
+    assert all(np.array_equal(folded[n], plain[n], equal_nan=True) for n in ARRIVAL_NUMERIC)
+
+
+def test_a_july_rows_fold_ignores_july_even_when_july_counts_change(history, db):  # noqa: F811
+    from dbrel.ml.features import NOTICE_RATES
+
+    chunk = _train_chunk(history)
+    july = chunk["day"] < int(np.datetime64("2026-08-01", "D").astype(np.int64))
+    before = _rates(db).rates(chunk["station_id"], chunk["line_id"], chunk["train_id"], chunk["day"], fold=True)
+    _execute(db, "UPDATE notice_rate_daily SET n = n * 3, k_works = k_works * 3 + 1, "
+                 "k_disruption = k_disruption * 3 + 1 WHERE service_date LIKE '2026-07-%'")
+    after = _rates(db).rates(chunk["station_id"], chunk["line_id"], chunk["train_id"], chunk["day"], fold=True)
+    for name in NOTICE_RATES:
+        assert np.array_equal(before[name][july], after[name][july], equal_nan=True), name  # July rows: July is out
+    assert any(not np.array_equal(before[n][~july], after[n][~july], equal_nan=True) for n in NOTICE_RATES)
+
+
+def test_prepared_inputs_follow_the_rates_and_changed_counts_rebuild_them(history, db, tmp_path):  # noqa: F811
+    from dbrel.ml.features import NOTICE_NUMERIC
+
+    rows = RowSet(tuple(TRAIN))
+    rates = _rates(db)
+    stats = training_statistics(history, rows, numeric=NOTICE_NUMERIC, rates=rates, fold=True)
+    vocab = training_vocabulary(stats["categories"], stats["last_day"])
+    prep = prep_from_statistics(stats, vocab, "standard", NOTICE_NUMERIC)
+    root = tmp_path / "prepared"
+    first = prepare(history, rows, vocab, prep, root, "fit", rates=rates, fold=True)
+    encoded = history.encode(_train_chunk(history), vocab, rates, True)
+    _, nums = arrival_inputs(encoded, prep)
+    assert np.array_equal(first.nums, nums)
+    first_nums = np.array(first.nums)  # the directory is rewritten below; keep what it held
+    assert first.key["notice_rates"] == {"fingerprint": rates.fingerprint(), "fold": True}
+    inode = (root / "fit" / "nums.bin").stat().st_ino
+    assert (prepare(history, rows, vocab, prep, root, "fit", rates=rates, fold=True).dir / "nums.bin"
+            ).stat().st_ino == inode  # same counts: reused
+
+    _execute(db, "UPDATE notice_rate_daily SET k_works = k_works + 1 WHERE service_date = '2026-08-01'")
+    changed = _rates(db)
+    assert changed.fingerprint() != rates.fingerprint()
+    with pytest.raises(CheckpointMismatch, match="notice_rates"):
+        prepare(history, rows, vocab, prep, root, "fit", rates=changed, fold=True)
+    rebuilt = prepare(history, rows, vocab, prep, root, "fit", rates=changed, fold=True, replace=True)
+    assert rebuilt.key["notice_rates"]["fingerprint"] == changed.fingerprint()
+    assert not np.array_equal(rebuilt.nums, first_nums)
+
+
+def test_a_prep_that_lists_notice_rates_needs_them(history):  # noqa: F811
+    from dbrel.ml.features import NOTICE_NUMERIC
+
+    with pytest.raises(ValueError, match="notice rates"):
+        training_statistics(history, RowSet(tuple(TRAIN)), numeric=NOTICE_NUMERIC)
+    rows = RowSet(tuple(TRAIN))
+    stats = training_statistics(history, rows)
+    vocab = training_vocabulary(stats["categories"], stats["last_day"])
+    prep = {**prep_from_statistics(stats, vocab, "standard"), "features_numeric": list(NOTICE_NUMERIC)}
+    with pytest.raises(ValueError, match="pass the notice rates"):
+        prepare(history, rows, vocab, prep, history.root.parent / "p", "x")
+
+
+def test_a_memory_check_made_before_the_notice_rates_is_refused(history, tmp_path):  # noqa: F811
+    work = tmp_path / "work"
+    _check(history, work, "large", peak=2 * 2**30)
+    path = memory_check_path(work, "large")
+    old = {k: v for k, v in json.loads(path.read_text()).items() if k != "notice_rates_bytes"}
+    path.write_text(json.dumps(old))
+    with pytest.raises(LaunchError, match="predates the notice-rate inputs"):
+        gate([SEARCH + ["--work", str(work)]], "14G", tmp_path / "ml")

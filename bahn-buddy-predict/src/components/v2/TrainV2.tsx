@@ -20,11 +20,10 @@ import {
 } from "@/components/ui/table";
 import { useTrainRoute } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
-import { delayColor, expectedTime } from "@/lib/delay";
-import type { DelayPred } from "@/lib/api";
 import { copy, type Locale } from "@/lib/i18n";
 import type { SidePrediction } from "@/lib/tabm";
 import { ModelDelta } from "./ModelDelta";
+import { TrainNumber } from "./TrainNumber";
 import { v2Paths } from "./paths";
 
 interface Props {
@@ -36,34 +35,17 @@ interface Props {
 
 function DelayCell({
   scheduled,
-  pred,
   modelPred,
-  noAverageLabel,
+  noPredictionLabel,
 }: {
   scheduled: string | null;
-  pred: DelayPred | null;
   modelPred: SidePrediction | undefined;
-  noAverageLabel: string;
+  noPredictionLabel: string;
 }) {
-  const expected = expectedTime(scheduled, pred);
-  const hasModel = Boolean(scheduled) && modelPred !== undefined;
-  if (expected && pred) {
-    return (
-      <>
-        <span className={`block font-mono font-semibold ${delayColor(pred.p50_min)}`}>
-          {expected}
-        </span>
-        <span className={`block font-mono text-[10px] font-semibold ${delayColor(pred.p50_min)}`}>
-          <span className="mr-1 font-normal text-fog">Ø</span>+{pred.p50_min} min
-        </span>
-        {hasModel && <ModelDelta pred={modelPred as SidePrediction} />}
-      </>
-    );
+  if (scheduled && modelPred !== undefined) {
+    return <ModelDelta pred={modelPred} />;
   }
-  if (hasModel) {
-    return <ModelDelta pred={modelPred as SidePrediction} />;
-  }
-  return <span className="block text-mist">{scheduled ? noAverageLabel : "—"}</span>;
+  return <span className="block text-mist">{scheduled ? noPredictionLabel : "—"}</span>;
 }
 
 export function TrainV2({ trainId, locale, bare = false, className }: Props) {
@@ -132,6 +114,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
             </p>
             <h2 id="train-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
               {train.name}
+              <TrainNumber name={train.name} numberName={train.number_name} />
               {train.replacement_bus && (
                 <Badge
                   variant="outline"
@@ -144,7 +127,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
             <p className="mt-1 text-xs text-fog">
               {[train.category, train.operator].filter(Boolean).join(" · ")}
               {" · "}
-              {train.n_stops} {t.stops}, {n_monitored} {t.monitored}
+              {train.n_stops} {t.stops}
             </p>
             {train.line && (
               <Link
@@ -168,13 +151,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
               </span>
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-paper">{nameNodeFor(stop)}</p>
-                {stop.monitored ? (
-                  stop.platform && (
-                    <Badge variant="secondary" className="mt-1 font-mono text-[10px] font-normal">
-                      {t.platform} {stop.platform}
-                    </Badge>
-                  )
-                ) : (
+                {!stop.monitored && (
                   <Badge variant="outline" className="mt-1 text-[10px] font-normal text-fog">
                     {t.notMonitored}
                   </Badge>
@@ -193,9 +170,8 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                   <p className="mt-1 text-sm">
                     <DelayCell
                       scheduled={stop.arr}
-                      pred={stop.arr_pred}
                       modelPred={predictions.get(stop.seq)?.arr}
-                      noAverageLabel={t.noAverage}
+                      noPredictionLabel={t.noPrediction}
                     />
                   </p>
                 </div>
@@ -227,14 +203,6 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                     </span>
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium text-paper">{nameNodeFor(stop)}</p>
-                      {stop.monitored && stop.platform && (
-                        <Badge
-                          variant="secondary"
-                          className="mt-1 font-mono text-[10px] font-normal"
-                        >
-                          {t.platform} {stop.platform}
-                        </Badge>
-                      )}
                     </div>
                   </div>
                 </TableCell>
@@ -244,9 +212,8 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                     <TableCell className="text-sm">
                       <DelayCell
                         scheduled={stop.arr}
-                        pred={stop.arr_pred}
                         modelPred={predictions.get(stop.seq)?.arr}
-                        noAverageLabel={t.noAverage}
+                        noPredictionLabel={t.noPrediction}
                       />
                     </TableCell>
                   </>

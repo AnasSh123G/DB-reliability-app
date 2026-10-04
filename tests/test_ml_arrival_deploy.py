@@ -311,3 +311,141 @@ def test_live_study_with_arrival_net_reports_arrivals_only(env, arrival_artifact
     header = (out / "comparisons.csv").read_text().splitlines()[0]
     assert "model_point" in header and "tabm_p50" not in header
     assert "Model estimate (window rule)" in (out / "histogram.html").read_text()
+
+
+# -- an artifact whose inputs include the notice rates (add-notice-inputs) --------------------------------
+
+def _rates_artifact(env, tmp_path, monkeypatch):  # noqa: F811
+    """An arrival artifact trained with the six notice rates; returns (artifact, row inputs, expected)."""
+    import onnxruntime
+
+    import dbrel.db as dbmod
+    from dbrel.ml.notice_rates import NoticeRates
+
+    ds, enc, vocab = _dataset(env)
+    engine = dbmod.make_engine(env / "dbrel.sqlite")
+    rates = NoticeRates.from_database(engine, ds.meta["dates"])
+    engine.dispose()
+    ids = {k: np.array(vocab[name]) for k, name in (("station_id", "station"), ("line_id", "line"),
+                                                    ("train_id", "train"))}
+    rows = {k: ids[k][enc[name]] for k, name in (("station_id", "station"), ("line_id", "line"),
+                                                 ("train_id", "train"))}
+    enc = {**enc, **rates.rates(rows["station_id"], rows["line_id"], rows["train_id"],
+                                np.zeros(len(rows["train_id"]), dtype=np.int64), fold=False)}
+    prep = fit_input_prep(enc, np.ones(len(ds.arr_min), bool), vocab, "robust", numeric=F.NOTICE_NUMERIC)
+    manifest = {"vocab": vocab, "prep": prep, "output": "probs", "edges": EDGES.tolist(),
+                "point_rule": "window", "notice_rates": rates.record()}
+    onnx = tmp_path / "rates.onnx"
+    onnx.write_bytes(b"not a real network")
+    artifact = save_arrival_artifact(env / "models", manifest, {"model.onnx": onnx}, "20260930T000000Z")
+    FakeArrivalSession.calls = []
+    monkeypatch.setattr(onnxruntime, "InferenceSession", FakeArrivalSession)
+    return artifact, ds, enc, json.loads((artifact / "manifest.json").read_text())
+
+
+def _train70_row(ds):
+    trip = list(PATTERNS).index(70) + 1
+    (row,) = np.flatnonzero((ds.trip_id == trip) & (ds.stop_sequence == 20))
+    return row
+
+
+def test_an_artifact_using_the_rates_must_record_them(env, tmp_path):  # noqa: F811
+    ds, enc, vocab = _dataset(env)
+    prep = fit_input_prep({**enc, **{n: np.zeros(len(ds.arr_min), np.float32) for n in F.NOTICE_RATES}},
+                          np.ones(len(ds.arr_min), bool), vocab, "robust", numeric=F.NOTICE_NUMERIC)
+    onnx = tmp_path / "net.onnx"
+    onnx.write_bytes(b"x")
+    with pytest.raises(ValueError, match="notice_rates"):
+        save_arrival_artifact(env / "models", {"vocab": vocab, "prep": prep, "output": "probs",
+                                               "edges": EDGES.tolist(), "point_rule": "window"},
+                              {"model.onnx": onnx}, "x")
+
+
+def test_the_server_and_the_offline_path_build_identical_rate_inputs(env, tmp_path, monkeypatch):  # noqa: F811
+    import dbrel.db as dbmod
+    from dbrel.ml.notice_rates import _serving
+    from dbrel.ml.timetable import calls_at
+    from dbrel.models import Train
+    from dbrel.web.queries import _model_input
+
+    _serving.clear()
+    artifact, ds, enc, manifest = _rates_artifact(env, tmp_path, monkeypatch)
+    row = _train70_row(ds)
+    expected_cat, expected_num = arrival_inputs({k: v[[row]] for k, v in enc.items()}, manifest["prep"])
+    station, arr_sec, dep_sec = PATTERNS[70][1]
+    with dbmod.session_scope() as s:
+        train = s.get(Train, 70)
+        web = _model_input(s, manifest, station_id=station, arr_sec=arr_sec, dep_sec=dep_sec, train=train,
+                           service_date=START, direction=F.all_directions(s)[70],
+                           holiday_set=load_holiday_dates(s))
+        call = calls_at(s, train, station, START)[0]
+        DelayModel(artifact).predict_calls(s, [call])
+    offline_num = FakeArrivalSession.calls[0]["num"][0]
+    assert web["cat"] == expected_cat[0].tolist()
+    np.testing.assert_allclose(web["num"], expected_num[0], rtol=0, atol=1e-6)
+    np.testing.assert_allclose(offline_num, web["num"], rtol=0, atol=1e-6)  # both paths, same array
+    n_rates = len(F.NOTICE_RATES)
+    assert np.any(np.asarray(web["num"][-n_rates - 3:]) != 0)  # the rate columns are really in the input
+
+
+def test_serving_the_rates_makes_no_network_call(env, tmp_path, monkeypatch):  # noqa: F811
+    import socket
+
+    import dbrel.db as dbmod
+    from dbrel.ml.notice_rates import _serving
+    from dbrel.models import Train
+    from dbrel.web.queries import _model_input
+
+    _serving.clear()
+    _, _, _, manifest = _rates_artifact(env, tmp_path, monkeypatch)
+
+    def no_network(*a, **k):
+        raise AssertionError("a forecast must not open a network connection")
+
+    monkeypatch.setattr(socket, "socket", no_network)
+    station, arr_sec, dep_sec = PATTERNS[70][1]
+    with dbmod.session_scope() as s:
+        got = _model_input(s, manifest, station_id=station, arr_sec=arr_sec, dep_sec=dep_sec,
+                           train=s.get(Train, 70), service_date=START, direction=F.all_directions(s)[70],
+                           holiday_set=load_holiday_dates(s))
+    assert got is not None
+
+
+def test_an_older_artifact_never_reads_the_rate_table(env, arrival_artifact, monkeypatch):  # noqa: F811
+    import dbrel.db as dbmod
+    from dbrel.ml.notice_rates import NoticeRates
+    from dbrel.models import Train
+    from dbrel.web.queries import _model_input
+
+    def boom(*a, **k):
+        raise AssertionError("the notice-rate table must not be read for this artifact")
+
+    monkeypatch.setattr(NoticeRates, "from_database", boom)
+    monkeypatch.setattr(NoticeRates, "from_record", boom)
+    manifest = json.loads((arrival_artifact / "manifest.json").read_text())
+    station, arr_sec, dep_sec = PATTERNS[70][1]
+    with dbmod.session_scope() as s:
+        assert _model_input(s, manifest, station_id=station, arr_sec=arr_sec, dep_sec=dep_sec,
+                            train=s.get(Train, 70), service_date=START, direction=F.all_directions(s)[70],
+                            holiday_set=load_holiday_dates(s)) is not None
+
+
+def test_changed_counts_make_serving_refuse(env, tmp_path, monkeypatch):  # noqa: F811
+    import sqlite3
+
+    import dbrel.db as dbmod
+    from dbrel.ml.notice_rates import NoticeRatesMismatch, _serving
+    from dbrel.models import Train
+    from dbrel.web.queries import _model_input
+
+    _serving.clear()
+    _, _, _, manifest = _rates_artifact(env, tmp_path, monkeypatch)
+    conn = sqlite3.connect(env / "dbrel.sqlite")
+    conn.execute("UPDATE notice_rate_daily SET k_works = k_works + 1 WHERE level = 'station'")
+    conn.commit()
+    conn.close()
+    station, arr_sec, dep_sec = PATTERNS[70][1]
+    with dbmod.session_scope() as s, pytest.raises(NoticeRatesMismatch, match="differ from the ones"):
+        _model_input(s, manifest, station_id=station, arr_sec=arr_sec, dep_sec=dep_sec,
+                     train=s.get(Train, 70), service_date=START, direction=F.all_directions(s)[70],
+                     holiday_set=load_holiday_dates(s))
