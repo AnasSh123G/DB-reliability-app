@@ -19,9 +19,9 @@ primary_region = "fra"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"   # no traffic -> machine stops (volume costs stay, compute stops)
+  auto_stop_machines = "off"    # a stopped machine needs ~10 s to start, longer than the proxy waits (502 on first visit)
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [[http_service.checks]]
     method = "GET"
