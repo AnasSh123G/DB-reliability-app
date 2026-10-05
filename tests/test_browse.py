@@ -277,3 +277,26 @@ def test_a_train_retired_from_the_timetable_is_no_longer_offered(session):
     now = service_date_anchor(date.today()) + 12 * 3600
     calls = queries.station_board(session, 2, now=now)["calls"]
     assert "RE 11" not in [c["number_name"] for c in calls]
+
+
+def test_two_runs_at_the_same_minute_come_out_in_row_id_order(session):
+    """Ties are broken by station_stop id, not by whatever order the query returned the rows in.
+
+    RE 13 calls at Krefeld at 12:00 like RE 11 but is stored later (higher ids) and with only an
+    arrival there, which puts it first in the station index (a NULL departure sorts first).
+    """
+    fv_id = tt_feed_version(session)
+    session.add(Train(id=13, source=SOURCE_TT, identity_key="tts:RE/13", category="RE", segment="RV",
+                      train_number=13, operator="DB", display_name="RE 13", line_id=LINE_ID,
+                      origin_name=ROUTE[0], dest_name=ROUTE[-1], n_stops=3, route_path="|".join(ROUTE),
+                      first_departure_sec=12 * 3600 - 600))
+    session.flush()
+    for seq, station_id in enumerate((1, 2, 3), start=1):
+        offset = (seq - 2) * 60
+        session.add(StationStop(feed_version_id=fv_id, train_id=13, stop_sequence=seq, station_id=station_id,
+                                planned_arrival_sec=12 * 3600 + offset,
+                                planned_departure_sec=None if station_id == 2 else 12 * 3600 + offset))
+    session.flush()
+    # At 12:00 the two runs before are the 12:00 pair, in row-id order: RE 11 (stored first), then RE 13.
+    trips = around(session, "12:00")["trips"]
+    assert [t["number_name"] for t in trips] == ["RE 11", "RE 13", "RE 12"]

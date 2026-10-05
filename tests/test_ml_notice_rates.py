@@ -172,6 +172,7 @@ def test_rows_outside_the_recorded_dates_do_not_trip_the_check():
 # -- serving: several requests at once ------------------------------------------------------------
 
 def test_concurrent_first_requests_load_the_table_once(monkeypatch):
+    """Six requests arriving during the first load share one load."""
     import threading
     import time
 
@@ -183,6 +184,7 @@ def test_concurrent_first_requests_load_the_table_once(monkeypatch):
     loads = []
 
     def slow(engine_, record):
+        """A stand-in loader that records the call and takes 0.2 s; returns a placeholder."""
         loads.append(1)
         time.sleep(0.2)  # long enough for every thread to arrive while the first is loading
         return object()
@@ -196,6 +198,7 @@ def test_concurrent_first_requests_load_the_table_once(monkeypatch):
 
 
 def test_totals_in_a_deployable_database_give_the_same_rates_and_the_same_check():
+    """Totals written to a deployed database give the same rates and refuse changed counts."""
     from dbrel.ml.notice_rates import write_totals
 
     source = _engine([("station", 1, MARCH, 100, 10, 5), ("station", 1, APRIL, 100, 20, 5),

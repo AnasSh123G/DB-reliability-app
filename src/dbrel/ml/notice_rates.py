@@ -130,6 +130,7 @@ class NoticeRates:
         return rates
 
     def _check(self, record: dict) -> None:
+        """Raise NoticeRatesMismatch unless these counts give `record`'s fingerprint."""
         if self.fingerprint() != record["fingerprint"]:
             raise NoticeRatesMismatch(
                 f"the notice counts for {record['dates'][0]} .. {record['dates'][-1]} "
@@ -231,7 +232,7 @@ def write_totals(engine: Engine, rates: NoticeRates) -> int:
         conn.exec_driver_sql("DROP TABLE IF EXISTS notice_rate_total_meta")
         conn.exec_driver_sql("""CREATE TABLE notice_rate_total (level TEXT NOT NULL, key_id INTEGER NOT NULL,
             n INTEGER NOT NULL, k_works INTEGER NOT NULL, k_disruption INTEGER NOT NULL,
-            PRIMARY KEY (level, key_id))""")
+            PRIMARY KEY (level, key_id)) WITHOUT ROWID""")
         conn.exec_driver_sql("CREATE TABLE notice_rate_total_meta (level TEXT PRIMARY KEY, size INTEGER NOT NULL)")
         for level in LEVELS:
             table = rates.total[level]

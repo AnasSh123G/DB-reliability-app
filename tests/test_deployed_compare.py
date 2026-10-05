@@ -1,0 +1,60 @@
+"""The parity check finds no difference on a correct deployed copy, and reports one it should."""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import date
+
+import ml_fixture
+import pytest
+from sqlalchemy.orm import Session
+
+from dbrel.db import make_engine
+from dbrel.deployed_build import build_deployed
+from dbrel.deployed_compare import compare, requests_for
+
+
+@pytest.fixture(scope="module")
+def databases(tmp_path_factory):
+    """Paths of a fixture collection database and its deployed copy."""
+    folder = tmp_path_factory.mktemp("compare")
+    ml_fixture.build(folder / "collection.sqlite")
+    build_deployed(folder / "collection.sqlite", folder / "deployed.sqlite", log=lambda m: None)
+    return folder / "collection.sqlite", folder / "deployed.sqlite"
+
+
+def _requests(session):
+    """The parity requests for every fixture station, train, line and line-less train."""
+    day = date.fromisoformat(ml_fixture.DATES[0])
+    return requests_for(session, now=ml_fixture.utc_of(ml_fixture.DATES[0], 8 * 3600 + 1800), service_date=day,
+                        stations=[1, 2, 3, 4, 5], trains=[70, 71, 10, 11, 12], lines=[7], corridors=[10, 11],
+                        terms=["Köln", "RE 7", "ICE"])
+
+
+def test_a_correct_copy_answers_every_request_identically(databases):
+    """A correct copy gives identical responses to every request."""
+    collection, deployed = (make_engine(p) for p in databases)
+    with Session(deployed) as s:
+        requests = _requests(s)
+    labels = " ".join(r.label for r in requests)
+    assert "line 7 around" in labels and "corridor 10 around" in labels and "board 2" in labels
+    assert compare(collection, deployed, requests, log=lambda m: None) == []
+
+
+def test_a_changed_platform_is_reported_with_its_path(databases, tmp_path):
+    """A changed platform in the copy is reported with its JSON path."""
+    collection, deployed = databases
+    broken = tmp_path / "broken.sqlite"
+    con = sqlite3.connect(deployed)
+    con.execute(f"VACUUM INTO '{broken}'")
+    con.close()
+    con = sqlite3.connect(broken)
+    con.execute("UPDATE pattern_stop SET platform_code = '9' WHERE station_id = 2")
+    con.commit()
+    con.close()
+    with Session(make_engine(broken)) as s:
+        requests = _requests(s)
+    differences = compare(make_engine(collection), make_engine(broken), requests, log=lambda m: None)
+    assert differences
+    assert any("platform" in d and "'9'" in d for d in differences)
+    assert any(d.startswith("board 2:") for d in differences)

@@ -420,13 +420,41 @@ training script.
 
 One Fly machine runs the image from the `Dockerfile` (Django API, the built frontend and the
 served model from `models/v2/`), with the database on a volume at `/data`. The 48 GB collection
-database stays on the collector machine; the server reads a slim copy (schedule, trains, stations,
-search, the last 60 days of runs for route-variant choice, and the model's notice-rate totals):
+database stays on the collector machine. The server reads a deployed copy (`dbrel.deployed`)
+holding:
+- the trains, stations, lines, holidays and search aliases
+- the schedule, stored as shared stop patterns: each distinct sequence of stops, platforms and
+  relative times is stored once, and each route variant keeps only its pattern, start time and row
+  ids. A `station_stop` view gives back every row exactly, ids included, so the server's queries
+  are the same on both databases.
+- a run summary, one row per train and route variant over all recorded runs (last run date and
+  run count), in place of `trip`
+- route hashes, route paths and place names stored once each; `train` and `train_variant_run` are
+  views over the compact tables, so they too give back the collection database's rows exactly
+- the model's notice-rate totals
+
+There are no per-run observations in it:
 
 ```bash
 dbrel ml launch build-slim --memory 4G -- env PYTHONPATH=src .venv/bin/python scripts/build_slim_db.py
-# -> data/deploy/slim.sqlite (about 1.7 GB; about 2.5 minutes)
+# -> data/deploy/slim.sqlite; prints the size, schedule rows, patterns and run-summary rows
 ```
+
+The build reads every schedule row back through the view and compares it with the collection
+database, id included, and checks the notice totals against the model's fingerprint. It writes
+`<out>.partial` and replaces the output only if everything matches, so a refused build leaves the
+previous file in place. To check that a server on the copy answers as one on the collection
+database, run the parity check:
+
+```bash
+dbrel ml launch compare-deployed --memory 4G -- env PYTHONPATH=src .venv/bin/python \
+    scripts/compare_deployed_db.py --deployed data/deploy/slim.sqlite
+```
+
+It covers boards, train routes with and without the stop they were opened from, line and corridor
+directions, stations and details, the runs before and after a time, and search. It calls them on
+the busiest stations, the trains with the most route variants and a seeded random sample, compares
+the JSON exactly and exits 1 on any difference.
 
 First deployment (needs `flyctl` and a Fly account):
 

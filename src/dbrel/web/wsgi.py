@@ -11,6 +11,7 @@ application = get_wsgi_application()
 
 
 def _warm() -> None:
+    """Load the current model's notice rates, logging (not raising) any failure."""
     from dbrel.db import get_engine
     from dbrel.web import queries
 

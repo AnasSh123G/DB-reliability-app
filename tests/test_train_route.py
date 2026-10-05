@@ -94,6 +94,27 @@ def test_another_variants_numbering_is_not_read_against_route_path(session):
     assert [(s["name"], s["arr"]) for s in stops] == [("Bochum Hbf", "10:00")]
 
 
+def test_the_route_shown_calls_at_the_stop_the_caller_came_from(session):
+    """A train that last ran a short variant still shows the full one when opened from a stop only
+    the full variant calls at (a board row for Bochum), as the board itself picked it."""
+    fv_id = tt_feed_version(session)
+    session.get(Train, TRAIN_ID).path_sha1 = "full"
+    session.query(StationStop).update({"path_sha1": "full"})
+    session.add(StationStop(feed_version_id=fv_id, train_id=TRAIN_ID, stop_sequence=1,
+                            station_id=3, planned_arrival_sec=9 * 3600 + 2160,
+                            planned_departure_sec=9 * 3600 + 2280, path_sha1="short"))
+    session.add(Trip(train_id=TRAIN_ID, service_date="2026-10-02", source_run_key="run-short",
+                     path_sha1="short"))
+    session.add(Trip(train_id=TRAIN_ID, service_date="2026-10-01", source_run_key="run-full",
+                     path_sha1="full"))
+    session.flush()
+    names = lambda route: [s["name"] for s in route["stops"]]  # noqa: E731
+    assert names(queries.train_route(session, TRAIN_ID)) == ["Duisburg Hbf"]  # the latest run's variant
+    assert names(queries.train_route(session, TRAIN_ID, station_id=4)) == ["Duisburg Hbf", "Bochum Hbf"]
+    # Both variants call at Duisburg: the board's rule (most recent run) applies, i.e. the short one.
+    assert names(queries.train_route(session, TRAIN_ID, station_id=3)) == ["Duisburg Hbf"]
+
+
 def test_route_names_are_the_fallback_when_nothing_has_times(session):
     session.query(StationStop).delete()
     session.flush()

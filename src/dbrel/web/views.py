@@ -71,8 +71,9 @@ def suggest(request):
 
 
 def train_route(request, train_id: int):
+    station = request.GET.get("station", "")
     with read_scope() as session:
-        route = queries.train_route(session, train_id)
+        route = queries.train_route(session, train_id, station_id=int(station) if station.isdigit() else None)
     if route is None:
         return JsonResponse({"error": f"no train {train_id}"}, status=404)
     return JsonResponse(route)

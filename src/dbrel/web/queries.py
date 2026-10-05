@@ -14,7 +14,7 @@ from datetime import date as date_cls
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from dbrel.config import (
@@ -26,6 +26,7 @@ from dbrel.config import (
     TZ,
 )
 from dbrel.ingest.timeutil import format_gtfs_time, local_date, service_date_anchor
+from dbrel.deployed import TRAIN_VARIANT_RUN
 from dbrel.direction import (
     canonical_order,
     corridor_trains_by_direction,
@@ -788,7 +789,9 @@ def station_board(
                         )
                     ),
                 )
-                .order_by(column)
+                # id breaks ties: without it, which of several same-time rows survive the limit
+                # depends on the query plan, so two copies of the data could show different boards.
+                .order_by(column, StationStop.id)
                 .limit(limit)
             ).all()
 
@@ -892,9 +895,13 @@ def station_board(
 
 
 def train_route(
-    session: Session, train_id: int, *, day_type: str = DAY_TYPE_WEEKDAY
+    session: Session, train_id: int, *, day_type: str = DAY_TYPE_WEEKDAY, station_id: int | None = None
 ) -> dict | None:
     """One train's journey: the stops it has scheduled times at.
+
+    `station_id` is the stop the caller came from (a board row, a search result). The route shown
+    is then the variant a board shows for that stop -- one that calls there -- so the page never
+    drops the stop that led to it.
 
     Only stops with a station_stop row (in the one route variant chosen below)
     are returned -- a stop with no times reads as noise to a passenger. The
@@ -941,12 +948,18 @@ def train_route(
         # would show a route with two variants' stops interleaved, so this
         # picks ONE variant (whichever the train's most recent trip actually
         # ran as) and shows only that.
-        variant = session.execute(
-            select(Trip.path_sha1)
-            .where(Trip.train_id == train_id, Trip.path_sha1.isnot(None))
-            .order_by(Trip.service_date.desc(), Trip.id.desc())  # id: runs on one date pick the same variant on every copy of the database
-            .limit(1)
-        ).scalar_one_or_none()
+        variant = (
+            _variant_per_train_at(session, station_id, fv_id, {train_id}).get(train_id)
+            if station_id is not None
+            else None
+        )
+        if variant is None:
+            # The variant of the most recent run (a train runs at most once per date).
+            recent = [
+                (last, v) for (_t, v), (last, _n) in _variant_runs(session, [train_id]).items()
+                if v is not None
+            ]
+            variant = max(recent)[1] if recent else None
 
         stop_query = (
             select(StationStop, Station)
@@ -1362,6 +1375,40 @@ def corridor_stations(session: Session, train_id: int, direction: int) -> list[d
     return _stations_in_travel_order(session, grouped[1][direction], main_variant_only=True)
 
 
+# Per engine: whether it is a deployed database with the run summary (see dbrel.deployed).
+_run_summary_present: dict = {}
+
+
+def _variant_runs(session: Session, train_ids) -> dict[tuple[int, str | None], tuple[str, int]]:
+    """(train_id, variant) -> (last service date, number of runs), over every recorded run.
+
+    A deployed database holds these as `train_variant_run`; the collection database has the runs
+    themselves in `trip`. Both give the same numbers, so callers never know which they read.
+    """
+    engine = session.get_bind()
+    if engine not in _run_summary_present:
+        # Through the session's own connection: a second one could end its transaction.
+        _run_summary_present[engine] = inspect(session.connection()).has_table(TRAIN_VARIANT_RUN.name)
+    summary = TRAIN_VARIANT_RUN.c
+    ids = list(train_ids)
+    out: dict[tuple[int, str | None], tuple[str, int]] = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        if _run_summary_present[engine]:
+            query = select(summary.train_id, summary.path_sha1, summary.last_service_date, summary.n_runs).where(
+                summary.train_id.in_(chunk)
+            )
+        else:
+            query = (
+                select(Trip.train_id, Trip.path_sha1, func.max(Trip.service_date), func.count())
+                .where(Trip.train_id.in_(chunk))
+                .group_by(Trip.train_id, Trip.path_sha1)
+            )
+        for train_id, variant, last, n in session.execute(query).all():
+            out[(train_id, variant)] = (last, n)
+    return out
+
+
 def _variant_per_train_at(
     session: Session, station_id: int, fv_id: int, train_ids=None
 ) -> dict[int, str | None]:
@@ -1386,14 +1433,7 @@ def _variant_per_train_at(
         present.setdefault(train_id, set()).add(variant)
 
     contested = [t for t, variants in present.items() if len(variants) > 1]
-    rank: dict[tuple[int, str | None], tuple] = {}
-    for start in range(0, len(contested), 500):
-        for train_id, variant, last, n in session.execute(
-            select(Trip.train_id, Trip.path_sha1, func.max(Trip.service_date), func.count())
-            .where(Trip.train_id.in_(contested[start : start + 500]))
-            .group_by(Trip.train_id, Trip.path_sha1)
-        ).all():
-            rank[(train_id, variant)] = (last, n)
+    rank = _variant_runs(session, contested)
 
     chosen: dict[int, str | None] = {}
     for train_id, variants in present.items():
@@ -1633,7 +1673,9 @@ def _trips_around_in(
         if sched is None:
             sched = stop.planned_arrival_sec
         candidates.append((sched % 86400, stop))
-    candidates.sort(key=lambda c: c[0])
+    # id breaks ties: two runs at the same minute must come out in the same order on every copy
+    # of the data, whatever order the query returned them in.
+    candidates.sort(key=lambda c: (c[0], c[1].id))
 
     n = len(candidates)
     if n == 0:
