@@ -944,7 +944,7 @@ def train_route(
         variant = session.execute(
             select(Trip.path_sha1)
             .where(Trip.train_id == train_id, Trip.path_sha1.isnot(None))
-            .order_by(Trip.service_date.desc())
+            .order_by(Trip.service_date.desc(), Trip.id.desc())  # id: runs on one date pick the same variant on every copy of the database
             .limit(1)
         ).scalar_one_or_none()
 

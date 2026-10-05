@@ -1,0 +1,12 @@
+.git
+.venv
+data
+**/node_modules
+bahn-buddy-predict/.output
+bahn-buddy-predict/node.log
+**/__pycache__
+openspec
+docs
+tests
+dbrel.sqlite*
+.env

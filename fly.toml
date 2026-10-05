@@ -1,0 +1,31 @@
+# Fly.io app. Create it once with `fly launch --no-deploy --copy-config`, then:
+#   fly volumes create dbrel_data --region fra --size 3
+#   (copy data/deploy/slim.sqlite to /data/dbrel.sqlite on the volume, see README "Deploying")
+#   fly deploy
+app = "bahnpredict"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[mounts]
+  source = "dbrel_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # no traffic -> machine stops (volume costs stay, compute stops)
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/api/suggest?q=ber"
+    interval = "30s"
+    timeout = "10s"
+    grace_period = "60s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -416,6 +416,33 @@ per train per station, so the web board does not recompute it per request.
 `show-train` and `show-station` both take `--format tsv` for piping straight into a
 training script.
 
+## Deploying (Fly.io)
+
+One Fly machine runs the image from the `Dockerfile` (Django API, the built frontend and the
+served model from `models/v2/`), with the database on a volume at `/data`. The 48 GB collection
+database stays on the collector machine; the server reads a slim copy (schedule, trains, stations,
+search, the last 60 days of runs for route-variant choice, and the model's notice-rate totals):
+
+```bash
+dbrel ml launch build-slim --memory 4G -- env PYTHONPATH=src .venv/bin/python scripts/build_slim_db.py
+# -> data/deploy/slim.sqlite (about 1.7 GB; about 2.5 minutes)
+```
+
+First deployment (needs `flyctl` and a Fly account):
+
+```bash
+fly launch --no-deploy --copy-config            # pick an app name; keeps fly.toml
+fly volumes create dbrel_data --region fra --size 3
+fly deploy                                      # the machine starts without data until the next step
+fly ssh sftp shell                              # then: put data/deploy/slim.sqlite /data/dbrel.sqlite
+fly machine restart
+```
+
+The model is committed, so a new model means `dbrel ml promote`, a commit and `fly deploy`. A model
+that uses notice rates reads `notice_rate_total` from the slim database and refuses to predict if
+the totals no longer match its manifest fingerprint, so rebuild the slim copy from the same data
+the model was trained on.
+
 ## Delay model
 
 The web UI's delay forecast runs in the browser (ONNX Runtime Web) from the artifact that

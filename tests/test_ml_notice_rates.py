@@ -193,3 +193,24 @@ def test_concurrent_first_requests_load_the_table_once(monkeypatch):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert len(loads) == 1
+
+
+def test_totals_in_a_deployable_database_give_the_same_rates_and_the_same_check():
+    from dbrel.ml.notice_rates import write_totals
+
+    source = _engine([("station", 1, MARCH, 100, 10, 5), ("station", 1, APRIL, 100, 20, 5),
+                      ("line", 2, MARCH, 30, 3, 0), ("train", 3, APRIL, 40, 4, 2)])
+    original = _rates(source)
+    record = original.record()
+    slim = create_engine("sqlite://", future=True)
+    assert write_totals(slim, original) == 3  # keys: station 1, line 2, train 3
+    again = NoticeRates.from_totals(slim, record)
+    assert again.fingerprint() == record["fingerprint"]
+    got = again.rates([1, 1], [2, -1], [3, 9], [0, 0], fold=False)
+    want = original.rates([1, 1], [2, -1], [3, 9], [0, 0], fold=False)
+    for name in want:
+        np.testing.assert_array_equal(got[name], want[name])
+    with slim.begin() as conn:
+        conn.execute(text("UPDATE notice_rate_total SET k_works = k_works + 1 WHERE level = 'station'"))
+    with pytest.raises(NoticeRatesMismatch, match=r"2 dates"):
+        NoticeRates.from_totals(slim, record)

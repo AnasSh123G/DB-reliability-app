@@ -23,6 +23,7 @@ import hashlib
 import threading
 
 import numpy as np
+from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
 from dbrel.ml.features import NOTICE_LEVELS as LEVELS
@@ -102,13 +103,38 @@ class NoticeRates:
     def from_record(cls, engine: Engine, record: dict) -> NoticeRates:
         """The rates an artifact was trained with; refuses if the stored counts have changed."""
         rates = cls.from_database(engine, record["dates"], record["weight"])
-        if rates.fingerprint() != record["fingerprint"]:
-            raise NoticeRatesMismatch(
-                f"the notice counts in notice_rate_daily for {record['dates'][0]} .. "
-                f"{record['dates'][-1]} ({len(record['dates'])} dates) differ from the ones this model "
-                "was trained with (the table was rebuilt or edited since); restore those rows or "
-                "retrain the model")
+        rates._check(record)
         return rates
+
+    @classmethod
+    def from_totals(cls, engine: Engine, record: dict) -> NoticeRates:
+        """The same rates from `notice_rate_total`, the per-key sums a deployed (slim) database holds.
+
+        Only the totals are stored there, so leave-one-month-out lookups are not available (serving
+        never uses them). The fingerprint check is the same as `from_record`'s.
+        """
+        total: dict[str, np.ndarray] = {}
+        with engine.connect() as conn:
+            for level in LEVELS:
+                (size,) = conn.exec_driver_sql(
+                    "SELECT size FROM notice_rate_total_meta WHERE level = ?", (level,)).fetchone()
+                total[level] = np.zeros((3, int(size)), dtype=np.int64)
+                rows = conn.exec_driver_sql(
+                    "SELECT key_id, n, k_works, k_disruption FROM notice_rate_total WHERE level = ?",
+                    (level,)).fetchall()
+                if rows:
+                    counts = np.array(rows, dtype=np.int64)
+                    total[level][:, counts[:, 0]] = counts[:, 1:].T
+        rates = cls(total, {level: {} for level in LEVELS}, record["dates"], record["weight"])
+        rates._check(record)
+        return rates
+
+    def _check(self, record: dict) -> None:
+        if self.fingerprint() != record["fingerprint"]:
+            raise NoticeRatesMismatch(
+                f"the notice counts for {record['dates'][0]} .. {record['dates'][-1]} "
+                f"({len(record['dates'])} dates) differ from the ones this model was trained with "
+                "(the table was rebuilt or edited since); restore those rows or retrain the model")
 
     def peak_bytes(self) -> int:
         """Memory of the counts, plus the one largest-level copy a leave-one-month-out lookup makes."""
@@ -193,6 +219,31 @@ def table_signature(engine: Engine, first: str, last: str) -> dict:
     return out
 
 
+def write_totals(engine: Engine, rates: NoticeRates) -> int:
+    """Store `rates`' per-key totals (and the array sizes the fingerprint needs) in a deployable database.
+
+    Creates `notice_rate_total` and `notice_rate_total_meta`, replacing earlier contents; returns the
+    number of key rows written. `NoticeRates.from_totals` reads them back.
+    """
+    rows = 0
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE IF EXISTS notice_rate_total")
+        conn.exec_driver_sql("DROP TABLE IF EXISTS notice_rate_total_meta")
+        conn.exec_driver_sql("""CREATE TABLE notice_rate_total (level TEXT NOT NULL, key_id INTEGER NOT NULL,
+            n INTEGER NOT NULL, k_works INTEGER NOT NULL, k_disruption INTEGER NOT NULL,
+            PRIMARY KEY (level, key_id))""")
+        conn.exec_driver_sql("CREATE TABLE notice_rate_total_meta (level TEXT PRIMARY KEY, size INTEGER NOT NULL)")
+        for level in LEVELS:
+            table = rates.total[level]
+            conn.exec_driver_sql("INSERT INTO notice_rate_total_meta VALUES (?, ?)", (level, int(table.shape[1])))
+            seen = np.flatnonzero(table.any(axis=0))
+            conn.exec_driver_sql(
+                "INSERT INTO notice_rate_total VALUES (?, ?, ?, ?, ?)",
+                [(level, int(k), *(int(v) for v in table[:, k])) for k in seen])
+            rows += len(seen)
+    return rows
+
+
 # -- serving ----------------------------------------------------------------------------------------
 
 _serving: dict[tuple[str, str], NoticeRates] = {}
@@ -213,7 +264,9 @@ def serving_rates(manifest: dict, engine: Engine) -> NoticeRates:
     if key not in _serving:
         with _serving_lock:
             if key not in _serving:
-                _serving[key] = NoticeRates.from_record(engine, record)
+                # A deployed slim database holds only the per-key totals, not the daily table.
+                load = NoticeRates.from_totals if inspect(engine).has_table("notice_rate_total") else NoticeRates.from_record
+                _serving[key] = load(engine, record)
     return _serving[key]
 
 
