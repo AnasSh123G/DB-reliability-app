@@ -21,7 +21,7 @@ import {
 import { useStationBoard } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
 import type { StationBoardCall } from "@/lib/api";
-import { copy, type Locale } from "@/lib/i18n";
+import { copy, type Copy, type Locale } from "@/lib/i18n";
 import type { SidePrediction } from "@/lib/tabm";
 import { ModelDelta } from "./ModelDelta";
 import { TrainNumber } from "./TrainNumber";
@@ -49,13 +49,15 @@ function DelayBlock({
   scheduled,
   modelPred,
   noPredictionLabel,
+  t,
 }: {
   scheduled: string | null;
   modelPred: SidePrediction | undefined;
   noPredictionLabel: string;
+  t: Copy;
 }) {
   if (scheduled && modelPred !== undefined) {
-    return <ModelDelta pred={modelPred} />;
+    return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
   }
   return <span className="block text-[10px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
 }
@@ -178,6 +180,7 @@ export function BoardV2({ stationId, locale }: Props) {
                       scheduled={call.arr}
                       modelPred={predictions.get(call.station_stop_id)?.arr}
                       noPredictionLabel={t.noPrediction}
+                      t={t}
                     />
                   </div>
                 </li>
@@ -221,6 +224,7 @@ export function BoardV2({ stationId, locale }: Props) {
                           scheduled={call.arr}
                           modelPred={predictions.get(call.station_stop_id)?.arr}
                           noPredictionLabel={t.noPrediction}
+                          t={t}
                         />
                       </TableCell>
                     </TableRow>

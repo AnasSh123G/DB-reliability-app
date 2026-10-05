@@ -167,3 +167,29 @@ def test_rows_outside_the_recorded_dates_do_not_trip_the_check():
         s.add(NoticeRateDaily(level="station", key_id=1, service_date=VALIDATION, n=5, k_works=5, k_disruption=5))
         s.commit()
     NoticeRates.from_record(engine, record)  # no error: only the validation date changed
+
+
+# -- serving: several requests at once ------------------------------------------------------------
+
+def test_concurrent_first_requests_load_the_table_once(monkeypatch):
+    import threading
+    import time
+
+    from dbrel.ml import notice_rates as module
+
+    engine = _engine([("station", 1, MARCH, 100, 10, 5)])
+    manifest = {"prep": {"features_numeric": ["works_rate_station"]},
+                "notice_rates": _rates(engine, dates=(MARCH,)).record()}
+    loads = []
+
+    def slow(engine_, record):
+        loads.append(1)
+        time.sleep(0.2)  # long enough for every thread to arrive while the first is loading
+        return object()
+
+    monkeypatch.setattr(NoticeRates, "from_record", staticmethod(slow))
+    monkeypatch.setattr(module, "_serving", {})
+    threads = [threading.Thread(target=module.serving_rates, args=(manifest, engine)) for _ in range(6)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(loads) == 1

@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/table";
 import { useTrainRoute } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
-import { copy, type Locale } from "@/lib/i18n";
+import { copy, type Copy, type Locale } from "@/lib/i18n";
 import type { SidePrediction } from "@/lib/tabm";
 import { ModelDelta } from "./ModelDelta";
 import { TrainNumber } from "./TrainNumber";
@@ -37,13 +37,15 @@ function DelayCell({
   scheduled,
   modelPred,
   noPredictionLabel,
+  t,
 }: {
   scheduled: string | null;
   modelPred: SidePrediction | undefined;
   noPredictionLabel: string;
+  t: Copy;
 }) {
   if (scheduled && modelPred !== undefined) {
-    return <ModelDelta pred={modelPred} />;
+    return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
   }
   return <span className="block text-mist">{scheduled ? noPredictionLabel : "—"}</span>;
 }
@@ -172,6 +174,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                       scheduled={stop.arr}
                       modelPred={predictions.get(stop.seq)?.arr}
                       noPredictionLabel={t.noPrediction}
+                      t={t}
                     />
                   </p>
                 </div>
@@ -214,6 +217,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                         scheduled={stop.arr}
                         modelPred={predictions.get(stop.seq)?.arr}
                         noPredictionLabel={t.noPrediction}
+                        t={t}
                       />
                     </TableCell>
                   </>

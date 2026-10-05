@@ -20,6 +20,7 @@ weight and a fingerprint of the counts, and `from_record` refuses data that no l
 from __future__ import annotations
 
 import hashlib
+import threading
 
 import numpy as np
 from sqlalchemy.engine import Engine
@@ -195,6 +196,7 @@ def table_signature(engine: Engine, first: str, last: str) -> dict:
 # -- serving ----------------------------------------------------------------------------------------
 
 _serving: dict[tuple[str, str], NoticeRates] = {}
+_serving_lock = threading.Lock()  # a page fires several predictions at once; only one may load the table
 
 
 def uses_notice_rates(manifest: dict) -> bool:
@@ -209,7 +211,9 @@ def serving_rates(manifest: dict, engine: Engine) -> NoticeRates:
         raise ValueError("this artifact lists notice-rate inputs but records no notice_rates")
     key = (str(engine.url), record["fingerprint"])
     if key not in _serving:
-        _serving[key] = NoticeRates.from_record(engine, record)
+        with _serving_lock:
+            if key not in _serving:
+                _serving[key] = NoticeRates.from_record(engine, record)
     return _serving[key]
 
 

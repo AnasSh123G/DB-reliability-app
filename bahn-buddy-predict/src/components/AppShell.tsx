@@ -134,10 +134,6 @@ export function AppShell({ locale, isDark, setLocale, setIsDark, children }: Pro
               <p className="text-[11px] text-fog mt-0.5">{t.subtitle}</p>
             </div>
           </Link>
-          <div className="flex items-center gap-2 text-[11px] text-fog">
-            <span className="size-1.5 rounded-full bg-teal" />
-            <span>{t.live}</span>
-          </div>
         </header>
 
         <section className="mt-6 sm:mt-8">{children}</section>

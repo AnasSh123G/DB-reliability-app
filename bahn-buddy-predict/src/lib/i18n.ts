@@ -3,7 +3,6 @@ export type Locale = "de" | "en";
 export const copy = {
   de: {
     subtitle: "Fahrzeit-Prognose",
-    live: "Durchschnittswerte · historisch",
     trainLabel: "Station, Linie oder Zug",
     trainPlaceholder: "z. B. RE1, ICE 612, Aachen Hbf",
     line: "Linie / Zug",
@@ -57,10 +56,14 @@ export const copy = {
     kindTrain: "Zug",
     pickAllFields: "Richtung, Halt, Datum und Zeit wählen, dann auf „Prognose“ klicken.",
     getPrognose: "Prognose",
+    delayOf: "Verspätung von {n} {unit}",
+    minuteOne: "Minute",
+    minuteMany: "Minuten",
+    expectedArrivalAt: "voraussichtliche Ankunft: {time}",
+    onTimeNow: "pünktlich",
   },
   en: {
     subtitle: "Journey forecast",
-    live: "Historical averages",
     trainLabel: "Station, line or train",
     trainPlaceholder: "e.g. RE1, ICE 612, Aachen Hbf",
     line: "Line / train",
@@ -114,5 +117,13 @@ export const copy = {
     kindTrain: "Train",
     pickAllFields: "Choose a direction, stop, date and time, then press \"Prognose\".",
     getPrognose: "Prognose",
+    delayOf: "delay of {n} {unit}",
+    minuteOne: "minute",
+    minuteMany: "minutes",
+    expectedArrivalAt: "expected arrival time: {time}",
+    onTimeNow: "on time",
   },
 } as const;
+
+// The strings of either locale, for components that are handed their copy.
+export type Copy = Record<keyof (typeof copy)["en"], string>;

@@ -1,9 +1,10 @@
 // The model's own delay figure, the only delay shown in the v2 views; the
 // historical average is no longer displayed.
-import { delayColor } from "@/lib/delay";
+import type { Copy } from "@/lib/i18n";
+import { addMinutes } from "@/lib/prediction";
 import type { SidePrediction } from "@/lib/tabm";
 
-// Language-neutral: this component has no locale, so the explanation is bilingual.
+// Language-neutral: the explanation in the tooltip is bilingual.
 const RULE_TITLE: Record<SidePrediction["rule"], string> = {
   window:
     "Centre of the most likely ±3-minute window (not the median) · " +
@@ -11,16 +12,46 @@ const RULE_TITLE: Record<SidePrediction["rule"], string> = {
   median: "Median of the model's forecast · Median der Modellprognose",
 };
 
-export function ModelDelta({ pred }: { pred: SidePrediction }) {
-  const sign = pred.point_min >= 0 ? "+" : "";
+// "delay of 5 minutes" / "on time" (under a minute, early included), then the
+// scheduled time moved by that delay. Whole minutes only; both numbers green.
+export function ModelDelta({
+  pred,
+  scheduled,
+  t,
+}: {
+  pred: SidePrediction;
+  scheduled: string;
+  t: Copy;
+}) {
+  const onTime = pred.point_min < 1;
+  // "On time" means no shift: 0.6 min rounds to 1, but the arrival time stays the scheduled one.
+  const minutes = onTime ? 0 : Math.round(pred.point_min);
+  const green = "text-teal";
+  const [before, after] = t.delayOf
+    .replace("{unit}", minutes === 1 ? t.minuteOne : t.minuteMany)
+    .split("{n}");
+  const [arrivalBefore, arrivalAfter] = t.expectedArrivalAt.split("{time}");
   return (
     <span
-      className={`block font-mono text-[10px] font-semibold ${delayColor(pred.point_min)}`}
-      title={`${RULE_TITLE[pred.rule]} · p25–p75: ${pred.p25_min.toFixed(1)} … ${pred.p75_min.toFixed(1)} min`}
+      className="block font-mono text-[10px] font-normal text-fog"
+      title={`${RULE_TITLE[pred.rule]} · p25–p75: ${Math.round(pred.p25_min)} … ${Math.round(pred.p75_min)} min`}
     >
-      <span className="mr-1 font-normal text-fog">ML</span>
-      {sign}
-      {pred.point_min.toFixed(1)} min
+      <span className="block">
+        {onTime ? (
+          <span className={`font-semibold ${green}`}>{t.onTimeNow}</span>
+        ) : (
+          <>
+            {before}
+            <span className={`font-semibold ${green}`}>{minutes}</span>
+            {after}
+          </>
+        )}
+      </span>
+      <span className="block">
+        {arrivalBefore}
+        <span className={`font-semibold ${green}`}>{addMinutes(scheduled, minutes)}</span>
+        {arrivalAfter}
+      </span>
     </span>
   );
 }

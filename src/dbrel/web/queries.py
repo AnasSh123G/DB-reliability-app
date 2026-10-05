@@ -38,7 +38,7 @@ from dbrel.holidays_de import load_holiday_dates
 from dbrel.derive.passenger_lines import BARE_CATEGORY_LINES, is_bare_category_line
 from dbrel.identity import prefix_range, search_norm
 from dbrel.ml.arrival import ARRIVAL_KIND, arrival_inputs
-from dbrel.ml.notice_rates import add_serving_rates
+from dbrel.ml.notice_rates import add_serving_rates, serving_rates, uses_notice_rates
 from dbrel.ml.bakeoff import MANIFEST_NAME, current_artifact
 from dbrel.ml.features import UNKNOWN_DIRECTION, compute_features, direction_for, encode_categoricals
 from dbrel.ml.nn import model_inputs
@@ -207,6 +207,14 @@ def current_model() -> tuple[str, dict] | None:
         _model_cache["manifest"] = json.loads((artifact / MANIFEST_NAME).read_text())
         _model_cache["stamp"] = stamp
     return stamp, _model_cache["manifest"]
+
+
+def warm_model(engine) -> None:
+    """Load what the current model needs from the database (its notice rates), so the first
+    page after a server start does not wait for it. A no-op for a model without rate inputs."""
+    model = current_model()
+    if model is not None and model[1].get("kind") == ARRIVAL_KIND and uses_notice_rates(model[1]):
+        serving_rates(model[1], engine)
 
 
 class _ModelDirectionCache:

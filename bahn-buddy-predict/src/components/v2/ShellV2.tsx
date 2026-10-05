@@ -97,10 +97,6 @@ export function ShellV2({ locale, isDark, setLocale, setIsDark, children }: Prop
               <p className="text-[11px] text-fog mt-0.5">{t.subtitle}</p>
             </div>
           </Link>
-          <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-wide text-fog">
-            <span className="size-1.5 rounded-full bg-teal shadow-[0_0_6px_var(--teal)]" />
-            <span>{t.live}</span>
-          </div>
         </header>
 
         <section className="mt-6 sm:mt-8">{children}</section>
