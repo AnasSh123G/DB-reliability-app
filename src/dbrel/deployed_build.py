@@ -153,6 +153,23 @@ def _verify(label: str, columns: tuple[str, ...], key: int, theirs, ours) -> int
             return n
 
 
+def _require_station_aliases(con: sqlite3.Connection) -> None:
+    """Refuse a source that has stations but no station search aliases.
+
+    Args:
+        con: connection with the collection database attached as `src`.
+
+    Raises:
+        DeployedBuildError: stations exist but `search_alias` holds no station row, so the deployed
+            site could not find any station by name. `dbrel build-aliases` fills them.
+    """
+    stations = con.execute("SELECT COUNT(*) FROM src.station").fetchone()[0]
+    aliases = con.execute("SELECT COUNT(*) FROM src.search_alias WHERE station_id IS NOT NULL").fetchone()[0]
+    if stations and not aliases:
+        raise DeployedBuildError(f"the collection database has {stations} stations but no station search "
+                                 "aliases, so stations could not be searched by name; run `dbrel build-aliases`")
+
+
 def _running(retired_ids: str) -> str:
     """SQL: the row's train_id is not among `retired_ids` (a subquery selecting train ids)."""
     return f"train_id NOT IN ({retired_ids})"
@@ -209,6 +226,7 @@ def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
         counts["retired_trains"] = len(retired)
         out_retired, source_retired = "SELECT id FROM temp.retired", (
             f"SELECT id FROM train WHERE last_seen_date < '{cutoff}'")  # cutoff is an ISO date we computed
+        _require_station_aliases(out_con)
         for table in COPIED + COPIED_LEAN:
             cols = ", ".join(f'"{r[1]}"' for r in out_con.execute(f"PRAGMA main.table_info({table})"))
             only_running = (f" WHERE train_id IS NULL OR {_running(out_retired)}" if table == "search_alias" else "")

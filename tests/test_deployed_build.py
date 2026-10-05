@@ -24,6 +24,7 @@ def collection(tmp_path_factory):
     """A file-backed collection database built from the ML fixture."""
     path = tmp_path_factory.mktemp("collection") / "dbrel.sqlite"
     ml_fixture.build(path)
+    ml_fixture.add_station_alias(path)
     return path
 
 
@@ -165,4 +166,13 @@ def test_changed_notice_counts_are_refused(collection, manifest, tmp_path):
     stale = {**manifest, "notice_rates": {**manifest["notice_rates"], "fingerprint": "0" * 64}}
     with pytest.raises(Exception, match="differ from the ones this model was trained with"):
         build_deployed(collection, tmp_path / "deployed.sqlite", manifest=stale, log=lambda m: None)
+    assert not (tmp_path / "deployed.sqlite").exists()
+
+
+def test_a_source_without_station_aliases_is_refused(tmp_path):
+    """Stations without any station search alias fail the build, naming the command that fixes it."""
+    source = tmp_path / "dbrel.sqlite"
+    ml_fixture.build(source)
+    with pytest.raises(DeployedBuildError, match="no station search aliases.*dbrel build-aliases"):
+        build_deployed(source, tmp_path / "deployed.sqlite", log=lambda m: None)
     assert not (tmp_path / "deployed.sqlite").exists()

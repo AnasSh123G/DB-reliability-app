@@ -20,6 +20,7 @@ def databases(tmp_path_factory):
     """Paths of a fixture collection database and its deployed copy."""
     folder = tmp_path_factory.mktemp("compare")
     ml_fixture.build(folder / "collection.sqlite")
+    ml_fixture.add_station_alias(folder / "collection.sqlite")
     build_deployed(folder / "collection.sqlite", folder / "deployed.sqlite", log=lambda m: None)
     return folder / "collection.sqlite", folder / "deployed.sqlite"
 
@@ -64,6 +65,7 @@ def test_a_changed_platform_is_reported_with_its_path(databases, tmp_path):
 def test_a_copy_without_a_retired_trains_rows_still_answers_identically(tmp_path):
     """With ICE 12 retired, its route (the retired message) and every other request match."""
     ml_fixture.build(tmp_path / "collection.sqlite")
+    ml_fixture.add_station_alias(tmp_path / "collection.sqlite")
     con = sqlite3.connect(tmp_path / "collection.sqlite")
     con.execute("UPDATE train SET last_seen_date = '2026-08-01' WHERE id = 12")
     con.execute("UPDATE train SET last_seen_date = '2026-09-10' WHERE id = 70")

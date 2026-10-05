@@ -147,3 +147,19 @@ def build(path, dates: list[str] = DATES) -> None:
         s.commit()
     build_notice_rates(engine)
     engine.dispose()
+
+
+def add_station_alias(path) -> None:
+    """Give the database at `path` one station search alias, as `dbrel build-aliases` would.
+
+    Args:
+        path: a database built by `build`; its first station gets an alias.
+    """
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    station = con.execute("SELECT id, name FROM station ORDER BY id LIMIT 1").fetchone()
+    con.execute("INSERT INTO search_alias (alias_norm, alias_display, kind, weight, station_id) "
+                "VALUES (?, ?, 'NAME', 100, ?)", (station[1].lower(), station[1], station[0]))
+    con.commit()
+    con.close()
