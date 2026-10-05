@@ -8,6 +8,10 @@ primary_region = "fra"
 [build]
   dockerfile = "Dockerfile"
 
+[env]
+  # Read-only public app behind Fly's proxy: its health checks send the machine's own address as Host.
+  DBREL_ALLOWED_HOSTS = "*"
+
 [mounts]
   source = "dbrel_data"
   destination = "/data"
