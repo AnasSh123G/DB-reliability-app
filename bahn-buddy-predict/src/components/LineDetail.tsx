@@ -71,7 +71,7 @@ export function LineDetail({ lineId, locale }: Props) {
                           >
                             {run.name}
                           </Link>
-                          <p className="truncate text-[11px] text-fog">
+                          <p className="truncate text-[13.67px] text-fog">
                             → {run.destination ?? "—"}
                             {run.partial && <span className="ml-2 text-amber">{t.partOfRoute}</span>}
                             {run.current && <span className="ml-2 text-teal">{t.thisRun}</span>}

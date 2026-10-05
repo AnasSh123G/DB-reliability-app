@@ -132,7 +132,7 @@ export function TrainSearch({ locale }: Props) {
       <section className="rounded-2xl border border-line bg-panel p-4 sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="relative" ref={searchFieldRef}>
-            <label htmlFor="train-search" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-search" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.trainLabel}
             </label>
             <div className="flex h-[46px] items-center gap-2 rounded-xl border border-line bg-ink px-3 focus-within:border-teal">
@@ -178,7 +178,7 @@ export function TrainSearch({ locale }: Props) {
                         <span className="flex min-w-0 flex-col">
                           <span className="font-display font-semibold text-paper">{result.name}</span>
                           {result.stops && (
-                            <span className="whitespace-normal text-[11px] font-normal text-fog">{result.stops}</span>
+                            <span className="whitespace-normal text-[13.67px] font-normal text-fog">{result.stops}</span>
                           )}
                         </span>
                       </span>
@@ -191,7 +191,7 @@ export function TrainSearch({ locale }: Props) {
             )}
           </div>
           <div>
-            <label htmlFor="train-direction" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-direction" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.direction}
             </label>
             <select
@@ -214,7 +214,7 @@ export function TrainSearch({ locale }: Props) {
             </select>
           </div>
           <div>
-            <label htmlFor="train-stop" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-stop" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.selectedStop}
             </label>
             <select
@@ -236,7 +236,7 @@ export function TrainSearch({ locale }: Props) {
             </select>
           </div>
           <div>
-            <label htmlFor="train-date" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-date" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.searchDate}
             </label>
             <input
@@ -252,7 +252,7 @@ export function TrainSearch({ locale }: Props) {
             />
           </div>
           <div>
-            <label htmlFor="train-time" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-time" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.searchTime}
             </label>
             <input
@@ -288,7 +288,7 @@ export function TrainSearch({ locale }: Props) {
               <MapPin className="size-4" />
             </span>
             <div>
-              <p className="text-[11px] uppercase text-fog">{t.serviceAt}</p>
+              <p className="text-[13.67px] uppercase text-fog">{t.serviceAt}</p>
               <h2 className="mt-0.5 font-display text-lg font-semibold text-paper">
                 {stations.find((s) => s.id === stationId)?.name ?? t.selectedStop}
               </h2>
@@ -313,23 +313,23 @@ export function TrainSearch({ locale }: Props) {
                         <TrainFront className="size-4" />
                       </span>
                       <span className="min-w-0">
-                        <span className="flex items-center gap-1 text-[10px] uppercase text-fog">{label}</span>
+                        <span className="flex items-center gap-1 text-[12.67px] uppercase text-fog">{label}</span>
                         <span className="mt-1 block font-display font-semibold text-paper">{trip.name}</span>
                       </span>
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1 text-right">
                       <span>
-                        <span className="block text-[10px] uppercase font-normal text-fog">{t.arrival}</span>
+                        <span className="block text-[12.67px] uppercase font-normal text-fog">{t.arrival}</span>
                         <span className="mt-1 block font-display text-sm text-mist">{trip.sched_arr ?? "—"}</span>
                         {expectedArr && trip.arr_pred ? (
-                          <span className={`block text-[10px] font-semibold ${delayColor(trip.arr_pred.p50_min)}`}>
+                          <span className={`block text-[12.67px] font-semibold ${delayColor(trip.arr_pred.p50_min)}`}>
                             {expectedArr} · +{trip.arr_pred.p50_min}
                           </span>
                         ) : (
-                          <span className="block text-[10px] text-fog">{trip.sched_arr ? t.noAverage : "—"}</span>
+                          <span className="block text-[12.67px] text-fog">{trip.sched_arr ? t.noAverage : "—"}</span>
                         )}
                       </span>
-                      <span className="mt-2 flex items-center justify-end gap-1 text-[10px] font-normal text-fog">
+                      <span className="mt-2 flex items-center justify-end gap-1 text-[12.67px] font-normal text-fog">
                         <Clock3 className="size-3" />
                         {t.openRoute}
                         <ArrowRight className="size-3" />

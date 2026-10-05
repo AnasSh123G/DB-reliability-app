@@ -23,7 +23,7 @@ function DelayCell({ scheduled, pred, noAverageLabel }: { scheduled: string | nu
     return (
       <>
         <span className={`block font-semibold ${delayColor(pred.p50_min)}`}>{expected}</span>
-        <span className={`block text-[10px] font-semibold ${delayColor(pred.p50_min)}`}>
+        <span className={`block text-[12.67px] font-semibold ${delayColor(pred.p50_min)}`}>
           +{pred.p50_min} min
         </span>
       </>
@@ -103,7 +103,7 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
         </div>
       </div>
 
-      <div className={`mt-5 ${DESKTOP_GRID} text-[10px] uppercase text-fog`}>
+      <div className={`mt-5 ${DESKTOP_GRID} text-[12.67px] uppercase text-fog`}>
         <span>{t.stop}</span>
         <span>{t.arrival}</span>
         <span>{t.expectedArrival}</span>
@@ -131,7 +131,7 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                 </span>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-paper">{nameNode}</p>
-                  <p className="text-[10px] text-fog">
+                  <p className="text-[12.67px] text-fog">
                     {stop.monitored ? (stop.platform ? `${t.platform} ${stop.platform}` : null) : t.notMonitored}
                   </p>
                 </div>
@@ -141,11 +141,11 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                 <>
                   <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 sm:hidden">
                     <div>
-                      <p className="text-[10px] uppercase text-fog">{t.arrival}</p>
+                      <p className="text-[12.67px] uppercase text-fog">{t.arrival}</p>
                       <p className="mt-1 font-display text-sm text-mist">{stop.arr ?? "—"}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] uppercase text-fog">{t.expectedArrival}</p>
+                      <p className="text-[12.67px] uppercase text-fog">{t.expectedArrival}</p>
                       <p className="mt-1 font-display text-sm">
                         <DelayCell scheduled={stop.arr} pred={stop.arr_pred} noAverageLabel={t.noAverage} />
                       </p>
@@ -159,7 +159,7 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                       </span>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-paper">{nameNode}</p>
-                        {stop.platform && <p className="text-[10px] text-fog">{t.platform} {stop.platform}</p>}
+                        {stop.platform && <p className="text-[12.67px] text-fog">{t.platform} {stop.platform}</p>}
                       </div>
                     </div>
                     <span className="self-center font-display text-sm text-mist">{stop.arr ?? "—"}</span>
@@ -176,7 +176,7 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                     </span>
                     <p className="truncate text-sm font-medium text-paper">{nameNode}</p>
                   </div>
-                  <span className="col-span-2 self-center text-[11px] text-fog">{t.notMonitored}</span>
+                  <span className="col-span-2 self-center text-[13.67px] text-fog">{t.notMonitored}</span>
                 </div>
               )}
             </li>

@@ -68,7 +68,7 @@ export function StationBoard({ stationId, locale }: Props) {
                     >
                       {call.train}
                     </Link>
-                    <p className="truncate text-[11px] text-fog">
+                    <p className="truncate text-[13.67px] text-fog">
                       {call.headline}
                       {call.terminates && <span className="ml-2 text-amber">{t.endsHere}</span>}
                       {call.platform && <span className="ml-2">{t.platform} {call.platform}</span>}
@@ -76,14 +76,14 @@ export function StationBoard({ stationId, locale }: Props) {
                   </div>
                 </div>
                 <div className="shrink-0 text-right">
-                  <span className="block text-[10px] uppercase font-normal text-fog">{t.arrival}</span>
+                  <span className="block text-[12.67px] uppercase font-normal text-fog">{t.arrival}</span>
                   <span className="mt-1 block font-display text-sm text-mist">{call.arr ?? "—"}</span>
                   {expectedArr && call.arr_pred ? (
-                    <span className={`block text-[10px] font-semibold ${delayColor(call.arr_pred.p50_min)}`}>
+                    <span className={`block text-[12.67px] font-semibold ${delayColor(call.arr_pred.p50_min)}`}>
                       {expectedArr} · +{call.arr_pred.p50_min}
                     </span>
                   ) : (
-                    <span className="block text-[10px] text-fog">{call.arr ? t.noAverage : "—"}</span>
+                    <span className="block text-[12.67px] text-fog">{call.arr ? t.noAverage : "—"}</span>
                   )}
                 </div>
               </li>

@@ -55,10 +55,10 @@ export function useRouteTripsAround(
   });
 }
 
-export function useTrainRoute(trainId: number | undefined) {
+export function useTrainRoute(trainId: number | undefined, stationId?: number) {
   return useQuery({
-    queryKey: ["train-route", trainId],
-    queryFn: () => api.trainRoute(trainId as number),
+    queryKey: ["train-route", trainId, stationId],
+    queryFn: () => api.trainRoute(trainId as number, stationId),
     enabled: trainId !== undefined,
   });
 }

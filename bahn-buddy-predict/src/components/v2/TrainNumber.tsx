@@ -9,5 +9,5 @@ export function TrainNumber({
   numberName?: string | undefined;
 }) {
   if (!numberName || numberName === name) return null;
-  return <span className="ml-1.5 font-mono text-[10px] font-normal text-fog">{numberName}</span>;
+  return <span className="ml-1.5 font-mono text-[12.67px] font-normal text-fog">{numberName}</span>;
 }

@@ -34,10 +34,10 @@ interface Props {
 
 function CallTags({ call, endsHereLabel }: { call: StationBoardCall; endsHereLabel: string }) {
   return (
-    <p className="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[11px] text-fog">
+    <p className="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[13.67px] text-fog">
       <span className="truncate">{call.headline}</span>
       {call.terminates && (
-        <Badge variant="outline" className="border-amber text-[10px] font-normal text-amber">
+        <Badge variant="outline" className="border-amber text-[12.67px] font-normal text-amber">
           {endsHereLabel}
         </Badge>
       )}
@@ -59,7 +59,7 @@ function DelayBlock({
   if (scheduled && modelPred !== undefined) {
     return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
   }
-  return <span className="block text-[10px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
+  return <span className="block text-[12.67px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
 }
 
 export function BoardV2({ stationId, locale }: Props) {
@@ -160,7 +160,7 @@ export function BoardV2({ stationId, locale }: Props) {
                     </span>
                     <div className="min-w-0">
                       <Link
-                        {...v2Paths.train(call.train_id)}
+                        {...v2Paths.train(call.train_id, stationId)}
                         className="font-display font-semibold text-paper hover:underline"
                       >
                         {call.train}
@@ -170,7 +170,7 @@ export function BoardV2({ stationId, locale }: Props) {
                     </div>
                   </div>
                   <div className="shrink-0 text-right">
-                    <span className="block text-[10px] uppercase font-normal text-fog">
+                    <span className="block text-[12.67px] uppercase font-normal text-fog">
                       {t.arrival}
                     </span>
                     <span className="mt-1 block font-mono text-sm text-mist">
@@ -194,7 +194,7 @@ export function BoardV2({ stationId, locale }: Props) {
               <TableHeader>
                 <TableRow className="border-line hover:bg-transparent">
                   <TableHead />
-                  <TableHead className="text-[10px] uppercase text-fog">{t.arrival}</TableHead>
+                  <TableHead className="text-[12.67px] uppercase text-fog">{t.arrival}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -208,7 +208,7 @@ export function BoardV2({ stationId, locale }: Props) {
                           </span>
                           <div className="min-w-0">
                             <Link
-                              {...v2Paths.train(call.train_id)}
+                              {...v2Paths.train(call.train_id, stationId)}
                               className="font-display font-semibold text-paper hover:underline"
                             >
                               {call.train}

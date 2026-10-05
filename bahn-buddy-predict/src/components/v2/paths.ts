@@ -3,8 +3,13 @@
 // the result into a <Link> or pass it to navigate().
 export const v2Paths = {
   home: () => ({ to: "/" }) as const,
-  train: (trainId: number) =>
-    ({ to: "/train/$trainId", params: { trainId: String(trainId) } }) as const,
+  // `stationId`: the stop the user came from, so the page shows a route that calls there.
+  train: (trainId: number, stationId?: number | undefined) =>
+    ({
+      to: "/train/$trainId",
+      params: { trainId: String(trainId) },
+      search: { station: stationId },
+    }) as const,
   station: (stationId: number) =>
     ({ to: "/station/$stationId", params: { stationId: String(stationId) } }) as const,
   line: (lineId: number) => ({ to: "/line/$lineId", params: { lineId: String(lineId) } }) as const,

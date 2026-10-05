@@ -39,7 +39,7 @@ function DelayBlock({
   if (scheduled && modelPred !== undefined) {
     return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
   }
-  return <span className="block text-[10px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
+  return <span className="block text-[12.67px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
 }
 
 function kindIcon(kind: SuggestResult["kind"]) {
@@ -175,7 +175,7 @@ export function SearchV2({ locale }: Props) {
       <Card className="rounded-lg border border-line bg-panel p-4 text-paper shadow-none sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="relative" ref={searchFieldRef}>
-            <label htmlFor="train-search" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-search" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.trainLabel}
             </label>
             <div className="flex h-[46px] items-center gap-2 rounded-md border border-line bg-ink px-3 focus-within:border-teal">
@@ -224,7 +224,7 @@ export function SearchV2({ locale }: Props) {
                             <TrainNumber name={result.name} numberName={result.number_name} />
                           </span>
                           {result.stops && (
-                            <span className="whitespace-normal text-[11px] font-normal text-fog">
+                            <span className="whitespace-normal text-[13.67px] font-normal text-fog">
                               {result.stops}
                             </span>
                           )}
@@ -241,7 +241,7 @@ export function SearchV2({ locale }: Props) {
           <div>
             <label
               htmlFor="train-direction"
-              className="mb-1.5 block text-[11px] uppercase text-fog"
+              className="mb-1.5 block text-[13.67px] uppercase text-fog"
             >
               {t.direction}
             </label>
@@ -265,7 +265,7 @@ export function SearchV2({ locale }: Props) {
             </select>
           </div>
           <div>
-            <label htmlFor="train-stop" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-stop" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.selectedStop}
             </label>
             <select
@@ -287,7 +287,7 @@ export function SearchV2({ locale }: Props) {
             </select>
           </div>
           <div>
-            <label htmlFor="train-date" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-date" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.searchDate}
             </label>
             <input
@@ -303,7 +303,7 @@ export function SearchV2({ locale }: Props) {
             />
           </div>
           <div>
-            <label htmlFor="train-time" className="mb-1.5 block text-[11px] uppercase text-fog">
+            <label htmlFor="train-time" className="mb-1.5 block text-[13.67px] uppercase text-fog">
               {t.searchTime}
             </label>
             <input
@@ -346,7 +346,7 @@ export function SearchV2({ locale }: Props) {
               <MapPin className="size-4" />
             </span>
             <div>
-              <p className="text-[11px] uppercase text-fog">{t.serviceAt}</p>
+              <p className="text-[13.67px] uppercase text-fog">{t.serviceAt}</p>
               <h2 className="mt-0.5 font-display text-lg font-semibold text-paper">
                 {stations.find((s) => s.id === stationId)?.name ?? t.selectedStop}
               </h2>
@@ -367,7 +367,7 @@ export function SearchV2({ locale }: Props) {
                   <Button
                     key={tripKey(trip)}
                     variant="ghost"
-                    onClick={() => void navigate(v2Paths.train(trip.train_id))}
+                    onClick={() => void navigate(v2Paths.train(trip.train_id, stationId))}
                     className="h-auto w-full items-start justify-between gap-4 rounded-none px-1 py-4 text-left hover:bg-ink sm:px-3"
                   >
                     <span className="flex min-w-0 items-start gap-3">
@@ -375,7 +375,7 @@ export function SearchV2({ locale }: Props) {
                         <TrainFront className="size-4" />
                       </span>
                       <span className="min-w-0">
-                        <span className="flex items-center gap-1 text-[10px] uppercase text-fog">
+                        <span className="flex items-center gap-1 text-[12.67px] uppercase text-fog">
                           {label}
                         </span>
                         <span className="mt-1 block font-display font-semibold text-paper">
@@ -386,7 +386,7 @@ export function SearchV2({ locale }: Props) {
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1 text-right">
                       <span>
-                        <span className="block text-[10px] uppercase font-normal text-fog">
+                        <span className="block text-[12.67px] uppercase font-normal text-fog">
                           {t.arrival}
                         </span>
                         <span className="mt-1 block font-mono text-sm text-mist">
@@ -399,7 +399,7 @@ export function SearchV2({ locale }: Props) {
                           t={t}
                         />
                       </span>
-                      <span className="mt-2 flex items-center justify-end gap-1 text-[10px] font-normal text-fog">
+                      <span className="mt-2 flex items-center justify-end gap-1 text-[12.67px] font-normal text-fog">
                         <Clock3 className="size-3" />
                         {t.openRoute}
                         <ArrowRight className="size-3" />

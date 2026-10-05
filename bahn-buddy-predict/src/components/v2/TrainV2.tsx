@@ -28,6 +28,8 @@ import { v2Paths } from "./paths";
 
 interface Props {
   trainId: number;
+  /** The stop the user came from; the route shown calls there. */
+  stationId?: number | undefined;
   locale: Locale;
   bare?: boolean;
   className?: string;
@@ -50,9 +52,9 @@ function DelayCell({
   return <span className="block text-mist">{scheduled ? noPredictionLabel : "—"}</span>;
 }
 
-export function TrainV2({ trainId, locale, bare = false, className }: Props) {
+export function TrainV2({ trainId, stationId, locale, bare = false, className }: Props) {
   const t = copy[locale];
-  const { data: route, isLoading, isError } = useTrainRoute(trainId);
+  const { data: route, isLoading, isError } = useTrainRoute(trainId, stationId);
   const predictions = useModelPredictions(
     route?.model_stamp,
     (route?.stops ?? []).map((stop) => ({ key: stop.seq, model_input: stop.model_input })),
@@ -120,7 +122,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
               {train.replacement_bus && (
                 <Badge
                   variant="outline"
-                  className="ml-2 align-middle border-amber font-mono text-[10px] font-normal text-amber"
+                  className="ml-2 align-middle border-amber font-mono text-[12.67px] font-normal text-amber"
                 >
                   {t.replacementBus}
                 </Badge>
@@ -154,7 +156,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-paper">{nameNodeFor(stop)}</p>
                 {!stop.monitored && (
-                  <Badge variant="outline" className="mt-1 text-[10px] font-normal text-fog">
+                  <Badge variant="outline" className="mt-1 text-[12.67px] font-normal text-fog">
                     {t.notMonitored}
                   </Badge>
                 )}
@@ -164,11 +166,11 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
             {stop.monitored && (
               <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4">
                 <div>
-                  <p className="text-[10px] uppercase text-fog">{t.arrival}</p>
+                  <p className="text-[12.67px] uppercase text-fog">{t.arrival}</p>
                   <p className="mt-1 font-mono text-sm text-mist">{stop.arr ?? "—"}</p>
                 </div>
                 <div>
-                  <p className="text-[10px] uppercase text-fog">{t.expectedArrival}</p>
+                  <p className="text-[12.67px] uppercase text-fog">{t.expectedArrival}</p>
                   <p className="mt-1 text-sm">
                     <DelayCell
                       scheduled={stop.arr}
@@ -189,9 +191,9 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
         <Table>
           <TableHeader>
             <TableRow className="border-line hover:bg-transparent">
-              <TableHead className="text-[10px] uppercase text-fog">{t.stop}</TableHead>
-              <TableHead className="text-[10px] uppercase text-fog">{t.arrival}</TableHead>
-              <TableHead className="text-[10px] uppercase text-fog">{t.expectedArrival}</TableHead>
+              <TableHead className="text-[12.67px] uppercase text-fog">{t.stop}</TableHead>
+              <TableHead className="text-[12.67px] uppercase text-fog">{t.arrival}</TableHead>
+              <TableHead className="text-[12.67px] uppercase text-fog">{t.expectedArrival}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -223,7 +225,7 @@ export function TrainV2({ trainId, locale, bare = false, className }: Props) {
                   </>
                 ) : (
                   <TableCell colSpan={2}>
-                    <Badge variant="outline" className="text-[11px] font-normal text-fog">
+                    <Badge variant="outline" className="text-[13.67px] font-normal text-fog">
                       {t.notMonitored}
                     </Badge>
                   </TableCell>

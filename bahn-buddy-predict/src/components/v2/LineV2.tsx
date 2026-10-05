@@ -60,7 +60,7 @@ export function LineV2({ lineId, locale }: Props) {
           {detail.line.replacement_bus && (
             <Badge
               variant="outline"
-              className="ml-2 align-middle border-amber font-mono text-[10px] font-normal text-amber"
+              className="ml-2 align-middle border-amber font-mono text-[12.67px] font-normal text-amber"
             >
               {t.replacementBus}
             </Badge>
@@ -100,12 +100,12 @@ export function LineV2({ lineId, locale }: Props) {
                           >
                             {run.name}
                           </Link>
-                          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[11px] text-fog">
+                          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[13.67px] text-fog">
                             <span className="truncate">→ {run.destination ?? "—"}</span>
                             {run.partial && (
                               <Badge
                                 variant="outline"
-                                className="border-amber text-[10px] font-normal text-amber"
+                                className="border-amber text-[12.67px] font-normal text-amber"
                               >
                                 {t.partOfRoute}
                               </Badge>
@@ -113,7 +113,7 @@ export function LineV2({ lineId, locale }: Props) {
                             {run.current && (
                               <Badge
                                 variant="secondary"
-                                className="border-teal text-[10px] font-normal text-teal"
+                                className="border-teal text-[12.67px] font-normal text-teal"
                               >
                                 {t.thisRun}
                               </Badge>

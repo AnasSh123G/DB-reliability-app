@@ -210,8 +210,8 @@ export function stationBoard(stationId: number, opts?: { backMin?: number; fwdMi
   });
 }
 
-export function trainRoute(trainId: number) {
-  return apiFetch<TrainRoute>(`/api/train/${trainId}/route`);
+export function trainRoute(trainId: number, stationId?: number) {
+  return apiFetch<TrainRoute>(`/api/train/${trainId}/route`, { station: stationId });
 }
 
 // What the direction/stop/Prognose flow runs on: a real line, or -- for a

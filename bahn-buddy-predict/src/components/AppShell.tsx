@@ -130,8 +130,8 @@ export function AppShell({ locale, isDark, setLocale, setIsDark, children }: Pro
               H
             </span>
             <div className="leading-none">
-              <p className="font-display font-semibold text-[15px] tracking-tight">BahnPredict</p>
-              <p className="text-[11px] text-fog mt-0.5">{t.subtitle}</p>
+              <p className="font-display font-semibold text-[17.67px] tracking-tight">BahnPredict</p>
+              <p className="text-[13.67px] text-fog mt-0.5">{t.subtitle}</p>
             </div>
           </Link>
         </header>

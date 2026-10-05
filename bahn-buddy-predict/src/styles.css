@@ -25,6 +25,19 @@
 
   --color-amber: #f6b34a;
   --color-danger: #ff6a5a;
+
+  /* Every named text size is Tailwind's default plus 2pt (0.1667rem). */
+  --text-xs: 0.9167rem;
+  --text-sm: 1.0417rem;
+  --text-base: 1.1667rem;
+  --text-lg: 1.2917rem;
+  --text-xl: 1.4167rem;
+  --text-2xl: 1.6667rem;
+  --text-3xl: 1.9792rem;
+  --text-4xl: 2.4167rem;
+  --text-5xl: 3.1667rem;
+  --text-6xl: 3.9167rem;
+  --text-7xl: 4.6667rem;
 }
 
 @theme inline {
@@ -247,6 +260,7 @@
   }
 
   body {
+    font-size: calc(1rem + 2pt); /* text with no size class */
     background-color: var(--color-background);
     color: var(--color-foreground);
   }
