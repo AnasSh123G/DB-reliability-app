@@ -324,7 +324,7 @@ Recorded 2026-09-29, when the pipeline code was finished and tested on synthetic
 - **D8.** The ONNX export moved from `scripts/export_arrival.py` into `arrival_nn.export_onnx`.
   `search_full_year.py export` also writes the `scripts/browser_check.py` layout next to each
   final model, with its test-week reference rows, so the unchanged browser page checks it.
-- **D9 / task 6.5.** `dbrel study live-accuracy --artifact PATH` scores any artifact. The report
+- **D9.** `dbrel study live-accuracy --artifact PATH` scores any artifact. The report
   names the artifact and flags a comparison model.
 - **Memory check (task 4.4).** The full-year probe is `search_full_year.py memory-check --track`,
   not `dbrel ml memory-check`, which stays bake-off specific. Each probe runs in its own process,

@@ -6,31 +6,15 @@ change them. The ranges below are provisional.
 
 Groups 1–4 need only the existing one-month data and can be done while the backfill runs.
 Group 5 needs the backfill to cover the intended window. Nothing moves `CURRENT` without the
-user's approval (task 6.6).
+user's approval.
 
-Already done outside these tasks, on 2026-09-29: `CURRENT` was promoted back to the two-sided TabM
-`20260924T183944Z`. `tests/test_ml_arrival_deploy.py` passed, and the board API served that stamp
-with model inputs for every call.
-
-**Status, 2026-09-29: the pipeline code is complete and tested on synthetic fixtures only.** On
-Anas's instruction, nothing has been built from or trained on the real data yet. The open items
-below are all runs on real data, GPU runs, or approvals:
-
-- 2.3: code and the one-shard test done. Open: the capped build of the real database and its
-  recorded peak.
-- 2.4: command, README section and fixture count test done. Open: the check on the live database.
-- 4.2: block source, pinned blocks, device `int64` cast, 2^31-byte guard and the CPU tests done.
-  Open: the ±0.02 min GPU parity run.
-- 4.4: probe, projection, `memory-check` subcommand and the launch gate done (fixture: projection
-  written, a low cap refuses). Open: the probe on the real data.
-- 5.2: `scripts/search_full_year.py` done. Both tracks, the final refit and both exports ran end
-  to end on the fixture (`tests/test_ml_full_year_search.py`). Open: the `--max-trials 1` dry run
-  on the real data.
-- 6.4: the browser check of the fixture's compact and large exports passed in headless Chromium
-  (max difference about 1e-7 minutes, no differing points). Bun is not installed on this machine,
-  so the frontend was built with `npx vite build` and typechecked with `tsc --noEmit` instead.
-- 6.5: code, skill doc and tests done. Open: a study run on the real compact artifact (needs 6.2).
-- 5.1, 5.3–5.5, 6.2 and 6.6 have not been started.
+**Status, 2026-10-05: finished.** The full-year pipeline ran on the real data and the compact
+winner (MLP 512×3, quantile head) is deployed as `models/v2/20261004T213106Z`. By the user's
+decision on 2026-10-05, the large track was dropped (5.4) and three tasks were removed instead of
+done: the ±0.02 min GPU parity run (was 4.2), the live accuracy study run on the new artifact
+(was 6.5) and the written report with a station-board check (was 6.6). The user had already seen
+the model comparison tables and asked for the switch, and the older models were deleted, so the
+rollback in 6.6 could no longer be run either.
 
 ## 1. Time-of-year feature and median defaults
 
@@ -76,10 +60,6 @@ below are all runs on real data, GPU runs, or approvals:
 ## 4. Streaming training and size guard
 
 - [x] 4.1 Write the training/validation model inputs (`cats` int32, `nums` float32, `y` float32) to memory-mapped files once per split and vocabulary, keyed like the existing experiment key. Verify that re-running with the same key reuses the files, and that a changed vocabulary refuses to reuse them. Est.: 45–90 min.
-- [ ] 4.2 Replace the whole-array GPU copies in `ArrivalNet.fit`/`predict_arrays` with a block-shuffled batch source (1 M-row blocks, pinned memory, `int64` cast on the device). Add one guard that checks every tensor the loop creates against 2^31 bytes before the first step (design D3). Verify:
-  - a CPU test shows block iteration visits every row exactly once per epoch
-  - a guard test refuses a configuration whose batch would reach 2 GiB
-  - on the GPU, a one-month run's validation MAE is within ±0.02 min of the non-streaming result for the same seed and configuration
 
   Est.: 2–3 h plus ~15 min unattended.
 - [x] 4.3 Add the pre-trial size estimate (embedding cards × dims + backbone parameters + prep JSON). Skip any trial estimated over its track's budget (35,000,000 bytes compact, 100,000,000 bytes large) with a logged reason (design D7). Verify that the estimate for the three existing ONNX artifacts is within 5% of their measured sizes, and that a test skips a 100 MB-track trial estimated at 101 MB. Est.: 30–45 min.
@@ -121,6 +101,3 @@ below are all runs on real data, GPU runs, or approvals:
 - [x] 6.2 Export the compact winner as `deployable`. Done 2026-10-04: `20261004T213106Z`, 15,191,410 bytes (budget 35,000,000), ONNX max difference from PyTorch 3.9e-5. The large export was dropped with the large track (5.4). The artifact now lives in the committed `models/v2/` (moved from `data/models/v2` on 2026-10-05), and the older models were deleted at the user's request.
 - [x] 6.3 Add `--artifact PATH` to `dbrel ml predict-delay`, using `DelayModel(PATH)` instead of `DelayModel.current(...)`, and update its help text to describe median output. Verify with a CLI test: predicting with a comparison artifact prints a median and band, the output differs from `CURRENT`'s for the same call, and `CURRENT` is not read. Est.: 30–45 min.
 - [x] 6.4 Add the `arrival-net` + `quantiles` branch to `bahn-buddy-predict/src/lib/tabm.ts` (rows × 3 → p25/p50/p75, rule `median`). Extend `scripts/browser_check` to this output. Verify that the browser check matches the Python predictor bit for bit on its sample inputs, and that `bun run build` succeeds. Est.: 45–90 min.
-- [ ] 6.5 Update the live accuracy study and its skill doc so the estimate is labelled a median again. Let the study take an optional artifact path, so the large model and the TabM can be run through it too. Verify that `tests/test_live_accuracy.py` passes, and that a study run on the new compact artifact labels "median". Est.: 30–45 min.
-- [ ] 6.6 Present the report (compact vs large vs TabM vs window MLP: scores, sizes, per-month table, ablation result, most-frequent-value share) and ask for deployment approval of the compact model. Only on approval, run `promote`. Verify that `CURRENT` points to the new stamp, the site shows varied median estimates for a station board, and rolling back with `promote` to `20260924T183944Z` works. Est.: 15–30 min plus user review.
-  - 2026-10-04/05: the user asked for the switch and `CURRENT` now reads `20261004T213106Z` (promoted after the validation tables were shown). Rollback to `20260924T183944Z` is no longer possible: all older models were deleted on 2026-10-05 at the user's request. Still open: the written report with per-month and per-segment tables and the most-frequent-value share, and a look at a station board in the browser.
