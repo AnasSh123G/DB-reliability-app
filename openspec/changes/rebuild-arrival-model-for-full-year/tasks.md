@@ -57,8 +57,10 @@ below are all runs on real data, GPU runs, or approvals:
 
   Output goes to `data/ml/arrival_full/<stamp>/`, never over `arrival_dataset.npz`. Verify with a test on a small SQLite fixture spanning two months: the shard contents must equal what the current `_build_dataset(arrival_only=True)` produces for the same rows (after code mapping). Est.: 2–3 h.
 - [x] 2.2 Add incremental rebuild: only the latest month and months whose count or fingerprint changed are rebuilt. Verify with a test that adds rows to one month of the fixture and checks that only that shard's files change. Est.: 45–90 min.
-- [ ] 2.3 Add a memory-mapped loader returning the same `Dataset` fields for chosen date ranges, without reading unselected rows. Verify with a test that loading one month of a two-month fixture touches only that shard. Also run a build of the current one-month database under `dbrel ml launch --memory 14G` and record its peak memory (`memory.format_memory`) in the change notes. Est.: 1–2 h plus ~10 min unattended.
-- [ ] 2.4 Add a `dbrel ml build-full-dataset` CLI command with progress per month, and document it in the delay-model section of `README.md`. Verify that running it on the live DB prints per-month row counts matching `SELECT COUNT(*)` with the same filters. Est.: 30–45 min.
+- [x] 2.3 Add a memory-mapped loader returning the same `Dataset` fields for chosen date ranges, without reading unselected rows. Verify with a test that loading one month of a two-month fixture touches only that shard. Also run a build of the current one-month database under `dbrel ml launch --memory 14G` and record its peak memory (`memory.format_memory`) in the change notes. Est.: 1–2 h plus ~10 min unattended.
+  - Checked 2026-10-05: `test_loading_one_month_never_opens_the_others` covers the loader. The recorded build of the real database is task 5.1's (99.6 M rows, RSS 0.7 GiB, group peak 12.5 GiB), which replaces the one-month build this task asked for.
+- [x] 2.4 Add a `dbrel ml build-full-dataset` CLI command with progress per month, and document it in the delay-model section of `README.md`. Verify that running it on the live DB prints per-month row counts matching `SELECT COUNT(*)` with the same filters. Est.: 30–45 min.
+  - Checked 2026-10-05: `test_cli_prints_per_month_counts_matching_sql` and the README's delay-model section cover it; the real-database run is task 5.1's.
 
 ## 3. Splits and vocabulary
 
@@ -88,9 +90,10 @@ below are all runs on real data, GPU runs, or approvals:
 
 - [x] 5.1 Build the full-history dataset from the backfilled database. Check that rows per date and per month are plausible, and list months with stub or missing days. Verify that the build manifest exists, its total matches the SQL count, and its logged peak is under the cap. Est.: 15 min hands-on plus ~1–2 h unattended (extrapolated from the 246 s one-month build).
   - Done 2026-10-01: 99,566,282 rows over 330 dates (2025-11-02 .. 2026-09-27), 9.4 GB, 22.5 min, RSS 0.7 GiB, group peak 12.5 GiB (page cache) under the 14G cap. Every month's shard rows equal the SQL count. Stub/short days (< 60% of the 305 k median): 2025-11-02 (5,406), 2025-11-23 (158 k), 2026-01-12 (95 k), 2026-08-28 (150 k), 2026-09-27 (49 k). 2025-11-01 is missing. First build wrote 0 rows: the updated database had no station states, holidays or `is_holiday` labels; fixed with `resolve-station-states`, `load-holidays` and a per-date `label-holidays` (the single UPDATE was OOM-killed at 8G under `temp_store=MEMORY`).
-- [ ] 5.2 Write `scripts/search_full_year.py` with a `--track compact|large` option, and the fixed trial lists from design D7:
+- [x] 5.2 Write `scripts/search_full_year.py` with a `--track compact|large` option, and the fixed trial lists from design D7:
   - compact: the no-time-of-year ablation, the histogram baseline, and both old artifacts as references
   - large: the 100 MB trials, including the looser-pruning variant
+  - The large-track dry run stays undone: the large track was dropped (5.4).
 
   Each track gets its own experiment directory, a 10 h cap and per-trial checkpoints. Verify with a dry run on the one-month data (`--max-trials 1` per track) that both tracks write separate `ranking.json` files, and that the old TabM appears as a reference in both. Est.: 1–2 h.
   - 2026-10-01: compact dry run on the real data done (`--max-trials 1`). TabM 256×2 k=8: 129 s per epoch over 88.9 M rows, early-stopped after 7 epochs (best: epoch 4), 16 min; validation MAE 2.779 vs the two-sided TabM 3.345 and the window MLP 3.859 on the same 7.97 M rows; reference scoring took 9 min. MLP 1024×3 (not the TabM, as first written here) was skipped at 35,039,325 estimated bytes (> 35,000,000); the 512×2 TabM is 10.8 MB and runs. 2026-10-02, rerun with the notice rates (add-notice-inputs) and patience 6: 12 epochs at 132 s, best epoch 10, validation MAE 2.680, 28 min; epoch-to-epoch MAE still moved by 0.1–0.2 min. Open: the large-track dry run.
