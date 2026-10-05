@@ -1,86 +1,77 @@
-"""Per-corridor direction resolution.
-
-A `ServiceLine` id is not one physical line -- unrelated regional services
-share a short name ("RE7", "S1", ...) all over Germany. `train_direction_map`
-has to split a line's trains into their real regional corridors first
-(`_connected_components`) and only then compute a direction per corridor, or
-every train outside the single longest route gets silently misclassified
-into direction 0 (the historical bug this file guards against).
-"""
+"""`_connected_components` groups trains exactly as comparing every pair of trains would."""
 
 from __future__ import annotations
 
-from dbrel.direction import _connected_components, train_direction_map
-from dbrel.models import Train
+import random
+from types import SimpleNamespace
+
+import pytest
+
+from dbrel.direction import _SHARED_NAME_THRESHOLD, _connected_components
 
 
-def _train(id_, route, origin=None, dest=None) -> Train:
-    parts = route.split("|")
-    return Train(
-        id=id_, identity_key=f"t{id_}", route_path=route,
-        origin_name=origin or parts[0], dest_name=dest or parts[-1],
-    )
+def _reference(trains):
+    """The groups by brute force: compare every pair, join those sharing enough names.
+
+    Args:
+        trains: objects with a `route_path` of '|'-separated station names.
+
+    Returns:
+        Groups as lists of trains, ordered by first member, members in input order.
+    """
+    names = [{p for p in (t.route_path or "").split("|") if p} for t in trains]
+    group_of = list(range(len(trains)))
+
+    def root(x):
+        """The representative of `x`'s group."""
+        while group_of[x] != x:
+            x = group_of[x]
+        return x
+
+    for i in range(len(trains)):
+        for j in range(i + 1, len(trains)):
+            if len(names[i] & names[j]) >= _SHARED_NAME_THRESHOLD:
+                group_of[root(i)] = root(j)
+    groups = {}
+    for i, train in enumerate(trains):
+        groups.setdefault(root(i), []).append(train)
+    return list(groups.values())
 
 
-def test_two_unrelated_regions_get_their_own_component_and_axis():
-    """Same short line name, zero shared stations -- two separate corridors."""
-    region_a = [
-        _train(1, "Karlsruhe Hbf|Rastatt|Baden-Baden|Offenburg|Freiburg(Breisgau) Hbf|Basel SBB"),
-        _train(2, "Basel SBB|Freiburg(Breisgau) Hbf|Offenburg|Baden-Baden|Rastatt|Karlsruhe Hbf"),
-    ]
-    region_b = [
-        _train(3, "Flensburg|Tarp|Jübek|Rendsburg|Neumünster|Hamburg-Altona"),
-        _train(4, "Hamburg-Altona|Neumünster|Rendsburg|Jübek|Tarp|Flensburg"),
-    ]
-    trains = region_a + region_b
-    components = _connected_components(trains)
-    assert len(components) == 2
-    ids_by_component = {frozenset(t.id for t in c) for c in components}
-    assert frozenset({1, 2}) in ids_by_component
-    assert frozenset({3, 4}) in ids_by_component
-
-    dmap = train_direction_map(trains)
-    # Within each region, the two opposite runs must land in opposite halves --
-    # the pre-fix bug put every non-Karlsruhe train in direction 0 regardless.
-    assert dmap[1] != dmap[2]
-    assert dmap[3] != dmap[4]
+def _trains(seed: int, n: int, stations: int):
+    """`n` random trains over `stations` station names: some empty, single-stop, duplicate routes."""
+    rng = random.Random(seed)
+    out = []
+    for i in range(n):
+        kind = rng.random()
+        if kind < 0.05:
+            path = None
+        elif kind < 0.1:
+            path = f"S{rng.randrange(stations)}"
+        elif kind < 0.3 and out:
+            path = rng.choice(out).route_path  # an exact copy of another train's route
+        else:
+            start = rng.randrange(stations)
+            path = "|".join(f"S{(start + k) % stations}" for k in range(rng.randint(2, 8)))
+        out.append(SimpleNamespace(id=i, route_path=path))
+    return out
 
 
-def test_y_branch_splits_by_side_not_by_branch():
-    """Hamburg <-> {Kiel | Flensburg}: both branches share a long trunk, so they
-    are ONE connected component, and the two branches sort into the SAME
-    direction as each other when travelling the same way past Hamburg."""
-    trunk = "Hamburg-Altona|Pinneberg|Elmshorn|Itzehoe|Neumünster"
-    to_flensburg = _train(1, trunk + "|Rendsburg|Jübek|Tarp|Flensburg")
-    to_kiel = _train(2, trunk + "|Rendsburg|Kiel Hbf")
-    from_flensburg = _train(
-        3, "Flensburg|Tarp|Jübek|Rendsburg|Neumünster|Itzehoe|Elmshorn|Pinneberg|Hamburg-Altona"
-    )
-    from_kiel = _train(4, "Kiel Hbf|Rendsburg|Neumünster|Itzehoe|Elmshorn|Pinneberg|Hamburg-Altona")
-
-    trains = [to_flensburg, to_kiel, from_flensburg, from_kiel]
-    components = _connected_components(trains)
-    assert len(components) == 1, "the two branches share a long trunk, so one corridor"
-
-    dmap = train_direction_map(trains)
-    # Away-from-Hamburg trains agree with each other; towards-Hamburg trains
-    # agree with each other; the two groups disagree with each other.
-    assert dmap[1] == dmap[2]
-    assert dmap[3] == dmap[4]
-    assert dmap[1] != dmap[3]
+@pytest.mark.parametrize("seed", range(40))
+def test_the_groups_and_their_order_match_comparing_every_pair(seed):
+    """Random lines (sparse to dense) give exactly the brute-force groups, in the same order."""
+    trains = _trains(seed, n=60 + seed * 3, stations=20 + seed)
+    got = [[t.id for t in group] for group in _connected_components(trains)]
+    want = [[t.id for t in group] for group in _reference(trains)]
+    assert got == want
 
 
-def test_a_single_isolated_train_is_its_own_component():
-    trains = [_train(1, "A|B|C")]
-    components = _connected_components(trains)
-    assert len(components) == 1
-    assert len(components[0]) == 1
-
-
-def test_sharing_exactly_one_station_does_not_merge_components():
-    """One shared interchange hub is not enough to call two lines the same
-    corridor -- only >=2 shared station names does."""
-    region_a = [_train(1, "A|B|Hub|C|D")]
-    region_b = [_train(2, "X|Y|Hub|Z")]
-    components = _connected_components(region_a + region_b)
-    assert len(components) == 2
+def test_one_shared_hub_does_not_join_two_corridors():
+    """Two regional lines meeting at one station stay apart; a shared trunk joins two branches."""
+    trains = [SimpleNamespace(id=i, route_path=p) for i, p in enumerate([
+        "Hamburg|Elmshorn|Neumünster|Kiel",
+        "Hamburg|Elmshorn|Neumünster|Flensburg",
+        "Karlsruhe|Offenburg|Basel",
+        "Kiel|Eckernförde",  # shares only Kiel with the first: not the same corridor
+    ])]
+    assert [[t.id for t in g] for g in _connected_components(trains)] == [[0, 1], [2], [3]]

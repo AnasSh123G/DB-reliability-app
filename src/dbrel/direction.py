@@ -22,6 +22,8 @@ canonical axis and a direction *within* each corridor.
 
 from __future__ import annotations
 
+from itertools import combinations
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -40,10 +42,19 @@ _SHARED_NAME_THRESHOLD = 2
 def _connected_components(trains: list[Train]) -> list[list[Train]]:
     """Partition `trains` into groups that share a real physical corridor.
 
-    Union-find over trains, connected via an inverted index of station name
-    -> trains calling there, so only trains that already share at least one
-    stop are ever compared -- unrelated trains (no shared station name at
-    all) never pay for a set-intersection check.
+    Two trains are in one group when a chain of trains links them, each sharing at least
+    `_SHARED_NAME_THRESHOLD` station names with the next. Sharing that many names is the same as
+    sharing one combination of that many names, so each distinct route registers its combinations
+    once and is joined to the first route that registered the same one; trains with an identical
+    route are joined directly. That gives the same groups as comparing every pair of trains through
+    a station (the previous method, which made busy S-Bahn lines take seconds), without any
+    pairwise comparison.
+
+    Args:
+        trains: the trains to group, in the caller's order.
+
+    Returns:
+        The groups, ordered by their first train in `trains`, each keeping `trains`' order.
     """
     n = len(trains)
     if n <= 1:
@@ -52,6 +63,7 @@ def _connected_components(trains: list[Train]) -> list[list[Train]]:
     parent = list(range(n))
 
     def find(x: int) -> int:
+        """The root of `x`'s group, compressing the path on the way."""
         root = x
         while parent[root] != root:
             root = parent[root]
@@ -60,34 +72,26 @@ def _connected_components(trains: list[Train]) -> list[list[Train]]:
         return root
 
     def union(a: int, b: int) -> None:
+        """Join the groups of `a` and `b`."""
         ra, rb = find(a), find(b)
         if ra != rb:
             parent[ra] = rb
 
-    train_names: list[set[str]] = []
-    name_index: dict[str, list[int]] = {}
+    first_with_route: dict[frozenset[str], int] = {}
+    owner: dict[tuple[str, ...], int] = {}
     for i, train in enumerate(trains):
-        names = {part for part in (train.route_path or "").split("|") if part}
-        train_names.append(names)
-        for name in names:
-            name_index.setdefault(name, []).append(i)
-
-    checked: set[tuple[int, int]] = set()
-    for bucket in name_index.values():
-        if len(bucket) < 2:
+        names = frozenset(part for part in (train.route_path or "").split("|") if part)
+        if len(names) < _SHARED_NAME_THRESHOLD:
+            continue  # cannot share enough names with any train
+        same_route = first_with_route.get(names)
+        if same_route is not None:
+            union(i, same_route)
             continue
-        for a_pos in range(len(bucket)):
-            i = bucket[a_pos]
-            for b_pos in range(a_pos + 1, len(bucket)):
-                j = bucket[b_pos]
-                if find(i) == find(j):
-                    continue
-                key = (i, j) if i < j else (j, i)
-                if key in checked:
-                    continue
-                checked.add(key)
-                if len(train_names[i] & train_names[j]) >= _SHARED_NAME_THRESHOLD:
-                    union(i, j)
+        first_with_route[names] = i
+        for combination in combinations(sorted(names), _SHARED_NAME_THRESHOLD):
+            j = owner.setdefault(combination, i)
+            if j != i:
+                union(i, j)
 
     groups: dict[int, list[Train]] = {}
     for i, train in enumerate(trains):
