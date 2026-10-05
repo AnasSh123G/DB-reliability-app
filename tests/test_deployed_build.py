@@ -10,6 +10,7 @@ import pytest
 
 from dbrel import deployed
 from dbrel.db import make_engine
+from dbrel.deployed import UNREAD_TRAIN_COLUMNS
 from dbrel.deployed_build import DeployedBuildError, build_deployed
 from dbrel.ml.features import NOTICE_RATES
 from dbrel.ml.notice_rates import NoticeRates
@@ -87,14 +88,48 @@ def test_no_per_run_data_is_copied(collection, manifest, tmp_path):
     assert _query(out, "SELECT * FROM train_variant_run ORDER BY 1, 2") == _query(collection, runs)
 
 
-def test_the_train_view_gives_back_every_train_column(collection, manifest, tmp_path):
-    """The train view equals the source train table in every column."""
+def test_the_train_view_gives_back_every_column_the_server_reads(collection, manifest, tmp_path):
+    """The train view equals the source in every read column; the unread ones are empty."""
     out = tmp_path / "deployed.sqlite"
     build_deployed(collection, out, manifest=manifest, log=lambda m: None)
-    columns = ", ".join(f'"{c}"' for (c,) in _query(collection, "SELECT name FROM pragma_table_info('train')"))
-    rows = _query(out, f"SELECT {columns} FROM train ORDER BY id")
-    assert rows == _query(collection, f"SELECT {columns} FROM train ORDER BY id") and rows
-    assert {"route_path", "path_sha1", "origin_name"} <= {c for (c,) in _query(collection, "SELECT name FROM pragma_table_info('train')")}
+    names = [c for (c,) in _query(collection, "SELECT name FROM pragma_table_info('train')")]
+    read = ", ".join(f'"{c}"' for c in names if c not in UNREAD_TRAIN_COLUMNS)
+    rows = _query(out, f"SELECT {read} FROM train ORDER BY id")
+    assert rows == _query(collection, f"SELECT {read} FROM train ORDER BY id") and rows
+    assert {"route_path", "path_sha1", "origin_name"} <= set(names)
+    unread = " OR ".join(f'"{c}" IS NOT NULL' for c in UNREAD_TRAIN_COLUMNS)
+    assert _query(out, f"SELECT COUNT(*) FROM train WHERE {unread}") == [(0,)]
+
+
+@pytest.fixture(scope="module")
+def with_retired(collection, tmp_path_factory):
+    """The fixture with ICE 12 retired (last seen 2026-08-01, newest 2026-09-10) and aliases for 12 and 70."""
+    path = tmp_path_factory.mktemp("retired") / "dbrel.sqlite"
+    con = sqlite3.connect(collection)
+    con.execute(f"VACUUM INTO '{path}'")
+    con.close()
+    con = sqlite3.connect(path)
+    con.execute("UPDATE train SET last_seen_date = '2026-08-01' WHERE id = 12")
+    con.execute("UPDATE train SET last_seen_date = '2026-09-10' WHERE id = 70")
+    con.execute("INSERT INTO search_alias (alias_norm, alias_display, kind, weight, train_id) VALUES "
+                "('ice12', 'ICE 12', 'CAT_NUMBER', 100, 12), ('re70', 'RE 70', 'CAT_NUMBER', 100, 70)")
+    con.commit()
+    con.close()
+    return path
+
+
+def test_a_retired_train_keeps_only_its_train_row(with_retired, tmp_path):
+    """A retired train has its train row but no schedule, run-summary or alias rows; others keep theirs."""
+    out = tmp_path / "deployed.sqlite"
+    counts = build_deployed(with_retired, out, log=lambda m: None)
+    assert counts["retired_trains"] == 1
+    assert _query(out, "SELECT id FROM train WHERE id = 12") == [(12,)]
+    for table in ("station_stop", "train_variant_run", "search_alias"):
+        assert _query(out, f"SELECT COUNT(*) FROM {table} WHERE train_id = 12") == [(0,)], table
+        assert _query(out, f"SELECT COUNT(*) FROM {table} WHERE train_id = 70")[0][0] > 0, table
+    running = "SELECT * FROM station_stop WHERE train_id <> 12 ORDER BY feed_version_id, train_id, path_sha1, stop_sequence"
+    assert _query(out, running.replace("SELECT *", f"SELECT {COLUMNS}")) == _query(
+        with_retired, running.replace("SELECT *", f"SELECT {COLUMNS}"))
 
 
 def test_the_build_reports_size_and_counts(collection, manifest, tmp_path):

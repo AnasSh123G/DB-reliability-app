@@ -136,6 +136,11 @@ JOIN variant_path vp ON vp.id = v.path_id
 # except these, which it stores as ids into the lookup tables above.
 TRAIN_LOOKUPS = {"path_sha1": "path_id", "route_path": "route_path_id", "origin_name": "origin_name_id",
                  "dest_name": "dest_name_id"}
+# Train columns nothing in the server, the model code or the frontend reads (checked 2026-10-05):
+# a deployed database leaves them empty.
+UNREAD_TRAIN_COLUMNS = ("dest_station_id", "first_seen_date", "first_seen_feed_version_id", "identity_kind",
+                        "last_arrival_sec", "last_seen_feed_version_id", "long_name", "n_runs_seen",
+                        "n_stops_tracked", "passenger_label", "route_id", "train_number_raw", "trip_type")
 # The train indexes the server filters by (id is the primary key); the collector's others are left out.
 TRAIN_INDEXES = {"ix_train_data_line": ("line_id", "train_number"),
                  "ix_train_data_category": ("category", "train_number")}

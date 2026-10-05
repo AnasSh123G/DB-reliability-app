@@ -97,6 +97,8 @@ export interface TrainRoute {
   n_monitored: number;
   model_stamp: string | null;
   stops: TrainRouteStop[];
+  /** Present for a train not in the timetable for 14 days before the newest data; then no stops. */
+  retired?: { last_seen_date: string | null };
 }
 
 export interface LineDirection {

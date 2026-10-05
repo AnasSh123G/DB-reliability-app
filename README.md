@@ -431,6 +431,9 @@ holding:
   run count), in place of `trip`
 - route hashes, route paths and place names stored once each; `train` and `train_variant_run` are
   views over the compact tables, so they too give back the collection database's rows exactly
+- for retired trains (not seen for 14 days before the newest data) only the train row: the server
+  answers their page with "no longer running" and leaves them out of search, on either database.
+  Train columns nothing reads are left empty.
 - the model's notice-rate totals
 
 There are no per-run observations in it:

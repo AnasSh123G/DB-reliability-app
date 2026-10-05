@@ -61,6 +61,7 @@ export const copy = {
     minuteMany: "Minuten",
     expectedArrivalAt: "voraussichtliche Ankunft: {time}",
     onTimeNow: "pünktlich",
+    retiredTrain: "Dieser Zug ist seit dem {date} nicht mehr gefahren. Er fährt möglicherweise unter einer neuen Nummer.",
   },
   en: {
     subtitle: "Journey forecast",
@@ -122,6 +123,7 @@ export const copy = {
     minuteMany: "minutes",
     expectedArrivalAt: "expected arrival time: {time}",
     onTimeNow: "on time",
+    retiredTrain: "This train hasn't run since {date}. It may now run under a new number.",
   },
 } as const;
 

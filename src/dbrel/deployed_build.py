@@ -12,6 +12,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Callable
+from datetime import date, timedelta
 from pathlib import Path
 
 from sqlalchemy import Column, Index, Integer, MetaData, Table, create_engine
@@ -24,12 +25,14 @@ from dbrel.deployed import (
     TRAIN_INDEXES,
     TRAIN_LOOKUPS,
     TRAIN_VARIANT_RUN_VIEW,
+    UNREAD_TRAIN_COLUMNS,
     ScheduleRow,
     pattern_digest,
     train_view,
 )
 from dbrel.ml.notice_rates import NoticeRates, uses_notice_rates, write_totals
 from dbrel.models import Base
+from dbrel.web.queries import ACTIVE_WINDOW_DAYS
 
 # Copied whole, with the collection database's schema. stop_delay_average and
 # train_stop_delay_average are empty today, but the web path queries them, so their tables must exist.
@@ -43,7 +46,7 @@ _SCHEDULE_COLUMNS = ("id", "feed_version_id", "train_id", "path_sha1", "stop_seq
                      "pickup_type", "drop_off_type")
 _ORDER = "ORDER BY feed_version_id, train_id, path_sha1, stop_sequence"
 _RUN_SUMMARY = ("SELECT train_id, path_sha1, MAX(service_date) AS last_service_date, COUNT(*) AS n_runs "
-                "FROM trip GROUP BY train_id, path_sha1")
+                "FROM {trip} WHERE {running} GROUP BY train_id, path_sha1")
 _BATCH = 20_000
 
 
@@ -86,12 +89,13 @@ def _variants(cursor):
         yield key, rows
 
 
-def _write_schedule(source: sqlite3.Connection, out: sqlite3.Connection, path_ids: dict) -> dict[str, int]:
+def _write_schedule(source: sqlite3.Connection, out: sqlite3.Connection, path_ids: dict,
+                    retired: set[int]) -> dict[str, int]:
     """Stream the source schedule into patterns, variants and id runs.
 
-    `source` is the read-only collection database, `out` the deployed one and `path_ids` maps
-    each route hash (None included) to its `variant_path` id. Returns the variant, pattern and
-    pattern-stop counts.
+    `source` is the read-only collection database, `out` the deployed one, `path_ids` maps each
+    route hash (None included) to its `variant_path` id, and `retired` holds the ids of trains whose
+    schedule is left out. Returns the variant, pattern and pattern-stop counts.
     """
     patterns: dict[str, int] = {}
     variants = pattern_rows = 0
@@ -107,6 +111,8 @@ def _write_schedule(source: sqlite3.Connection, out: sqlite3.Connection, path_id
 
     cursor = source.execute(f"SELECT {', '.join(_SCHEDULE_COLUMNS)} FROM station_stop {_ORDER}")
     for (feed, train, path), rows in _variants(cursor):
+        if train in retired:
+            continue
         start, pattern, runs = deployed.encode_variant(rows)
         digest = pattern_digest(pattern)
         pattern_id = patterns.get(digest)
@@ -147,13 +153,22 @@ def _verify(label: str, columns: tuple[str, ...], key: int, theirs, ours) -> int
             return n
 
 
-def _verify_schedule(source: sqlite3.Connection, out: sqlite3.Connection) -> int:
-    """Every row through the station_stop view equals the source row, id included."""
+def _running(retired_ids: str) -> str:
+    """SQL: the row's train_id is not among `retired_ids` (a subquery selecting train ids)."""
+    return f"train_id NOT IN ({retired_ids})"
+
+
+def _verify_schedule(source: sqlite3.Connection, out: sqlite3.Connection, source_retired: str) -> int:
+    """Every running train's row through the station_stop view equals the source row, id included.
+
+    `source_retired` is a subquery giving the retired train ids on `source`. Returns the row count.
+    """
     # The first four columns (feed, train, variant, stop sequence) name a row in the error message.
     named = ("feed_version_id", "train_id", "path_sha1", "stop_sequence")
     columns = named + tuple(c for c in _SCHEDULE_COLUMNS if c not in named)
-    select = f"SELECT {', '.join(columns)} FROM station_stop {_ORDER}"
-    return _verify("schedule", columns, 4, source.execute(select), out.execute(select))
+    select = f"SELECT {', '.join(columns)} FROM station_stop"
+    return _verify("schedule", columns, 4, source.execute(f"{select} WHERE {_running(source_retired)} {_ORDER}"),
+                   out.execute(f"{select} {_ORDER}"))
 
 
 def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
@@ -184,17 +199,29 @@ def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
         out_con.execute("PRAGMA synchronous=OFF")
         out_con.execute(f"ATTACH DATABASE 'file:{source}?mode=ro' AS src")
         counts: dict[str, int] = {}
+        # Retired trains (the server's rule: not seen for ACTIVE_WINDOW_DAYS before the newest data)
+        # keep their train row; their schedule, run summary and search aliases are left out.
+        (newest,) = out_con.execute("SELECT MAX(last_seen_date) FROM src.train").fetchone()
+        cutoff = (date.fromisoformat(newest) - timedelta(days=ACTIVE_WINDOW_DAYS)).isoformat() if newest else ""
+        out_con.execute("CREATE TEMP TABLE retired (id INTEGER PRIMARY KEY)")
+        out_con.execute("INSERT INTO retired SELECT id FROM src.train WHERE last_seen_date < ?", (cutoff,))
+        retired = {train_id for (train_id,) in out_con.execute("SELECT id FROM retired")}
+        counts["retired_trains"] = len(retired)
+        out_retired, source_retired = "SELECT id FROM temp.retired", (
+            f"SELECT id FROM train WHERE last_seen_date < '{cutoff}'")  # cutoff is an ISO date we computed
         for table in COPIED + COPIED_LEAN:
             cols = ", ".join(f'"{r[1]}"' for r in out_con.execute(f"PRAGMA main.table_info({table})"))
+            only_running = (f" WHERE train_id IS NULL OR {_running(out_retired)}" if table == "search_alias" else "")
             counts[table] = out_con.execute(
-                f'INSERT INTO main."{table}" ({cols}) SELECT {cols} FROM src."{table}"').rowcount
+                f'INSERT INTO main."{table}" ({cols}) SELECT {cols} FROM src."{table}"{only_running}').rowcount
         out_con.commit()
         log(f"copied {sum(counts.values())} rows from {len(COPIED) + len(COPIED_LEAN)} tables")
 
         # Lookups, each distinct value once; id 0 is "none".
         lookups = {
             "variant_path": "SELECT path_sha1 AS v FROM src.train UNION SELECT path_sha1 FROM src.station_stop "
-                            "UNION SELECT path_sha1 FROM src.trip",
+                            f"WHERE {_running(out_retired)} UNION SELECT path_sha1 FROM src.trip "
+                            f"WHERE {_running(out_retired)}",
             "route_text": "SELECT route_path AS v FROM src.train",
             "place_name": "SELECT origin_name AS v FROM src.train UNION SELECT dest_name FROM src.train",
         }
@@ -205,7 +232,7 @@ def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
                 f"INSERT INTO {table} ({column}) SELECT DISTINCT v FROM ({values}) "
                 "WHERE v IS NOT NULL ORDER BY v").rowcount
             out_con.execute(f"CREATE UNIQUE INDEX build_{table} ON {table} ({column})")
-        kept = ", ".join(f't."{c}"' for c in train_kept)
+        kept = ", ".join("NULL" if c in UNREAD_TRAIN_COLUMNS else f't."{c}"' for c in train_kept)
         counts["trains"] = out_con.execute(
             f"INSERT INTO train_data ({', '.join(chr(34) + c + chr(34) for c in train_kept)}, path_id, "
             f"route_path_id, origin_name_id, dest_name_id) SELECT {kept}, COALESCE(vp.id, 0), COALESCE(rt.id, 0), "
@@ -220,10 +247,10 @@ def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
 
         path_ids = dict(out_con.execute("SELECT path_sha1, id FROM variant_path"))
         source_con = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
-        counts.update(_write_schedule(source_con, out_con, path_ids))
+        counts.update(_write_schedule(source_con, out_con, path_ids, retired))
         counts["train_variant_run"] = out_con.execute(
             "INSERT INTO variant_run_data SELECT g.train_id, COALESCE(vp.id, 0), g.last_service_date, g.n_runs "
-            f"FROM ({_RUN_SUMMARY.replace('FROM trip', 'FROM src.trip')}) g "
+            f"FROM ({_RUN_SUMMARY.format(trip='src.trip', running=_running(out_retired))}) g "
             "LEFT JOIN variant_path vp ON vp.path_sha1 = g.path_sha1 ORDER BY 1, 2").rowcount
         for view in (STATION_STOP_VIEW, TRAIN_VARIANT_RUN_VIEW, train_view(train_columns)):
             out_con.execute(view)
@@ -231,14 +258,21 @@ def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
         log(f"schedule: {counts['variants']} variants -> {counts['patterns']} patterns, "
             f"{counts['pattern_stops']} pattern stops; {counts['train_variant_run']} run-summary rows")
 
-        counts["schedule_rows"] = _verify_schedule(source_con, out_con)
-        train_select = f"SELECT {', '.join(chr(34) + c + chr(34) for c in train_columns)} FROM train ORDER BY id"
-        _verify("train", tuple(train_columns), 1, source_con.execute(train_select), out_con.execute(train_select))
+        counts["schedule_rows"] = _verify_schedule(source_con, out_con, source_retired)
+        read = [c for c in train_columns if c not in UNREAD_TRAIN_COLUMNS]
+        train_select = f"SELECT {', '.join(chr(34) + c + chr(34) for c in read)} FROM train ORDER BY id"
+        _verify("train", tuple(read), 1, source_con.execute(train_select), out_con.execute(train_select))
+        (filled,) = out_con.execute("SELECT COUNT(*) FROM train WHERE " + " OR ".join(
+            f'"{c}" IS NOT NULL' for c in UNREAD_TRAIN_COLUMNS)).fetchone()
+        if filled:
+            raise DeployedBuildError(f"{filled} trains have a value in a column the server never reads")
         summary = ("train_id", "path_sha1", "last_service_date", "n_runs")
-        _verify("run summary", summary, 2, source_con.execute(f"{_RUN_SUMMARY} ORDER BY train_id, path_sha1"),
+        running_summary = _RUN_SUMMARY.format(trip="trip", running=_running(source_retired))
+        _verify("run summary", summary, 2, source_con.execute(f"{running_summary} ORDER BY train_id, path_sha1"),
                 out_con.execute(f"SELECT {', '.join(summary)} FROM train_variant_run ORDER BY train_id, path_sha1"))
-        log(f"verified {counts['schedule_rows']} schedule rows, {counts['trains']} trains and "
-            f"{counts['train_variant_run']} run-summary rows against the collection database")
+        log(f"verified {counts['schedule_rows']} schedule rows of running trains, {counts['trains']} trains and "
+            f"{counts['train_variant_run']} run-summary rows against the collection database "
+            f"({counts['retired_trains']} retired trains keep only their train row)")
         for table in BUILD_INDEXES:  # the server only joins the lookups by id
             out_con.execute(f"DROP INDEX build_{table}")
         source_con.close()

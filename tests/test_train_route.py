@@ -214,3 +214,48 @@ def test_search_lists_a_line_once_rather_than_each_of_its_runs(session):
     assert [r["kind"] for r in queries.suggest(session, "re")] == ["line"]
     by_number = queries.suggest(session, "nx 268")
     assert [(r["name"], r["number_name"]) for r in by_number] == [("RE1", "NX 26811")]
+
+
+def _retire_the_fixture_train(session, last_seen="2026-08-12", newest="2026-09-28"):
+    """Make TRAIN_ID retired: last seen `last_seen`, while a running NX 26405 was seen `newest`."""
+    session.get(Train, TRAIN_ID).last_seen_date = last_seen
+    session.add(Train(id=TRAIN_ID + 1, source=SOURCE_TT, identity_key="tts:NX/26405", category="NX",
+                      segment="RV", train_number=26405, operator="NXRE", display_name="NX 26405", line_id=9,
+                      last_seen_date=newest))
+    session.flush()
+
+
+def test_a_retired_train_page_says_so_and_lists_no_stops(session):
+    """A train unseen for over 14 days before the newest data gets the retired message, no stops."""
+    _retire_the_fixture_train(session)
+    route = queries.train_route(session, TRAIN_ID)
+    assert route["retired"] == {"last_seen_date": "2026-08-12"}
+    assert route["stops"] == [] and route["n_monitored"] == 0
+    assert route["train"]["id"] == TRAIN_ID and route["train"]["n_stops"] == 0
+    assert "retired" not in queries.train_route(session, TRAIN_ID + 1)
+
+
+def test_a_train_seen_within_the_window_is_not_retired(session):
+    """Seen 14 days before the newest data is still running: the route is shown."""
+    _retire_the_fixture_train(session, last_seen="2026-09-14")
+    route = queries.train_route(session, TRAIN_ID)
+    assert "retired" not in route and [s["name"] for s in route["stops"]] == ["Duisburg Hbf", "Bochum Hbf"]
+
+
+def test_a_train_without_a_last_seen_date_is_never_retired(session):
+    """GTFS trains carry no last-seen date and always count as running."""
+    _retire_the_fixture_train(session, last_seen=None)
+    route = queries.train_route(session, TRAIN_ID)
+    assert "retired" not in route and route["stops"]
+
+
+def test_search_lists_the_running_train_not_the_retired_one(session):
+    """A number shared by a retired and a running train finds only the running one."""
+    _retire_the_fixture_train(session)
+    session.add_all([
+        SearchAlias(alias_norm="26405", alias_display="26405", kind="NUMBER", weight=100, train_id=TRAIN_ID),
+        SearchAlias(alias_norm="26405", alias_display="26405", kind="NUMBER", weight=100, train_id=TRAIN_ID + 1),
+    ])
+    session.flush()
+    hits = queries.suggest(session, "26405")
+    assert [h["url"] for h in hits if h["kind"] == "train"] == [f"/train/{TRAIN_ID + 1}/"]

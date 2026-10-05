@@ -37,6 +37,7 @@ def main() -> int:
     parser.add_argument("--station", type=int, action="append", default=[], help="also this station id")
     parser.add_argument("--train", type=int, action="append", default=[], help="also this train id")
     parser.add_argument("--line", type=int, action="append", default=[], help="also this line id")
+    parser.add_argument("--term", action="append", default=[], help="also search for this")
     parser.add_argument("--date", type=date.fromisoformat, default=local_date(int(time.time())),
                         help="service date for boards and runs-around (default: today in Germany)")
     parser.add_argument("--seed", type=int, default=0)
@@ -50,6 +51,7 @@ def main() -> int:
         picked["stations"] += args.station
         picked["trains"] += args.train
         picked["lines"] += args.line
+        picked["terms"] += args.term
         requests = requests_for(s, now=now, service_date=args.date, **picked)
     print(f"{len(requests)} requests: {len(picked['stations'])} stations, {len(picked['trains'])} trains, "
           f"{len(picked['lines'])} lines, {len(picked['corridors'])} line-less trains, "

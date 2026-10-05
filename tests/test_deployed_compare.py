@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from dbrel.db import make_engine
 from dbrel.deployed_build import build_deployed
 from dbrel.deployed_compare import compare, requests_for
+from dbrel.web import queries
 
 
 @pytest.fixture(scope="module")
@@ -58,3 +59,19 @@ def test_a_changed_platform_is_reported_with_its_path(databases, tmp_path):
     assert differences
     assert any("platform" in d and "'9'" in d for d in differences)
     assert any(d.startswith("board 2:") for d in differences)
+
+
+def test_a_copy_without_a_retired_trains_rows_still_answers_identically(tmp_path):
+    """With ICE 12 retired, its route (the retired message) and every other request match."""
+    ml_fixture.build(tmp_path / "collection.sqlite")
+    con = sqlite3.connect(tmp_path / "collection.sqlite")
+    con.execute("UPDATE train SET last_seen_date = '2026-08-01' WHERE id = 12")
+    con.execute("UPDATE train SET last_seen_date = '2026-09-10' WHERE id = 70")
+    con.commit()
+    con.close()
+    build_deployed(tmp_path / "collection.sqlite", tmp_path / "deployed.sqlite", log=lambda m: None)
+    collection, deployed = make_engine(tmp_path / "collection.sqlite"), make_engine(tmp_path / "deployed.sqlite")
+    with Session(deployed) as s:
+        requests = _requests(s)
+        assert queries.train_route(s, 12)["retired"] == {"last_seen_date": "2026-08-01"}
+    assert compare(collection, deployed, requests, log=lambda m: None) == []

@@ -52,6 +52,24 @@ function DelayCell({
   return <span className="block text-mist">{scheduled ? noPredictionLabel : "—"}</span>;
 }
 
+/**
+ * A service date ('YYYY-MM-DD') as the locale writes it: "12 Aug 2026" or "12.08.2026".
+ *
+ * @param day - the date, or null when unknown
+ * @param locale - the page language
+ * @returns the formatted date, or "—" when there is none
+ */
+function formatDay(day: string | null, locale: Locale): string {
+  if (!day) return "—";
+  const options: Intl.DateTimeFormatOptions =
+    locale === "de"
+      ? { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" }
+      : { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" };
+  return new Intl.DateTimeFormat(locale === "de" ? "de-DE" : "en-GB", options).format(
+    new Date(`${day}T00:00:00Z`),
+  );
+}
+
 export function TrainV2({ trainId, stationId, locale, bare = false, className }: Props) {
   const t = copy[locale];
   const { data: route, isLoading, isError } = useTrainRoute(trainId, stationId);
@@ -84,7 +102,7 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
     );
   }
 
-  const { train, stops, n_monitored } = route;
+  const { train, stops, n_monitored, retired } = route;
 
   const nameNodeFor = (stop: (typeof stops)[number]): ReactNode =>
     stop.monitored && stop.station_id ? (
@@ -130,8 +148,12 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
             </h2>
             <p className="mt-1 text-xs text-fog">
               {[train.category, train.operator].filter(Boolean).join(" · ")}
-              {" · "}
-              {train.n_stops} {t.stops}
+              {!retired && (
+                <>
+                  {" · "}
+                  {train.n_stops} {t.stops}
+                </>
+              )}
             </p>
             {train.line && (
               <Link
@@ -144,6 +166,14 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
           </div>
         </div>
       </div>
+
+      {retired && (
+        <Alert className="mt-4 border-amber bg-ink">
+          <AlertDescription className="text-sm text-paper">
+            {t.retiredTrain.replace("{date}", formatDay(retired.last_seen_date, locale))}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Phone: a stacked list -- `Table` doesn't reflow at narrow widths. */}
       <ol className="mt-2 sm:hidden">
@@ -187,7 +217,7 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
       </ol>
 
       {/* Desktop: the same data as a real table. */}
-      <div className="mt-5 hidden sm:block">
+      <div className={retired ? "hidden" : "mt-5 hidden sm:block"}>
         <Table>
           <TableHeader>
             <TableRow className="border-line hover:bg-transparent">
@@ -236,7 +266,7 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
         </Table>
       </div>
 
-      {n_monitored === 0 && (
+      {n_monitored === 0 && !retired && (
         <Alert className="mt-4 border-line bg-ink">
           <AlertDescription className="text-xs text-fog">{t.noMonitoredStops}</AlertDescription>
         </Alert>

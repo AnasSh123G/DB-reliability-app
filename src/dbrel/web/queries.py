@@ -493,6 +493,14 @@ def suggest(
             | SearchAlias.train_id.not_in(signed_by_line)
         )
 
+    cutoff = _active_cutoff(session)
+    if cutoff is not None:
+        # A retired train is not offered; filtered here, before the limit, so retired matches
+        # cannot take places from running ones.
+        conditions.append(
+            SearchAlias.train_id.is_(None) | Train.last_seen_date.is_(None) | (Train.last_seen_date >= cutoff)
+        )
+
     rows = session.execute(
         select(
             SearchAlias.alias_norm,
@@ -502,6 +510,7 @@ def suggest(
             SearchAlias.line_id,
             SearchAlias.train_id,
         )
+        .outerjoin(Train, Train.id == SearchAlias.train_id)
         .where(*conditions)
         .order_by(
             (SearchAlias.alias_norm == normalised).desc(),
@@ -911,6 +920,17 @@ def train_route(
     train = session.get(Train, train_id)
     if train is None:
         return None
+    if not _is_active(train, _active_cutoff(session)):
+        # Retired (not in the timetable for ACTIVE_WINDOW_DAYS): its last route no longer runs, so
+        # the page says so instead of showing it.
+        model = current_model()
+        return {
+            "train": _route_header(session, train, 0),
+            "retired": {"last_seen_date": train.last_seen_date},
+            "n_monitored": 0,
+            "model_stamp": model[0] if model is not None else None,
+            "stops": [],
+        }
 
     fv_id = tt_feed_version_id(session)
     is_holiday_flag = _is_holiday_flag(day_type)
@@ -1067,27 +1087,40 @@ def train_route(
             )
         stops.append(entry)
 
-    line_id = public_line_id(session, train)
-    line = _line_header(session, line_id) if line_id is not None else None
-
     return {
-        "train": {
-            "id": train.id,
-            "name": passenger_name(session, train),
-            "number_name": train.display_name or f"#{train.id}",
-            "category": train.category,
-            "segment": train.segment,
-            "number": train.train_number,
-            "operator": train.operator,
-            "origin": train.origin_name,
-            "destination": train.dest_name,
-            "n_stops": len(stops),
-            "line": {"id": line["id"], "name": line["name"]} if line else None,
-            "replacement_bus": (train.category or "").upper() == "BUS",
-        },
+        "train": _route_header(session, train, len(stops)),
         "n_monitored": sum(1 for s in stops if s["monitored"]),
         "model_stamp": model[0] if model is not None else None,
         "stops": stops,
+    }
+
+
+def _route_header(session: Session, train: Train, n_stops: int) -> dict:
+    """The `train` part of a train route response.
+
+    Args:
+        session: the database session.
+        train: the train the page is about.
+        n_stops: how many stops the response lists.
+
+    Returns:
+        Its names, category, operator, ends, stop count and line.
+    """
+    line_id = public_line_id(session, train)
+    line = _line_header(session, line_id) if line_id is not None else None
+    return {
+        "id": train.id,
+        "name": passenger_name(session, train),
+        "number_name": train.display_name or f"#{train.id}",
+        "category": train.category,
+        "segment": train.segment,
+        "number": train.train_number,
+        "operator": train.operator,
+        "origin": train.origin_name,
+        "destination": train.dest_name,
+        "n_stops": n_stops,
+        "line": {"id": line["id"], "name": line["name"]} if line else None,
+        "replacement_bus": (train.category or "").upper() == "BUS",
     }
 
 
