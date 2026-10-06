@@ -477,10 +477,14 @@ def suggest(
         # Not (yet) a train-number search: a run named by its line ("RB22",
         # see passenger_name) would only repeat that line once per run, so it
         # is left to the line's own result. An exact number still finds it.
+        # Asked of the alias's own train (EXISTS on its id), never as a list of all trains: in a
+        # deployed database `train` is a view, and a list or a LEFT JOIN makes SQLite build the
+        # whole view on every keystroke (2026-10-07: ~480 ms per search, 0.3 ms this way).
         signed_by_line = (
             select(Train.id)
             .join(ServiceLine, ServiceLine.id == Train.line_id)
             .where(
+                Train.id == SearchAlias.train_id,
                 func.coalesce(Train.segment, "") != "FV",
                 func.upper(func.trim(func.coalesce(ServiceLine.line, ""))).not_in(
                     BARE_CATEGORY_LINES
@@ -490,16 +494,16 @@ def suggest(
         conditions.append(
             (SearchAlias.alias_norm == normalised)
             | SearchAlias.train_id.is_(None)
-            | SearchAlias.train_id.not_in(signed_by_line)
+            | ~signed_by_line.exists()
         )
 
     cutoff = _active_cutoff(session)
     if cutoff is not None:
         # A retired train is not offered; filtered here, before the limit, so retired matches
-        # cannot take places from running ones.
-        conditions.append(
-            SearchAlias.train_id.is_(None) | Train.last_seen_date.is_(None) | (Train.last_seen_date >= cutoff)
-        )
+        # cannot take places from running ones. An alias whose train has no row, or no
+        # last_seen_date, stays (as the LEFT JOIN this replaces kept it).
+        retired = select(Train.id).where(Train.id == SearchAlias.train_id, Train.last_seen_date < cutoff)
+        conditions.append(SearchAlias.train_id.is_(None) | ~retired.exists())
 
     rows = session.execute(
         select(
@@ -510,7 +514,6 @@ def suggest(
             SearchAlias.line_id,
             SearchAlias.train_id,
         )
-        .outerjoin(Train, Train.id == SearchAlias.train_id)
         .where(*conditions)
         .order_by(
             (SearchAlias.alias_norm == normalised).desc(),
