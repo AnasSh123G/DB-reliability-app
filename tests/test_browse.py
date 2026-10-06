@@ -300,3 +300,26 @@ def test_two_runs_at_the_same_minute_come_out_in_row_id_order(session):
     # At 12:00 the two runs before are the 12:00 pair, in row-id order: RE 11 (stored first), then RE 13.
     trips = around(session, "12:00")["trips"]
     assert [t["number_name"] for t in trips] == ["RE 11", "RE 13", "RE 12"]
+
+
+def test_the_window_can_be_widened_to_a_different_count_each_side(session):
+    """`n_before` and `n_after` set how many runs come back on each side of the chosen time."""
+    hours = 14 * 3600  # between the 12:00 and 18:00 departures
+    one_side = queries.trips_around(session, LINE_ID, 0, 2, hours, n_before=1, n_after=0)
+    assert [t["number_name"] for t in one_side["trips"]] == ["RE 11"]
+    only_after = queries.trips_around(session, LINE_ID, 0, 2, hours, n_before=0, n_after=1)
+    assert [(t["number_name"], t["relation"]) for t in only_after["trips"]] == [("RE 12", "after")]
+
+
+def test_a_window_wider_than_the_stops_runs_lists_each_run_once_and_reports_how_many_exist(session):
+    """With 3 runs at the stop, asking for 5 each side still gives 3, and `n_calls` says 3."""
+    result = queries.trips_around(session, LINE_ID, 0, 2, 14 * 3600, n_before=5, n_after=5)
+    assert result["n_calls"] == 3
+    assert len(result["trips"]) == 3
+    assert queries.trips_around(session, LINE_ID, 0, UNCALLED_STATION_ID, 0)["n_calls"] == 0
+
+
+def test_the_default_window_is_two_before_and_one_after(session):
+    """Without counts the result is the one the page always showed: 2 before, 1 after."""
+    trips = around(session, "14:00")["trips"]
+    assert [t["relation"] for t in trips] == ["before", "before", "after"]

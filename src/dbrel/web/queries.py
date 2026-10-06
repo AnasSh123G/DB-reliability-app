@@ -1598,8 +1598,10 @@ def trips_around(
     *,
     day_type: str = DAY_TYPE_WEEKDAY,
     service_date: date_cls | None = None,
+    n_before: int = 2,
+    n_after: int = 1,
 ) -> dict | None:
-    """The 2 scheduled calls at or before a time, and the 1 right after.
+    """The `n_before` scheduled calls at or before a time and the `n_after` right after (2 and 1).
 
     The schedule is a recurring daily pattern -- that is the point of asking for
     a time of day rather than a timestamp -- so "before" and "after" wrap around
@@ -1608,7 +1610,8 @@ def trips_around(
     affect which trips are considered, since the underlying timetable pattern is
     itself dateless. Callers with an actual calendar date use resolve_day_type
     first, and pass that same date on as `service_date` for the model (which,
-    unlike the averages, needs an actual date rather than a day-type bucket).
+    unlike the averages, needs an actual date rather than a day-type bucket). A page that
+    slides its window earlier or later asks for more calls on that side.
     """
     line = _line_header(session, line_id)
     station = session.get(Station, station_id)
@@ -1620,6 +1623,7 @@ def trips_around(
     return _trips_around_in(
         session, header, halves[direction], direction, station, time_of_day_s,
         day_type=day_type, line_id=line_id, service_date=service_date,
+        n_before=n_before, n_after=n_after,
     )
 
 
@@ -1632,6 +1636,8 @@ def corridor_trips_around(
     *,
     day_type: str = DAY_TYPE_WEEKDAY,
     service_date: date_cls | None = None,
+    n_before: int = 2,
+    n_after: int = 1,
 ) -> dict | None:
     """trips_around for a line-less train's route; averages come per train."""
     station = session.get(Station, station_id)
@@ -1645,6 +1651,7 @@ def corridor_trips_around(
     return _trips_around_in(
         session, header, grouped[1][direction], direction, station, time_of_day_s,
         day_type=day_type, line_id=None, service_date=service_date,
+        n_before=n_before, n_after=n_after,
     )
 
 
@@ -1659,8 +1666,13 @@ def _trips_around_in(
     day_type: str,
     line_id: int | None,
     service_date: date_cls | None = None,
+    n_before: int = 2,
+    n_after: int = 1,
 ) -> dict:
     """The body of trips_around, for any set of trains running one direction.
+
+    Besides the picked calls, the payload's `n_calls` is how many distinct calls the stop has,
+    so a page knows how far its window can slide before it would repeat a run.
 
     `line_id` None means line-less trains: their averages are looked up per
     train (train_stop_delay_average) rather than per line and direction.
@@ -1679,6 +1691,7 @@ def _trips_around_in(
         "direction": direction,
         "station": {"id": station.id, "name": station.name},
         "model_stamp": model[0] if model is not None else None,
+        "n_calls": 0,
         "trips": [],
     }
     if not trains_by_id or fv_id is None:
@@ -1713,11 +1726,12 @@ def _trips_around_in(
     n = len(candidates)
     if n == 0:
         return payload
+    payload["n_calls"] = n
 
     times = [c[0] for c in candidates]
     after_idx = bisect.bisect_right(times, time_of_day_s)
 
-    # The two before/at and the one after, wrapping through index 0 when the
+    # The `n_before` before/at and the `n_after` after, wrapping through index 0 when the
     # chosen time is near either edge of the day. With fewer than 3 runs total
     # the same stop is picked more than once; dedup on the way out rather than
     # pretending three distinct trips exist when they do not.
@@ -1725,8 +1739,8 @@ def _trips_around_in(
     # midnight can put the "next" call earlier in the day than the chosen time
     # (23:00 -> next is 06:00), and it must still read as "after", not "before".
     picks = [
-        (i % n, "before" if slot < 2 else "after")
-        for slot, i in enumerate(((after_idx - 2), (after_idx - 1), after_idx))
+        (i % n, "before" if i < after_idx else "after")
+        for i in range(after_idx - n_before, after_idx + n_after)
     ]
 
     seen: set[int] = set()

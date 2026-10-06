@@ -1,7 +1,16 @@
 // The v2 search view, generated from v1's TrainSearch.tsx so it renders and behaves like it,
 // with its own visual identity (see openspec/changes/redesign-v2-visual-identity/design.md).
-import { ArrowRight, Clock3, MapPin, Route, Search, TrainFront } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  ArrowRight,
+  ChevronDown,
+  ChevronUp,
+  Clock3,
+  MapPin,
+  Route,
+  Search,
+  TrainFront,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +25,7 @@ import {
 } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
 import { copy, type Copy, type Locale } from "@/lib/i18n";
-import { trainRoute, type RouteRef, type SuggestResult } from "@/lib/api";
+import { trainRoute, type RouteRef, type SuggestResult, type TripAround } from "@/lib/api";
 import type { SidePrediction } from "@/lib/tabm";
 import { ModelDelta } from "./ModelDelta";
 import { TrainNumber } from "./TrainNumber";
@@ -40,7 +49,9 @@ function DelayBlock({
   if (scheduled && modelPred !== undefined) {
     return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
   }
-  return <span className="block text-[12.67px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
+  return (
+    <span className="block text-[12.67px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>
+  );
 }
 
 function kindIcon(kind: SuggestResult["kind"]) {
@@ -57,7 +68,12 @@ interface SavedSearch {
   date: string;
   time: string;
   submitted: boolean;
+  shift: number;
 }
+
+// How many runs the Prognose card shows at once, and how long its slide animation takes.
+const WINDOW_SIZE = 3;
+const SLIDE_MS = 300;
 
 // Module-level, not browser storage: it survives navigating to a train page
 // and back (the module stays loaded), and is empty again after a full reload
@@ -83,10 +99,17 @@ export function SearchV2({ locale }: Props) {
   // invalidates a result that no longer matches what's on screen, so it's
   // withdrawn until the button is pressed again.
   const [submitted, setSubmitted] = useState(savedSearch?.submitted ?? false);
+  // How far the window of runs is slid from the chosen time: -1 is one run earlier, +1 one later.
+  const [shift, setShift] = useState(savedSearch?.shift ?? 0);
 
   useEffect(() => {
-    savedSearch = { query, selectedLine, direction, stationId, date, time, submitted };
-  }, [query, selectedLine, direction, stationId, date, time, submitted]);
+    savedSearch = { query, selectedLine, direction, stationId, date, time, submitted, shift };
+  }, [query, selectedLine, direction, stationId, date, time, submitted, shift]);
+
+  // Editing any field withdraws the result, and the next Prognose starts at the chosen time again.
+  useEffect(() => {
+    if (!submitted) setShift(0);
+  }, [submitted]);
 
   const { data: suggestData } = useSuggest(query);
   const matches = suggestData?.results ?? [];
@@ -98,13 +121,18 @@ export function SearchV2({ locale }: Props) {
   const { data: stationsData } = useRouteStations(route, direction as 0 | 1 | undefined);
   const stations = stationsData?.stations ?? [];
 
-  const { data: aroundData, isLoading: aroundLoading } = useRouteTripsAround(
+  const {
+    data: aroundData,
+    isLoading: aroundLoading,
+    isPlaceholderData: aroundSwitching,
+  } = useRouteTripsAround(
     route,
     direction as 0 | 1 | undefined,
     stationId,
     date,
     time,
     submitted,
+    shift,
   );
   const trips = aroundData?.trips ?? [];
   const tripKey = (trip: (typeof trips)[number]) =>
@@ -113,6 +141,52 @@ export function SearchV2({ locale }: Props) {
     aroundData?.model_stamp,
     trips.map((trip) => ({ key: tripKey(trip), model_input: trip.model_input })),
   );
+
+  // The server returns every run the slid window needs; the 3 shown are a slice of them. The
+  // slice follows the shift the data was fetched for, not the button state, so it never mixes
+  // one answer with another's position while the next one loads.
+  const dataShift = aroundData?.shift ?? 0;
+  const visible = useMemo(
+    () => trips.slice(Math.max(0, dataShift), Math.max(0, dataShift) + WINDOW_SIZE),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aroundData],
+  );
+  // The window can slide while it would not repeat a run: n_calls distinct runs exist at this stop.
+  const nCalls = aroundData?.n_calls ?? 0;
+  const canSlide = (next: number) => WINDOW_SIZE + Math.abs(next) <= nCalls;
+  const canEarlier = !aroundSwitching && canSlide(shift - 1);
+  const canLater = !aroundSwitching && canSlide(shift + 1);
+
+  // What changed since the last answer shown: the runs that came in and the run that went out,
+  // for the slide animation. Worked out while rendering, so the first frame already has them.
+  const shown = useRef<{ shift: number; trips: TripAround[] } | null>(null);
+  const motion = useMemo(() => {
+    const before = shown.current;
+    if (!before || before.shift === dataShift) return null;
+    const nowKeys = new Set(visible.map(tripKey));
+    const beforeKeys = new Set(before.trips.map(tripKey));
+    return {
+      toEarlier: dataShift < before.shift,
+      entering: new Set(visible.map(tripKey).filter((key) => !beforeKeys.has(key))),
+      leaving: before.trips.filter((trip) => !nowKeys.has(tripKey(trip))),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aroundData]);
+  const [settledFor, setSettledFor] = useState<unknown>(null);
+  useEffect(() => {
+    shown.current = submitted ? { shift: dataShift, trips: visible } : null;
+    if (!motion) return;
+    const timer = setTimeout(() => setSettledFor(aroundData), SLIDE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aroundData, submitted]);
+  const moving = motion !== null && settledFor !== aroundData ? motion : null;
+  // Rows in on-screen order: the run that is leaving stays at the end it slides out of.
+  const rows = [
+    ...(moving && !moving.toEarlier ? moving.leaving.map((trip) => ({ trip, leaving: true })) : []),
+    ...visible.map((trip) => ({ trip, leaving: false })),
+    ...(moving?.toEarlier ? moving.leaving.map((trip) => ({ trip, leaving: true })) : []),
+  ];
 
   const canSubmit =
     selectedLine !== null &&
@@ -176,7 +250,10 @@ export function SearchV2({ locale }: Props) {
       <Card className="rounded-lg border border-line bg-panel p-4 text-paper shadow-none sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="relative" ref={searchFieldRef}>
-            <label htmlFor="train-search" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+            <label
+              htmlFor="train-search"
+              className="mb-1.5 block text-[13.67px] uppercase text-fog"
+            >
               {t.trainLabel}
             </label>
             <div className="flex h-[46px] items-center gap-2 rounded-md border border-line bg-ink px-3 focus-within:border-teal">
@@ -360,71 +437,102 @@ export function SearchV2({ locale }: Props) {
                   <Skeleton key={i} className="h-14 w-full bg-line" />
                 ))}
               </div>
-            ) : trips.length > 0 ? (
-              trips.map((trip) => {
+            ) : rows.length > 0 ? (
+              rows.map(({ trip, leaving }) => {
+                const slide = moving?.toEarlier ? "top" : "bottom";
+                const motionClass = leaving
+                  ? `pointer-events-none animate-out fade-out-0 duration-300 ${
+                      moving?.toEarlier ? "slide-out-to-bottom-6" : "slide-out-to-top-6"
+                    }`
+                  : moving?.entering.has(tripKey(trip))
+                    ? `animate-in fade-in-0 duration-300 slide-in-from-${slide}-6`
+                    : "";
                 const label = trip.relation === "after" ? t.selectedService : t.previousService;
                 const modelPred = predictions.get(tripKey(trip));
                 // A run that starts at this stop has no arrival to predict: show its departure.
                 const startsHere = trip.sched_arr === null && trip.sched_dep !== null;
                 return (
-                  <Button
-                    key={tripKey(trip)}
-                    variant="ghost"
-                    onClick={() => void navigate(v2Paths.train(trip.train_id, stationId))}
-                    className="h-auto w-full items-start justify-between gap-4 rounded-none px-1 py-4 text-left hover:bg-ink sm:px-3"
-                  >
-                    <span className="flex min-w-0 items-start gap-3">
-                      <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-teal text-action-foreground">
-                        <TrainFront className="size-4" />
-                      </span>
-                      <span className="min-w-0">
-                        <span className="flex items-center gap-1 text-[12.67px] uppercase text-fog">
-                          {label}
+                  <div key={tripKey(trip)} className={motionClass}>
+                    <Button
+                      variant="ghost"
+                      onClick={() => void navigate(v2Paths.train(trip.train_id, stationId))}
+                      className="h-auto w-full items-start justify-between gap-4 rounded-none px-1 py-4 text-left hover:bg-ink sm:px-3"
+                    >
+                      <span className="flex min-w-0 items-start gap-3">
+                        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-teal text-action-foreground">
+                          <TrainFront className="size-4" />
                         </span>
-                        <span className="mt-1 block font-display font-semibold text-paper">
-                          {trip.name}
-                          <TrainNumber name={trip.name} numberName={trip.number_name} />
+                        <span className="min-w-0">
+                          <span className="flex items-center gap-1 text-[12.67px] uppercase text-fog">
+                            {label}
+                          </span>
+                          <span className="mt-1 block font-display font-semibold text-paper">
+                            {trip.name}
+                            <TrainNumber name={trip.name} numberName={trip.number_name} />
+                          </span>
+                          {startsHere && (
+                            <Badge
+                              variant="outline"
+                              className="mt-1 border-amber text-[12.67px] font-normal text-amber"
+                            >
+                              {t.startsHere}
+                            </Badge>
+                          )}
                         </span>
-                        {startsHere && (
-                          <Badge
-                            variant="outline"
-                            className="mt-1 border-amber text-[12.67px] font-normal text-amber"
-                          >
-                            {t.startsHere}
-                          </Badge>
-                        )}
                       </span>
-                    </span>
-                    <span className="flex shrink-0 flex-col items-end gap-1 text-right">
-                      <span>
-                        <span className="block text-[12.67px] uppercase font-normal text-fog">
-                          {startsHere ? t.departure : t.arrival}
+                      <span className="flex shrink-0 flex-col items-end gap-1 text-right">
+                        <span>
+                          <span className="block text-[12.67px] uppercase font-normal text-fog">
+                            {startsHere ? t.departure : t.arrival}
+                          </span>
+                          <span className="mt-1 block font-mono text-sm text-mist">
+                            {(startsHere ? trip.sched_dep : trip.sched_arr) ?? "—"}
+                          </span>
+                          {!startsHere && (
+                            <DelayBlock
+                              scheduled={trip.sched_arr}
+                              modelPred={modelPred?.arr}
+                              noPredictionLabel={t.noPrediction}
+                              t={t}
+                            />
+                          )}
                         </span>
-                        <span className="mt-1 block font-mono text-sm text-mist">
-                          {(startsHere ? trip.sched_dep : trip.sched_arr) ?? "—"}
+                        <span className="mt-2 flex items-center justify-end gap-1 text-[12.67px] font-normal text-fog">
+                          <Clock3 className="size-3" />
+                          {t.openRoute}
+                          <ArrowRight className="size-3" />
                         </span>
-                        {!startsHere && (
-                          <DelayBlock
-                            scheduled={trip.sched_arr}
-                            modelPred={modelPred?.arr}
-                            noPredictionLabel={t.noPrediction}
-                            t={t}
-                          />
-                        )}
                       </span>
-                      <span className="mt-2 flex items-center justify-end gap-1 text-[12.67px] font-normal text-fog">
-                        <Clock3 className="size-3" />
-                        {t.openRoute}
-                        <ArrowRight className="size-3" />
-                      </span>
-                    </span>
-                  </Button>
+                    </Button>
+                  </div>
                 );
               })
             ) : (
               <p className="px-1 py-8 text-center text-sm text-fog">{t.nothingScheduled}</p>
             )}
           </div>
+          {rows.length > 0 && (
+            <div className="flex gap-3 border-t border-line px-1 pt-4 sm:px-3">
+              <Button
+                variant="outline"
+                onClick={() => setShift(shift - 1)}
+                disabled={!canEarlier}
+                className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40"
+              >
+                <ChevronUp className="size-4" />
+                {t.showEarlier}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setShift(shift + 1)}
+                disabled={!canLater}
+                className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40"
+              >
+                <ChevronDown className="size-4" />
+                {t.showLater}
+              </Button>
+            </div>
+          )}
         </Card>
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import * as api from "@/lib/api";
 
 // Matches dbrel.web.queries.MIN_QUERY_LEN -- below this the backend returns
@@ -31,6 +31,14 @@ export function useRouteStations(ref: api.RouteRef | undefined, direction: 0 | 1
   });
 }
 
+/**
+ * The runs around a chosen time, for a window slid `shift` runs from the chosen time.
+ *
+ * The window is always 3 runs: shift 0 is the 2 before and 1 after, shift -1 is the 3 before the
+ * chosen time, shift 1 is the 1 before and 2 after. The server is asked for every run the slid
+ * window needs; the result carries the `shift` it was fetched for, and the previous result stays
+ * on screen while the next one loads so the page can animate from one to the other.
+ */
 export function useRouteTripsAround(
   ref: api.RouteRef | undefined,
   direction: 0 | 1 | undefined,
@@ -38,11 +46,25 @@ export function useRouteTripsAround(
   date: string,
   time: string,
   submitted: boolean,
+  shift = 0,
 ) {
+  const before = 2 + Math.max(0, -shift);
+  const after = 1 + Math.max(0, shift);
   return useQuery({
-    queryKey: ["route-trips-around", ref?.kind, ref?.id, direction, stationId, date, time],
-    queryFn: () =>
-      api.routeTripsAround(ref as api.RouteRef, direction as 0 | 1, stationId as number, date, time),
+    queryKey: ["route-trips-around", ref?.kind, ref?.id, direction, stationId, date, time, shift],
+    queryFn: async () => ({
+      ...(await api.routeTripsAround(
+        ref as api.RouteRef,
+        direction as 0 | 1,
+        stationId as number,
+        date,
+        time,
+        before,
+        after,
+      )),
+      shift,
+    }),
+    placeholderData: keepPreviousData,
     // submitted: the request only ever fires from an explicit button press,
     // never just because every field happens to be filled in.
     enabled:

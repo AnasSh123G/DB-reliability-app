@@ -135,6 +135,8 @@ export interface TripsAroundResponse {
   direction: 0 | 1;
   station: { id: number; name: string };
   model_stamp: string | null;
+  /** How many distinct runs the stop has, so a window knows how far it can slide. */
+  n_calls?: number;
   trips: TripAround[];
   date?: string;
   day_type?: string;
@@ -242,12 +244,16 @@ export function routeTripsAround(
   stationId: number,
   date: string,
   time: string,
+  before = 2,
+  after = 1,
 ) {
   return apiFetch<TripsAroundResponse>(`${routeBase(ref)}/around`, {
     direction,
     station: stationId,
     date,
     time,
+    before,
+    after,
   });
 }
 

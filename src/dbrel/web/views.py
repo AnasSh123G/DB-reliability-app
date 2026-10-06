@@ -140,6 +140,26 @@ def corridor_trips_around(request, train_id: int):
     return _trips_around_response(queries.corridor_trips_around, train_id, request)
 
 
+MAX_WINDOW_SIDE = 40  # runs asked for on one side of the chosen time, at most
+
+
+def _window_size(request, name: str, default: int) -> int:
+    """How many runs the request wants on one side of the chosen time.
+
+    Args:
+        request: the Django request; `name` is a query parameter ("before" or "after").
+        name: the parameter to read.
+        default: the count when the parameter is missing or not a number.
+
+    Returns:
+        The count, kept between 0 and MAX_WINDOW_SIDE.
+    """
+    try:
+        return max(0, min(int(request.GET.get(name, default)), MAX_WINDOW_SIDE))
+    except ValueError:
+        return default
+
+
 def _trips_around_response(fetch, key_id: int, request):
     date_str = request.GET.get("date", "")
     try:
@@ -156,6 +176,7 @@ def _trips_around_response(fetch, key_id: int, request):
             status=400,
         )
     time_of_day_s = clock.hour * 3600 + clock.minute * 60
+    n_before, n_after = _window_size(request, "before", 2), _window_size(request, "after", 1)
     with read_scope() as session:
         from dbrel.models import Station
 
@@ -171,6 +192,8 @@ def _trips_around_response(fetch, key_id: int, request):
             time_of_day_s,
             day_type=day_type,
             service_date=date.fromisoformat(date_str),
+            n_before=n_before,
+            n_after=n_after,
         )
     if result is None:
         return JsonResponse({"error": "no such line, direction or station"}, status=404)
