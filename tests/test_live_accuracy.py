@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 import pytest
@@ -443,8 +444,10 @@ def test_cli_help_documents_the_flags():
 
     result = CliRunner().invoke(app, ["study", "live-accuracy", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--sample-size" in result.output and "--seed" in result.output
-    assert "--allow-uncapped" in result.output
+    # CI forces colour on, which puts escape codes inside the flag names.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--sample-size" in plain and "--seed" in plain
+    assert "--allow-uncapped" in plain
 
 
 def test_cli_run_against_a_fixture_writes_a_report(env, tabm_artifact, monkeypatch):  # noqa: F811
