@@ -4,6 +4,7 @@ import { ArrowRight, Clock3, MapPin, Route, Search, TrainFront } from "lucide-re
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -363,6 +364,8 @@ export function SearchV2({ locale }: Props) {
               trips.map((trip) => {
                 const label = trip.relation === "after" ? t.selectedService : t.previousService;
                 const modelPred = predictions.get(tripKey(trip));
+                // A run that starts at this stop has no arrival to predict: show its departure.
+                const startsHere = trip.sched_arr === null && trip.sched_dep !== null;
                 return (
                   <Button
                     key={tripKey(trip)}
@@ -382,22 +385,32 @@ export function SearchV2({ locale }: Props) {
                           {trip.name}
                           <TrainNumber name={trip.name} numberName={trip.number_name} />
                         </span>
+                        {startsHere && (
+                          <Badge
+                            variant="outline"
+                            className="mt-1 border-amber text-[12.67px] font-normal text-amber"
+                          >
+                            {t.startsHere}
+                          </Badge>
+                        )}
                       </span>
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1 text-right">
                       <span>
                         <span className="block text-[12.67px] uppercase font-normal text-fog">
-                          {t.arrival}
+                          {startsHere ? t.departure : t.arrival}
                         </span>
                         <span className="mt-1 block font-mono text-sm text-mist">
-                          {trip.sched_arr ?? "—"}
+                          {(startsHere ? trip.sched_dep : trip.sched_arr) ?? "—"}
                         </span>
-                        <DelayBlock
-                          scheduled={trip.sched_arr}
-                          modelPred={modelPred?.arr}
-                          noPredictionLabel={t.noPrediction}
-                          t={t}
-                        />
+                        {!startsHere && (
+                          <DelayBlock
+                            scheduled={trip.sched_arr}
+                            modelPred={modelPred?.arr}
+                            noPredictionLabel={t.noPrediction}
+                            t={t}
+                          />
+                        )}
                       </span>
                       <span className="mt-2 flex items-center justify-end gap-1 text-[12.67px] font-normal text-fog">
                         <Clock3 className="size-3" />
