@@ -1,5 +1,5 @@
 # Fly.io app. Create it once with `fly launch --no-deploy --copy-config`, then:
-#   fly volumes create dbrel_data --region fra --size 3
+#   fly volumes create dbrel_data --region fra --size 1
 #   (copy data/deploy/slim.sqlite to /data/dbrel.sqlite on the volume, see README "Deploying")
 #   fly deploy
 app = "bahnpredict"
@@ -32,4 +32,4 @@ primary_region = "fra"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  memory = "1gb"
