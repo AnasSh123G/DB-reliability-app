@@ -65,8 +65,11 @@ def suggest(request):
     only = request.GET.get("only")
     if only not in (None, "station", "line", "train"):
         return JsonResponse({"error": "only must be station, line or train"}, status=400)
+    state = request.GET.get("state") or None  # "" is "all of Germany"
+    if state is not None and state not in queries.STATES:
+        return JsonResponse({"error": f"state must be one of {', '.join(queries.STATES)}"}, status=400)
     with read_scope() as session:
-        results = queries.suggest(session, term, limit=8, only=only)
+        results = queries.suggest(session, term, limit=8, only=only, state=state)
     return JsonResponse({"query": term, "results": results})
 
 

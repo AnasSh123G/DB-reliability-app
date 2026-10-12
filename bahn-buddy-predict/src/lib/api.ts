@@ -203,8 +203,16 @@ async function apiFetch<T>(
   return res.json() as Promise<T>;
 }
 
-export function suggest(query: string, only?: "station" | "line" | "train") {
-  return apiFetch<SuggestResponse>("/api/suggest", { q: query, only });
+/**
+ * Stations, lines and trains whose name starts with `query`.
+ *
+ * @param query - what the user typed.
+ * @param only - limit the results to one kind.
+ * @param state - a Bundesland code (e.g. "DE-NW"): only lines and trains that stop there.
+ * @returns the server's matches.
+ */
+export function suggest(query: string, only?: "station" | "line" | "train", state?: string) {
+  return apiFetch<SuggestResponse>("/api/suggest", { q: query, only, state });
 }
 
 export function stationBoard(stationId: number, opts?: { backMin?: number; fwdMin?: number }) {

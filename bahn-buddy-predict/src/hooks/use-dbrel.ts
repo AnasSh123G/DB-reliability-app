@@ -5,11 +5,18 @@ import * as api from "@/lib/api";
 // [] without even scanning, so there's nothing to gain from querying sooner.
 const MIN_QUERY_LEN = 2;
 
-export function useSuggest(query: string) {
+/**
+ * Search results for `query`, narrowed to the lines and trains of `state` when one is given.
+ *
+ * @param query - what the user typed.
+ * @param state - a Bundesland code, or undefined for all of Germany.
+ * @returns the react-query result holding the matches.
+ */
+export function useSuggest(query: string, state?: string) {
   const trimmed = query.trim();
   return useQuery({
-    queryKey: ["suggest", trimmed],
-    queryFn: () => api.suggest(trimmed),
+    queryKey: ["suggest", trimmed, state ?? ""],
+    queryFn: () => api.suggest(trimmed, undefined, state),
     enabled: trimmed.length >= MIN_QUERY_LEN,
     staleTime: 30_000,
   });

@@ -26,6 +26,7 @@ import {
 import { useModelPredictions } from "@/hooks/use-tabm";
 import { copy, type Copy, type Locale } from "@/lib/i18n";
 import { trainRoute, type RouteRef, type SuggestResult, type TripAround } from "@/lib/api";
+import { isStateCode, statesFor, type StateCode } from "@/lib/states";
 import type { SidePrediction } from "@/lib/tabm";
 import { ModelDelta } from "./ModelDelta";
 import { TrainNumber } from "./TrainNumber";
@@ -103,12 +104,51 @@ const SLIDE_MS = 400;
 // -- which is also what the server renders, so hydration never mismatches.
 let savedSearch: SavedSearch | null = null;
 
+// The chosen Bundesland is a per-browser convenience, kept across visits.
+const STATE_KEY = "bahnpredict:state";
+
+/**
+ * The Bundesland this browser chose last time, if any.
+ *
+ * @returns its code, or "" for all of Germany (also when storage is unavailable).
+ */
+function readSavedState(): StateCode | "" {
+  try {
+    const stored = localStorage.getItem(STATE_KEY) ?? "";
+    return isStateCode(stored) ? stored : "";
+  } catch {
+    return "";
+  }
+}
+
 export function SearchV2({ locale }: Props) {
   const navigate = useNavigate();
   const t = copy[locale];
 
   const searchFieldRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState(savedSearch?.query ?? "");
+  // Read after the first render, not in useState's initializer: the server renders "" too, so
+  // hydration never mismatches.
+  const [region, setRegion] = useState<StateCode | "">("");
+  useEffect(() => setRegion(readSavedState()), []);
+  // Changing the state clears what was picked in the old one: the search text, the chosen line
+  // or train, its direction and stop, and any result on screen (date and time stay).
+  const chooseRegion = (next: StateCode | "") => {
+    if (next !== region) {
+      setQuery("");
+      setSelectedLine(null);
+      setDirection(undefined);
+      setStationId(undefined);
+      setSubmitted(false);
+      setSuggestionsOpen(false);
+    }
+    setRegion(next);
+    try {
+      localStorage.setItem(STATE_KEY, next);
+    } catch {
+      // per-viewer convenience only; fine if storage is unavailable
+    }
+  };
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [selectedLine, setSelectedLine] = useState<RouteRef | null>(
     savedSearch?.selectedLine ?? null,
@@ -134,7 +174,7 @@ export function SearchV2({ locale }: Props) {
     if (!submitted) setShift(0);
   }, [submitted]);
 
-  const { data: suggestData } = useSuggest(query);
+  const { data: suggestData } = useSuggest(query, region || undefined);
   const matches = suggestData?.results ?? [];
 
   const route = selectedLine ?? undefined;
@@ -356,8 +396,31 @@ export function SearchV2({ locale }: Props) {
   return (
     <div>
       <Card className="rounded-lg border border-line bg-panel p-4 text-paper shadow-none sm:p-5">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="relative" ref={searchFieldRef}>
+        {/* Two rows on wide screens: where and what (Bundesland, a wide search box), then
+            direction, stop, date and time. */}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label htmlFor="train-state" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+              {t.stateLabel}
+            </label>
+            <select
+              id="train-state"
+              value={region}
+              onChange={(event) => {
+                const next = event.target.value;
+                chooseRegion(isStateCode(next) ? next : "");
+              }}
+              className="h-[46px] w-full rounded-md border border-line bg-ink px-3 text-sm font-medium text-paper outline-none focus:border-teal"
+            >
+              <option value="">{t.allStates}</option>
+              {statesFor(locale).map((s) => (
+                <option key={s.code} value={s.code}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="relative lg:col-span-3" ref={searchFieldRef}>
             <label
               htmlFor="train-search"
               className="mb-1.5 block text-[13.67px] uppercase text-fog"

@@ -3,6 +3,8 @@ export type Locale = "de" | "en";
 export const copy = {
   de: {
     subtitle: "Fahrzeit-Prognose",
+    stateLabel: "Bundesland",
+    allStates: "Ganz Deutschland",
     trainLabel: "Station, Linie oder Zug",
     trainPlaceholder: "z. B. RE1, ICE 612, Aachen Hbf",
     line: "Linie / Zug",
@@ -69,6 +71,8 @@ export const copy = {
   },
   en: {
     subtitle: "Journey forecast",
+    stateLabel: "State",
+    allStates: "All of Germany",
     trainLabel: "Station, line or train",
     trainPlaceholder: "e.g. RE1, ICE 612, Aachen Hbf",
     line: "Line / train",

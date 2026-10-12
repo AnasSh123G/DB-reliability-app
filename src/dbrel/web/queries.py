@@ -374,13 +374,74 @@ def _line_endpoints(session: Session, line_ids: list[int]) -> dict[int, str]:
     }
 
 
+# The Bundesländer a search can be narrowed to, as station.state holds them (ISO 3166-2:DE).
+STATES = ("DE-BB", "DE-BE", "DE-BW", "DE-BY", "DE-HB", "DE-HE", "DE-HH", "DE-MV",
+          "DE-NI", "DE-NW", "DE-RP", "DE-SH", "DE-SL", "DE-SN", "DE-ST", "DE-TH")
+
+
+def _stops_in_state(session: Session, train_id, state: str):
+    """SQL: the train `train_id` has a scheduled stop at a station in `state`.
+
+    Args:
+        session: the database session, for the timetable feed's id.
+        train_id: a column (or value) holding the train's id; the EXISTS is correlated on it, so
+            SQLite looks the train's own stops up by its id instead of scanning a state's stations.
+        state: a Bundesland code from STATES.
+
+    Returns:
+        An EXISTS clause, true when the train calls at any station of `state`.
+    """
+    return (
+        select(StationStop.train_id)
+        .join(Station, Station.id == StationStop.station_id)
+        .where(
+            StationStop.train_id == train_id,
+            StationStop.feed_version_id == tt_feed_version_id(session),
+            Station.state == state,
+        )
+        .exists()
+    )
+
+
+def _lines_in_state(session: Session, line_ids: list[int], state: str, *, passenger: bool) -> set[int]:
+    """The lines among `line_ids` with a running train that stops in `state`.
+
+    Args:
+        session: the database session.
+        line_ids: passenger_line ids (`passenger` True) or service_line ids (False).
+        state: a Bundesland code from STATES.
+        passenger: which kind of line `line_ids` are.
+
+    Returns:
+        The ids of the lines that call somewhere in `state`.
+    """
+    if not line_ids:
+        return set()
+    cutoff = _active_cutoff(session)
+    running = () if cutoff is None else (Train.last_seen_date.is_(None) | (Train.last_seen_date >= cutoff),)
+    if passenger:
+        line, member = PassengerLine.id, (
+            select(PassengerLineMember.train_id)
+            .join(Train, Train.id == PassengerLineMember.train_id)
+            .where(PassengerLineMember.passenger_line_id == PassengerLine.id, *running,
+                   _stops_in_state(session, PassengerLineMember.train_id, state))
+        )
+    else:
+        line, member = ServiceLine.id, (
+            select(Train.id).where(Train.line_id == ServiceLine.id, *running,
+                                   _stops_in_state(session, Train.id, state))
+        )
+    return set(session.execute(select(line).where(line.in_(line_ids), member.exists())).scalars())
+
+
 def _passenger_line_results(
-    session: Session, service_line_ids: list[int], *, exact_line_ids: set[int]
+    session: Session, service_line_ids: list[int], *, exact_line_ids: set[int], state: str | None = None
 ) -> list[dict]:
     """Search results for the passenger lines behind matched service_line rows.
 
     Exact name matches first, trains before replacement buses, then the
     busiest line first -- "RE4" should open on the RE4 most people mean.
+    With `state`, only the lines that stop somewhere in that Bundesland.
     """
     bare = {
         line.id
@@ -406,6 +467,9 @@ def _passenger_line_results(
         .distinct()
     ).all():
         via.setdefault(passenger_line_id, set()).add(service_line_id)
+    if state is not None:
+        in_state = _lines_in_state(session, list(via), state, passenger=True)
+        via = {line_id: found for line_id, found in via.items() if line_id in in_state}
     if not via:
         return []
     runs = dict(
@@ -454,7 +518,7 @@ _TRAIN_NUMBER_MIN_DIGITS = 3
 
 
 def suggest(
-    session: Session, term: str, *, limit: int = 8, only: str | None = None
+    session: Session, term: str, *, limit: int = 8, only: str | None = None, state: str | None = None
 ) -> list[dict]:
     """Stations, lines and trains whose name starts with `term`.
 
@@ -462,7 +526,9 @@ def suggest(
     searchable form of every entity, and ix_alias_lookup turns the half-open
     range into a seek. `only` narrows the scan to one kind, for a picker that
     only ever wants lines, say, rather than filtering the general result client
-    side and hoping a line survives the top `limit` matches.
+    side and hoping a line survives the top `limit` matches. `state` (a code
+    from STATES) keeps only the lines and trains that stop somewhere in that
+    Bundesland; stations are offered from everywhere, their names being unique.
     """
     normalised = search_norm(term or "")
     if len(normalised) < MIN_QUERY_LEN:
@@ -504,6 +570,9 @@ def suggest(
         # last_seen_date, stays (as the LEFT JOIN this replaces kept it).
         retired = select(Train.id).where(Train.id == SearchAlias.train_id, Train.last_seen_date < cutoff)
         conditions.append(SearchAlias.train_id.is_(None) | ~retired.exists())
+    if state is not None:
+        # Before the limit too, so trains elsewhere cannot take the places of this state's.
+        conditions.append(SearchAlias.train_id.is_(None) | _stops_in_state(session, SearchAlias.train_id, state))
 
     rows = session.execute(
         select(
@@ -548,6 +617,14 @@ def suggest(
         if alias_norm == normalised:
             exact.add(key)
 
+    passenger_mode = _passenger_lines_ready(session)
+    if state is not None and not passenger_mode:
+        # Without passenger lines a matched service line is the result itself, so it is
+        # checked here; with them, _passenger_line_results checks each passenger line.
+        line_ids = [ident for kind, ident in order if kind == "line"]
+        in_state = _lines_in_state(session, line_ids, state, passenger=False)
+        order = [(kind, ident) for kind, ident in order if kind != "line" or ident in in_state]
+
     wanted: dict[str, list[int]] = {"station": [], "line": [], "train": []}
     for kind, ident in order:
         wanted[kind].append(ident)
@@ -558,12 +635,16 @@ def suggest(
             select(Station).where(Station.id.in_(wanted["station"]))
         ).scalars()
     } if wanted["station"] else {}
+    # With passenger lines built, matched service lines are only expanded into passenger lines
+    # (which carry their own endpoints and run counts), so their own rows, run counts and
+    # endpoints are looked up only without them (2026-10-07: ~110 ms of a 200 ms "bus" search).
+    service_lines = wanted["line"] if not passenger_mode else []
     lines = {
         row.id: row
         for row in session.execute(
-            select(ServiceLine).where(ServiceLine.id.in_(wanted["line"]))
+            select(ServiceLine).where(ServiceLine.id.in_(service_lines))
         ).scalars()
-    } if wanted["line"] else {}
+    } if service_lines else {}
     trains = {
         row.id: row
         for row in session.execute(
@@ -573,25 +654,26 @@ def suggest(
 
     # How many numbered runs each matched line has, so the result can say so.
     run_counts: dict[int, int] = {}
-    if wanted["line"]:
+    if service_lines:
         run_counts = dict(
             session.execute(
                 select(Train.line_id, func.count(Train.id))
-                .where(Train.line_id.in_(wanted["line"]))
+                .where(Train.line_id.in_(service_lines))
                 .group_by(Train.line_id)
             ).all()
         )
-    line_endpoints = _line_endpoints(session, wanted["line"])
+    line_endpoints = _line_endpoints(session, service_lines)
 
     # With passenger lines built, a matched service_line stands for every
     # passenger line its trains belong to (one "RE/4" row covers RE4s all over
     # Germany), each listed once and only while it still runs.
     passenger_results: list[dict] | None = None
-    if wanted["line"] and _passenger_lines_ready(session):
+    if wanted["line"] and passenger_mode:
         passenger_results = _passenger_line_results(
             session,
             [ident for kind, ident in order if kind == "line"],
             exact_line_ids={ident for kind, ident in exact if kind == "line"},
+            state=state,
         )
 
     results: list[dict] = []
