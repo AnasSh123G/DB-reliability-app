@@ -30,6 +30,19 @@ user came from.
   the board all share one content width. Each Prognose run is laid out with labelled parts:
   scheduled arrival, forecast delay, expected arrival. The delay is written as text ("+4 min",
   "on time") with an icon, so colour is never the only signal.
+- **Entries and layout (as built).** Each Prognose entry is a two-line, three-column row of one
+  fixed height in every case (a note or another day never makes it taller), under one column
+  header row, and the whole row opens the train page. The header also shows the direction; the
+  Earlier/Later buttons sit beside the list from tablet width; the Earlier/Later tags on entries
+  are gone. Times past midnight read 00:17, not 24:17. Dark-mode secondary text is lighter.
+- **Icons, reviewed.** Scheduled, delay, expected, arrival, departure, starts and ends here and
+  direction (two opposite arrows) each have an icon that says what they are.
+- **Stops in travel order.** The stop choices merge every run's stops, so a branch or detour stop
+  sits by its junction.
+- **Stepping without end.** Earlier/Later never stop: past a day's last run come the next day's
+  runs (and before the first, the previous day's), each with its date and forecast for that day.
+- **Station board entries.** The board's calls use the same entries, columns, icons and notes as
+  the Prognose card, with no Earlier/Later.
 - **Faster Earlier/Later.** The first request returns the 3 runs shown, and they are forecast
   first. The next request fetches the 12 runs before and the 12 runs after and forecasts them in
   the background. Each Earlier/Later press moves the window by 3 runs. When the window is within

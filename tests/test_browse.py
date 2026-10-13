@@ -323,3 +323,75 @@ def test_the_default_window_is_two_before_and_one_after(session):
     """Without counts the result is the one the page always showed: 2 before, 1 after."""
     trips = around(session, "14:00")["trips"]
     assert [t["relation"] for t in trips] == ["before", "before", "after"]
+
+
+# --- runs asked for by position -----------------------------------------------------------------
+
+
+def by_position(session, time_str, offset, count):
+    hh, mm = time_str.split(":")
+    return queries.trips_around(
+        session, LINE_ID, 0, 2, int(hh) * 3600 + int(mm) * 60, offset=offset, count=count
+    )["trips"]
+
+
+def test_the_default_window_is_positions_minus_two_to_zero(session):
+    """-2, -1 and 0 are the 2 at or before and the 1 after: the window the page opens on."""
+    trips = by_position(session, "14:00", -2, 3)
+    default = around(session, "14:00")["trips"]
+    assert [t["position"] for t in trips] == [-2, -1, 0]
+    assert [t["number_name"] for t in trips] == [t["number_name"] for t in default]
+    assert [t["relation"] for t in trips] == ["before", "before", "after"]
+
+
+def test_positions_wrap_past_the_end_of_the_day(session):
+    """Position 1 after 18:00 is the next morning's 06:00, and it still reads as 'after'."""
+    trips = by_position(session, "14:00", 1, 1)
+    assert [(t["number_name"], t["position"], t["relation"], t["day_offset"]) for t in trips] == [("RE 10", 1, "after", 1)]
+
+
+def test_a_chunk_larger_than_the_stops_runs_continues_into_the_next_days(session):
+    """With 3 runs a day, 12 positions are 4 days: every position is returned, with its day."""
+    trips = by_position(session, "14:00", 0, 12)
+    assert [t["position"] for t in trips] == list(range(12))
+    assert [t["number_name"] for t in trips[:6]] == ["RE 12", "RE 10", "RE 11", "RE 12", "RE 10", "RE 11"]
+    assert [t["day_offset"] for t in trips] == [0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4]
+
+
+def test_going_back_continues_into_the_days_before(session):
+    trips = by_position(session, "14:00", -6, 6)
+    assert [t["day_offset"] for t in trips] == [-2, -1, -1, -1, 0, 0]
+
+
+def test_consecutive_chunks_do_not_overlap(session):
+    """With 30 runs a day, positions 1..12 and 13..24 are 24 different runs."""
+    fv_id = tt_feed_version(session)
+    for index in range(27):  # 3 existing + 27 = 30 runs at Krefeld
+        train_id = 100 + index
+        session.add(Train(id=train_id, source=SOURCE_TT, identity_key=f"tts:RE/{train_id}", category="RE",
+                          segment="RV", train_number=train_id, operator="DB", display_name=f"RE {train_id}",
+                          line_id=LINE_ID, origin_name=ROUTE[0], dest_name=ROUTE[-1], n_stops=3,
+                          route_path="|".join(ROUTE), first_departure_sec=0))
+        session.flush()
+        for seq, station_id in enumerate((1, 2, 3), start=1):
+            minute = (index * 37) % 1440 + (seq - 2)  # spread over the day, one minute per stop
+            session.add(StationStop(feed_version_id=fv_id, train_id=train_id, stop_sequence=seq,
+                                    station_id=station_id, planned_arrival_sec=minute * 60 - 60,
+                                    planned_departure_sec=minute * 60))
+    session.flush()
+    first = by_position(session, "14:00", 1, 12)
+    second = by_position(session, "14:00", 13, 12)
+    assert [t["position"] for t in first] == list(range(1, 13))
+    assert [t["position"] for t in second] == list(range(13, 25))
+    assert not {t["train_id"] for t in first} & {t["train_id"] for t in second}
+
+
+def test_a_branch_stop_follows_its_junction_not_the_end_of_the_list():
+    """Main run A-B-C-D; a run to E branches off after B; one from F joins at C."""
+    order = queries._merge_stop_orders([(1, 2, 3, 4), (1, 2, 5), (6, 3, 4)])
+    assert order == [1, 2, 5, 6, 3, 4]
+
+
+def test_a_detour_sits_just_before_where_it_rejoins():
+    """A-B-C-D, and a run B-X-Y-D skipping C: X and Y go between C and D."""
+    assert queries._merge_stop_orders([(1, 2, 3, 4), (2, 7, 8, 4)]) == [1, 2, 3, 7, 8, 4]

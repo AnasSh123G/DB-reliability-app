@@ -1,7 +1,9 @@
 // The model's own delay figure, the only delay shown in the v2 views; the
 // historical average is no longer displayed.
+import { CircleCheck, OctagonAlert, TriangleAlert } from "lucide-react";
 import type { Copy } from "@/lib/i18n";
 import { addMinutes } from "@/lib/prediction";
+import { delayParts } from "./delay-parts";
 import type { SidePrediction } from "@/lib/tabm";
 
 // Language-neutral: the explanation in the tooltip is bilingual.
@@ -55,4 +57,47 @@ export function ModelDelta({
       </span>
     </span>
   );
+}
+
+const TONES = {
+  ok: { text: "text-teal", Icon: CircleCheck },
+  late: { text: "text-amber", Icon: TriangleAlert },
+  "very-late": { text: "text-danger", Icon: OctagonAlert },
+} as const;
+
+/**
+ * The forecast delay written out as "+4 min" or "on time", with an icon for how bad it is, so the
+ * colour is never the only way to read it.
+ *
+ * Args:
+ *   pred: the model's forecast for the call.
+ *   scheduled: the call's scheduled time, "HH:MM".
+ *   t: the page's translations.
+ */
+export function DelayText({
+  pred,
+  scheduled,
+  t,
+}: {
+  pred: SidePrediction;
+  scheduled: string;
+  t: Copy;
+}) {
+  const { minutes, onTime, level } = delayParts(pred, scheduled);
+  const { text, Icon } = TONES[level];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 font-mono text-sm font-semibold ${text}`}
+      title={`${RULE_TITLE[pred.rule]} · p25–p75: ${Math.round(pred.p25_min)} … ${Math.round(pred.p75_min)} min`}
+    >
+      <Icon className="size-4 shrink-0" aria-hidden="true" />
+      {onTime ? t.onTimeNow : t.delayMinutes.replace("{n}", String(minutes))}
+    </span>
+  );
+}
+
+/** The expected arrival time, in the colour of its delay. */
+export function ExpectedTime({ pred, scheduled }: { pred: SidePrediction; scheduled: string }) {
+  const { level, expected } = delayParts(pred, scheduled);
+  return <span className={`font-mono text-sm font-semibold ${TONES[level].text}`}>{expected}</span>;
 }

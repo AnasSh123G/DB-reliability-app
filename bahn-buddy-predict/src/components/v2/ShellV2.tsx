@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { copy, type Locale } from "@/lib/i18n";
+import { icons } from "./icons";
 import { v2Paths } from "./paths";
 
 interface Props {
@@ -25,78 +26,80 @@ export function ShellV2({ locale, isDark, setLocale, setIsDark, children }: Prop
       className={`v2 ${isDark ? "dark" : ""} min-h-screen bg-ink text-paper font-sans antialiased`}
     >
       <div className="mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-9">
-        <div className="mb-4 flex justify-end gap-2">
-          <div
-            className="inline-flex rounded-md border border-line bg-panel p-1"
-            role="group"
-            aria-label={locale === "de" ? "Farbschema" : "Color theme"}
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsDark(false)}
-              aria-label={locale === "de" ? "Heller Modus" : "Light mode"}
-              aria-pressed={!isDark}
-              title={locale === "de" ? "Heller Modus" : "Light mode"}
-              className="size-8 rounded text-fog hover:bg-ink hover:text-paper aria-pressed:bg-teal aria-pressed:text-action-foreground"
-            >
-              <Sun className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsDark(true)}
-              aria-label={locale === "de" ? "Dunkler Modus" : "Dark mode"}
-              aria-pressed={isDark}
-              title={locale === "de" ? "Dunkler Modus" : "Dark mode"}
-              className="size-8 rounded text-fog hover:bg-ink hover:text-paper aria-pressed:bg-teal aria-pressed:text-action-foreground"
-            >
-              <Moon className="size-4" />
-            </Button>
-          </div>
-          <div
-            className="inline-flex rounded-md border border-line bg-panel p-1"
-            role="group"
-            aria-label="Language"
-          >
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setLocale("de")}
-              aria-pressed={locale === "de"}
-              className={
-                locale === "de"
-                  ? "rounded bg-teal font-mono text-action-foreground hover:bg-teal hover:text-action-foreground"
-                  : "rounded font-mono text-fog hover:bg-ink hover:text-paper"
-              }
-            >
-              DE
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setLocale("en")}
-              aria-pressed={locale === "en"}
-              className={
-                locale === "en"
-                  ? "rounded bg-teal font-mono text-action-foreground hover:bg-teal hover:text-action-foreground"
-                  : "rounded font-mono text-fog hover:bg-ink hover:text-paper"
-              }
-            >
-              EN
-            </Button>
-          </div>
-        </div>
-        <header className="flex items-center justify-between border-b border-line pb-4">
+        <header className="flex items-center justify-between gap-3 border-b border-line pb-4">
           <Link {...v2Paths.home()} className="flex items-center gap-2.5">
-            <span className="inline-grid size-8 place-items-center rounded bg-teal font-mono font-semibold text-action-foreground">
-              H
+            <span className="inline-grid size-8 place-items-center rounded-md bg-teal text-action-foreground">
+              <icons.train className="size-5" aria-hidden="true" />
             </span>
             <div className="leading-none">
-              <p className="font-display font-semibold text-[17.67px] tracking-tight">BahnPredict</p>
+              <p className="font-display font-semibold text-[17.67px] tracking-tight">
+                BahnPredict
+              </p>
               <p className="text-[13.67px] text-fog mt-0.5">{t.subtitle}</p>
             </div>
           </Link>
+          <div className="flex shrink-0 items-center gap-2">
+            <div
+              className="inline-flex rounded-md border border-line bg-panel p-1"
+              role="group"
+              aria-label={locale === "de" ? "Farbschema" : "Color theme"}
+            >
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsDark(false)}
+                aria-label={locale === "de" ? "Heller Modus" : "Light mode"}
+                aria-pressed={!isDark}
+                title={locale === "de" ? "Heller Modus" : "Light mode"}
+                className="size-8 rounded text-fog hover:bg-ink hover:text-paper aria-pressed:bg-teal aria-pressed:text-action-foreground"
+              >
+                <Sun className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsDark(true)}
+                aria-label={locale === "de" ? "Dunkler Modus" : "Dark mode"}
+                aria-pressed={isDark}
+                title={locale === "de" ? "Dunkler Modus" : "Dark mode"}
+                className="size-8 rounded text-fog hover:bg-ink hover:text-paper aria-pressed:bg-teal aria-pressed:text-action-foreground"
+              >
+                <Moon className="size-4" />
+              </Button>
+            </div>
+            <div
+              className="inline-flex rounded-md border border-line bg-panel p-1"
+              role="group"
+              aria-label="Language"
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setLocale("de")}
+                aria-pressed={locale === "de"}
+                className={
+                  locale === "de"
+                    ? "rounded bg-teal font-mono text-action-foreground hover:bg-teal hover:text-action-foreground"
+                    : "rounded font-mono text-fog hover:bg-ink hover:text-paper"
+                }
+              >
+                DE
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setLocale("en")}
+                aria-pressed={locale === "en"}
+                className={
+                  locale === "en"
+                    ? "rounded bg-teal font-mono text-action-foreground hover:bg-teal hover:text-action-foreground"
+                    : "rounded font-mono text-fog hover:bg-ink hover:text-paper"
+                }
+              >
+                EN
+              </Button>
+            </div>
+          </div>
         </header>
 
         <section className="mt-6 sm:mt-8">{children}</section>

@@ -18,7 +18,7 @@ function TrainPageV2() {
 
   return (
     <ShellV2 locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
-      <TrainV2 trainId={Number(trainId)} stationId={station} locale={locale} className="mx-auto w-full max-w-3xl" />
+      <TrainV2 trainId={Number(trainId)} stationId={station} locale={locale} />
     </ShellV2>
   );
 }

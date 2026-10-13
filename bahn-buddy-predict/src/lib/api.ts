@@ -128,6 +128,10 @@ export interface TripAround {
   dep_pred: DelayPred | null;
   model_input: ModelInput | null;
   relation: "before" | "after";
+  /** 0 is the first run after the chosen time, -1 the last at or before it, and so on. */
+  position: number;
+  /** Which day the run is on, counted from the chosen date: 0 that day, 1 the next, -1 the one before. */
+  day_offset: number;
 }
 
 export interface TripsAroundResponse {
@@ -215,10 +219,23 @@ export function suggest(query: string, only?: "station" | "line" | "train", stat
   return apiFetch<SuggestResponse>("/api/suggest", { q: query, only, state });
 }
 
-export function stationBoard(stationId: number, opts?: { backMin?: number; fwdMin?: number }) {
+/**
+ * The calls at a station in a window around now, or around a chosen date and time.
+ *
+ * @param stationId - the station.
+ * @param opts - minutes to widen the window back and forward, and the moment to centre it on
+ *   (`date` YYYY-MM-DD and `time` HH:MM, both or neither).
+ * @returns the board.
+ */
+export function stationBoard(
+  stationId: number,
+  opts?: { backMin?: number; fwdMin?: number; date?: string; time?: string },
+) {
   return apiFetch<StationBoard>(`/api/station/${stationId}/board`, {
     back: opts?.backMin,
     fwd: opts?.fwdMin,
+    date: opts?.date,
+    time: opts?.time,
   });
 }
 
@@ -262,6 +279,38 @@ export function routeTripsAround(
     time,
     before,
     after,
+  });
+}
+
+/**
+ * `count` runs at a stop, starting `offset` runs from the chosen time.
+ *
+ * @param ref - the line or route.
+ * @param direction - 0 or 1.
+ * @param stationId - the stop.
+ * @param date - YYYY-MM-DD.
+ * @param time - HH:MM.
+ * @param offset - position of the first run wanted: 0 is the first run after the time, -1 the
+ *   last at or before it.
+ * @param count - how many runs.
+ * @returns the runs, each with its `position`, and how many distinct runs the stop has.
+ */
+export function routeTripsChunk(
+  ref: RouteRef,
+  direction: 0 | 1,
+  stationId: number,
+  date: string,
+  time: string,
+  offset: number,
+  count: number,
+) {
+  return apiFetch<TripsAroundResponse>(`${routeBase(ref)}/around`, {
+    direction,
+    station: stationId,
+    date,
+    time,
+    offset,
+    count,
   });
 }
 

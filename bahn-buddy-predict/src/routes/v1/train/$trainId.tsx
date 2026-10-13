@@ -12,7 +12,11 @@ function TrainPage() {
 
   return (
     <AppShell locale={locale} isDark={isDark} setLocale={setLocale} setIsDark={setIsDark}>
-      <TrainOverview trainId={Number(trainId)} locale={locale} className="mx-auto w-full max-w-3xl" />
+      <TrainOverview
+        trainId={Number(trainId)}
+        locale={locale}
+        className="mx-auto w-full max-w-3xl"
+      />
     </AppShell>
   );
 }

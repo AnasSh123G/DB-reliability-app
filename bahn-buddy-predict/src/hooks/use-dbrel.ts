@@ -1,4 +1,5 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
+import { useCallback, useState } from "react";
 import * as api from "@/lib/api";
 
 // Matches dbrel.web.queries.MIN_QUERY_LEN -- below this the backend returns
@@ -92,15 +93,27 @@ export function useTrainRoute(trainId: number | undefined, stationId?: number) {
   });
 }
 
+/**
+ * A station's board: live (window around now, refreshed every minute), or, with `date` and
+ * `time`, around that moment, which does not change and so is not refreshed.
+ */
 export function useStationBoard(
   stationId: number | undefined,
-  opts?: { backMin?: number; fwdMin?: number },
+  opts?: { backMin?: number; fwdMin?: number; date?: string; time?: string },
 ) {
+  const chosen = Boolean(opts?.date && opts?.time);
   return useQuery({
-    queryKey: ["station-board", stationId, opts?.backMin, opts?.fwdMin],
+    queryKey: [
+      "station-board",
+      stationId,
+      opts?.backMin,
+      opts?.fwdMin,
+      opts?.date ?? "",
+      opts?.time ?? "",
+    ],
     queryFn: () => api.stationBoard(stationId as number, opts),
     enabled: stationId !== undefined,
-    refetchInterval: 60_000,
+    refetchInterval: chosen ? false : 60_000,
   });
 }
 
@@ -110,4 +123,114 @@ export function useLineDetail(lineId: number | undefined) {
     queryFn: () => api.lineDetail(lineId as number),
     enabled: lineId !== undefined,
   });
+}
+
+/** A run of positions asked for from the server: `count` runs from `offset` (see api.routeTripsChunk). */
+export interface ChunkSpec {
+  offset: number;
+  count: number;
+}
+
+/** The runs a chunk request has returned. */
+export interface LoadedChunk extends ChunkSpec {
+  trips: api.TripAround[];
+}
+
+/** The window the page opens on: the 2 runs at or before the chosen time and the 1 after it. */
+export const FIRST_CHUNK: ChunkSpec = { offset: -2, count: 3 };
+
+/**
+ * The runs at a stop around a chosen time, fetched in chunks that are each requested once.
+ *
+ * The first chunk is the 3 runs the page opens on; more chunks are added with `request`, and each
+ * is cached by its own range, so asking for a neighbouring range never fetches a loaded run
+ * again. All chunks are dropped when the route, direction, stop, date or time changes.
+ *
+ * @param ref - the line or route.
+ * @param direction - 0 or 1.
+ * @param stationId - the stop.
+ * @param date - YYYY-MM-DD.
+ * @param time - HH:MM.
+ * @param submitted - false until the Prognose button was pressed; nothing is fetched before.
+ * @returns the loaded chunks in the order requested, every range asked for so far, the stop's
+ *   number of distinct runs and the model stamp (both from the first chunk), whether the first
+ *   chunk is still loading or failed, and `request` to add a chunk.
+ */
+export function useTripChunks(
+  ref: api.RouteRef | undefined,
+  direction: 0 | 1 | undefined,
+  stationId: number | undefined,
+  date: string,
+  time: string,
+  submitted: boolean,
+) {
+  const scope = [ref?.kind, ref?.id, direction, stationId, date, time].join("|");
+  const [added, setAdded] = useState<{ scope: string; chunks: ChunkSpec[] }>({
+    scope,
+    chunks: [],
+  });
+  const extra = added.scope === scope ? added.chunks : [];
+  const requested = [FIRST_CHUNK, ...extra];
+
+  const request = useCallback(
+    (offset: number, count: number) => {
+      setAdded((prev) => {
+        const base = prev.scope === scope ? prev.chunks : [];
+        if (base.some((c) => c.offset === offset && c.count === count)) return prev;
+        return { scope, chunks: [...base, { offset, count }] };
+      });
+    },
+    [scope],
+  );
+
+  const enabled =
+    submitted &&
+    ref !== undefined &&
+    direction !== undefined &&
+    stationId !== undefined &&
+    Boolean(date) &&
+    Boolean(time);
+  const results = useQueries({
+    queries: requested.map((chunk) => ({
+      queryKey: [
+        "route-trips-chunk",
+        ref?.kind,
+        ref?.id,
+        direction,
+        stationId,
+        date,
+        time,
+        chunk.offset,
+        chunk.count,
+      ],
+      queryFn: () =>
+        api.routeTripsChunk(
+          ref as api.RouteRef,
+          direction as 0 | 1,
+          stationId as number,
+          date,
+          time,
+          chunk.offset,
+          chunk.count,
+        ),
+      enabled,
+      staleTime: 5 * 60_000,
+    })),
+  });
+
+  const chunks: LoadedChunk[] = [];
+  results.forEach((result, i) => {
+    const spec = requested[i];
+    if (spec && result.data) chunks.push({ ...spec, trips: result.data.trips });
+  });
+  const first = results[0];
+  return {
+    chunks,
+    requested,
+    request,
+    nCalls: first?.data?.n_calls,
+    modelStamp: first?.data?.model_stamp,
+    isLoading: enabled && (first?.isLoading ?? true),
+    isError: first?.isError ?? false,
+  };
 }

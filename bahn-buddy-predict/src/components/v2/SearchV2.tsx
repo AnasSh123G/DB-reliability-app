@@ -1,81 +1,30 @@
 // The v2 search view, generated from v1's TrainSearch.tsx so it renders and behaves like it,
-// with its own visual identity (see openspec/changes/redesign-v2-visual-identity/design.md).
-import {
-  ArrowRight,
-  ChevronDown,
-  ChevronUp,
-  Clock3,
-  MapPin,
-  Route,
-  Search,
-  TrainFront,
-} from "lucide-react";
+// with its own visual identity (see openspec/changes/redesign-v2-visual-identity/design.md) and
+// the differences listed in openspec/changes/improve-v2-search-and-prognose.
+import { ChevronDown, ChevronUp, MapPin, Route, TrainFront } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  useRouteDirections,
-  useRouteStations,
-  useRouteTripsAround,
-  useSuggest,
-} from "@/hooks/use-dbrel";
-import { useModelPredictions } from "@/hooks/use-tabm";
-import { copy, type Copy, type Locale } from "@/lib/i18n";
-import { trainRoute, type RouteRef, type SuggestResult, type TripAround } from "@/lib/api";
+import { useRouteDirections, useRouteStations, useSuggest } from "@/hooks/use-dbrel";
+import { useRunWindow, type RunSlot } from "@/hooks/use-run-window";
+import { copy, type Locale } from "@/lib/i18n";
+import { trainRoute, type RouteRef, type SuggestResult } from "@/lib/api";
 import { isStateCode, statesFor, type StateCode } from "@/lib/states";
-import type { SidePrediction } from "@/lib/tabm";
-import { ModelDelta } from "./ModelDelta";
+import { FieldLabel } from "./FieldLabel";
+import { RUN_ROW_HEIGHT, RunColumnHeader, RunEntry } from "./RunEntry";
 import { TrainNumber } from "./TrainNumber";
+import { BoardV2 } from "./BoardV2";
+import { icons } from "./icons";
+import { addDays, formatRunDay } from "./run-format";
 import { v2Paths } from "./paths";
 
 interface Props {
   locale: Locale;
-}
-
-/**
- * The delay under a scheduled time.
- *
- * Args:
- *   scheduled: the scheduled time, or null when the run has none at this stop.
- *   modelPred: the model's forecast, once the browser has computed it.
- *   pending: true while that forecast is still being computed. Two blank lines then hold the
- *     height the forecast will take, so a row that slides in does not change size mid-slide.
- *   noPredictionLabel: shown when there is a time but the model has nothing for it.
- *   t: the page's translations.
- *
- * Returns: the forecast, its blank placeholder, or a short note.
- */
-function DelayBlock({
-  scheduled,
-  modelPred,
-  pending,
-  noPredictionLabel,
-  t,
-}: {
-  scheduled: string | null;
-  modelPred: SidePrediction | undefined;
-  pending: boolean;
-  noPredictionLabel: string;
-  t: Copy;
-}) {
-  if (scheduled && modelPred !== undefined) {
-    return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
-  }
-  if (scheduled && pending) {
-    return (
-      <span aria-hidden className="invisible block font-mono text-[12.67px] font-normal">
-        <span className="block">&nbsp;</span>
-        <span className="block">&nbsp;</span>
-      </span>
-    );
-  }
-  return (
-    <span className="block text-[12.67px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>
-  );
+  /** A station whose board to show under the form (from the address), for a date and time or now. */
+  initialStation?: { id: number; date?: string | undefined; time?: string | undefined } | undefined;
 }
 
 function kindIcon(kind: SuggestResult["kind"]) {
@@ -84,19 +33,28 @@ function kindIcon(kind: SuggestResult["kind"]) {
   return <TrainFront className="size-4 text-teal" />;
 }
 
+/** The board shown under the form: a station, for a date and time or (without) for now. */
+interface BoardFor {
+  id: number;
+  date?: string | undefined;
+  time?: string | undefined;
+}
+
 interface SavedSearch {
   query: string;
   selectedLine: RouteRef | null;
+  selectedStation: { id: number; name: string } | null;
+  boardFor: BoardFor | null;
+  selectedLabel: string;
   direction: number | undefined;
   stationId: number | undefined;
   date: string;
   time: string;
   submitted: boolean;
-  shift: number;
+  start: number;
 }
 
-// How many runs the Prognose card shows at once, and how long its slide animation takes.
-const WINDOW_SIZE = 3;
+// How long the Prognose card's slide animation takes.
 const SLIDE_MS = 400;
 
 // Module-level, not browser storage: it survives navigating to a train page
@@ -121,7 +79,33 @@ function readSavedState(): StateCode | "" {
   }
 }
 
-export function SearchV2({ locale }: Props) {
+/**
+ * A slot's identity on the page: its position, not its run. A short day wraps around, so one run
+ * can sit at two positions; the slide must move by positions, not by which run is where.
+ */
+const slotKey = (slot: RunSlot) => `position-${slot.position}`;
+
+/** Today's date in the browser's time zone, YYYY-MM-DD. */
+const todayDate = () => {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+
+/** The time now in the browser's time zone, HH:MM. */
+const nowTime = () => {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+};
+
+const QUICK_CLASS =
+  "inline-flex h-[42px] w-full items-center justify-center rounded-md border border-line bg-ink px-4 font-display text-[15px] font-semibold text-teal hover:bg-panel disabled:cursor-not-allowed disabled:opacity-40";
+
+const FIELD_CLASS =
+  "h-[46px] w-full rounded-md border border-line bg-ink px-3 text-sm font-medium text-paper outline-none focus:border-teal disabled:cursor-not-allowed disabled:opacity-50";
+
+export function SearchV2({ locale, initialStation }: Props) {
   const navigate = useNavigate();
   const t = copy[locale];
 
@@ -131,15 +115,17 @@ export function SearchV2({ locale }: Props) {
   // hydration never mismatches.
   const [region, setRegion] = useState<StateCode | "">("");
   useEffect(() => setRegion(readSavedState()), []);
-  // Changing the state clears what was picked in the old one: the search text, the chosen line
-  // or train, its direction and stop, and any result on screen (date and time stay).
+  // Changing the state clears what was picked in the old one: the search text, the chosen line,
+  // train or station, its direction and stop, and any result on screen (date and time stay).
   const chooseRegion = (next: StateCode | "") => {
     if (next !== region) {
       setQuery("");
       setSelectedLine(null);
+      setSelectedStation(null);
+      setSelectedLabel("");
       setDirection(undefined);
       setStationId(undefined);
-      setSubmitted(false);
+      withdraw();
       setSuggestionsOpen(false);
     }
     setRegion(next);
@@ -153,6 +139,10 @@ export function SearchV2({ locale }: Props) {
   const [selectedLine, setSelectedLine] = useState<RouteRef | null>(
     savedSearch?.selectedLine ?? null,
   );
+  // A chosen station: direction and stop do not apply, only a date and time for its board.
+  const [selectedStation, setSelectedStation] = useState(savedSearch?.selectedStation ?? null);
+  // The name the user picked in the suggestions; the Prognose card shows it once, in its header.
+  const [selectedLabel, setSelectedLabel] = useState(savedSearch?.selectedLabel ?? "");
   const [direction, setDirection] = useState<number | undefined>(savedSearch?.direction);
   const [stationId, setStationId] = useState<number | undefined>(savedSearch?.stationId);
   const [date, setDate] = useState(savedSearch?.date ?? "");
@@ -162,17 +152,13 @@ export function SearchV2({ locale }: Props) {
   // invalidates a result that no longer matches what's on screen, so it's
   // withdrawn until the button is pressed again.
   const [submitted, setSubmitted] = useState(savedSearch?.submitted ?? false);
-  // How far the window of runs is slid from the chosen time: -1 is one run earlier, +1 one later.
-  const [shift, setShift] = useState(savedSearch?.shift ?? 0);
-
-  useEffect(() => {
-    savedSearch = { query, selectedLine, direction, stationId, date, time, submitted, shift };
-  }, [query, selectedLine, direction, stationId, date, time, submitted, shift]);
-
-  // Editing any field withdraws the result, and the next Prognose starts at the chosen time again.
-  useEffect(() => {
-    if (!submitted) setShift(0);
-  }, [submitted]);
+  // The board of a station, shown under the form like a Prognose result.
+  const [boardFor, setBoardFor] = useState<BoardFor | null>(savedSearch?.boardFor ?? null);
+  // Any edit withdraws what is shown under the form.
+  const withdraw = () => {
+    setSubmitted(false);
+    setBoardFor(null);
+  };
 
   const { data: suggestData } = useSuggest(query, region || undefined);
   const matches = suggestData?.results ?? [];
@@ -184,164 +170,190 @@ export function SearchV2({ locale }: Props) {
   const { data: stationsData } = useRouteStations(route, direction as 0 | 1 | undefined);
   const stations = stationsData?.stations ?? [];
 
-  const {
-    data: aroundData,
-    isLoading: aroundLoading,
-    isPlaceholderData: aroundSwitching,
-  } = useRouteTripsAround(
-    route,
-    direction as 0 | 1 | undefined,
+  const { slots, start, canEarlier, canLater, step, predictions, isLoading, isError } =
+    useRunWindow(
+      route,
+      direction as 0 | 1 | undefined,
+      stationId,
+      date,
+      time,
+      submitted,
+      savedSearch?.start,
+    );
+
+  useEffect(() => {
+    savedSearch = {
+      query,
+      selectedLine,
+      selectedStation,
+      boardFor,
+      selectedLabel,
+      direction,
+      stationId,
+      date,
+      time,
+      submitted,
+      start,
+    };
+  }, [
+    query,
+    selectedLine,
+    selectedStation,
+    boardFor,
+    selectedLabel,
+    direction,
     stationId,
     date,
     time,
     submitted,
-    shift,
-  );
-  const trips = aroundData?.trips ?? [];
-  const tripKey = (trip: (typeof trips)[number]) =>
-    `${trip.train_id}-${trip.sched_dep ?? trip.sched_arr}`;
-  const predictions = useModelPredictions(
-    aroundData?.model_stamp,
-    trips.map((trip) => ({ key: tripKey(trip), model_input: trip.model_input })),
-  );
+    start,
+  ]);
 
-  // The server returns every run the slid window needs; the 3 shown are a slice of them. The
-  // slice follows the shift the data was fetched for, not the button state, so it never mixes
-  // one answer with another's position while the next one loads.
-  const dataShift = aroundData?.shift ?? 0;
-  const visible = useMemo(
-    () => trips.slice(Math.max(0, dataShift), Math.max(0, dataShift) + WINDOW_SIZE),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [aroundData],
-  );
-  // The window can slide while it would not repeat a run: n_calls distinct runs exist at this stop.
-  const nCalls = aroundData?.n_calls ?? 0;
-  const canSlide = (next: number) => WINDOW_SIZE + Math.abs(next) <= nCalls;
-
-  // What changed since the last answer shown: which way the window moved and which run went out,
+  // What changed since the last answer shown: which way the window moved and which runs went out,
   // for the slide animation. Worked out while rendering, so the first frame already has them.
-  const shown = useRef<{ shift: number; trips: TripAround[] } | null>(null);
+  const shown = useRef<{ start: number; slots: RunSlot[] } | null>(null);
   const motion = useMemo(() => {
     const before = shown.current;
-    if (!before || before.shift === dataShift) return null;
-    const nowKeys = new Set(visible.map(tripKey));
+    if (!before || before.start === start) return null;
+    const nowKeys = new Set(slots.map(slotKey));
     return {
-      toEarlier: dataShift < before.shift,
-      leaving: before.trips.filter((trip) => !nowKeys.has(tripKey(trip))),
+      toEarlier: start < before.start,
+      leaving: before.slots.filter((slot) => slot.trip && !nowKeys.has(slotKey(slot))),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aroundData]);
-  const [settledFor, setSettledFor] = useState<unknown>(null);
+  }, [start]);
+  const [settled, setSettled] = useState<unknown>(null);
   useEffect(() => {
-    shown.current = submitted ? { shift: dataShift, trips: visible } : null;
+    shown.current = submitted ? { start, slots } : null;
+  });
+  useEffect(() => {
     if (!motion) return;
-    const timer = setTimeout(() => setSettledFor(aroundData), SLIDE_MS);
+    const timer = setTimeout(() => setSettled(motion), SLIDE_MS);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aroundData, submitted]);
-  const moving = motion !== null && settledFor !== aroundData ? motion : null;
-  const canEarlier = !aroundSwitching && !moving && canSlide(shift - 1);
-  const canLater = !aroundSwitching && !moving && canSlide(shift + 1);
-  // The animation is a cassette: every run moves one row together, behind a window that shows
-  // exactly 3. The window clips, so a run leaves by sliding out of sight; the run that left is kept
-  // on the page, just outside the window, until the slide is over. The strip is drawn already
-  // moved by one row and slides back to rest.
+  }, [motion]);
+  const moving = motion !== null && settled !== motion ? motion : null;
+  const stepping = moving !== null;
+
+  // The animation is a cassette: every run moves together, behind a window that shows exactly
+  // the runs in view. The window clips, so a run leaves by sliding out of sight; the runs that
+  // left are kept on the page, just outside the window, until the slide is over. The strip is
+  // drawn already moved by the height of the runs that changed, and slides back to rest.
   const cassetteRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const ghostsRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (!moving || !cassetteRef.current || !listRef.current) return;
-    const rows = listRef.current.querySelectorAll<HTMLElement>("[data-trip]");
-    // Rows are all one height, so the distance from one row to the next is how far the strip moves.
-    const rowHeight = rows.length > 1 ? (rows[1]?.offsetTop ?? 0) - (rows[0]?.offsetTop ?? 0) : 0;
-    const from = moving.toEarlier ? -rowHeight : rowHeight;
+    let distance = 0;
+    if (moving.toEarlier) {
+      // The new runs come in at the top: move by their height.
+      const rows = listRef.current.querySelectorAll<HTMLElement>("[data-trip]");
+      const next = rows[moving.leaving.length];
+      distance = next ? next.offsetTop - (rows[0]?.offsetTop ?? 0) : listRef.current.offsetHeight;
+    } else {
+      distance = ghostsRef.current?.offsetHeight ?? 0;
+    }
+    const from = moving.toEarlier ? -distance : distance;
     cassetteRef.current.animate(
       [{ transform: `translateY(${from}px)` }, { transform: "translateY(0)" }],
       { duration: SLIDE_MS, easing: "cubic-bezier(0.4, 0, 0.2, 1)" },
     );
   }, [moving]);
 
-  // One run's row. `ghost` is the run that just left the window: it is placed just outside the end
-  // it left from, so it slides out of view with the strip.
-  const tripRow = (trip: TripAround, ghost: boolean) => {
-    const label = trip.relation === "after" ? t.selectedService : t.previousService;
-    const modelPred = predictions.get(tripKey(trip));
-    // A run that starts at this stop has no arrival to predict: show its departure.
-    const startsHere = trip.sched_arr === null && trip.sched_dep !== null;
+  // One run's row: two lines in three columns (scheduled · delay · expected), always the same
+  // height whatever the run is -- the date and any note have fixed places on the second line.
+  // `ghost` is a run that just left the window: it is placed just outside the end it left from,
+  // so it slides out of view with the strip.
+  const runRow = (slot: RunSlot, ghost: boolean) => {
+    const { trip } = slot;
+    if (!trip) {
+      return (
+        <div
+          key={slotKey(slot)}
+          data-trip={slotKey(slot)}
+          className={`${RUN_ROW_HEIGHT} px-2 py-2 sm:px-3`}
+        >
+          <Skeleton className="h-full w-full bg-line" aria-label={t.loading} />
+        </div>
+      );
+    }
+    const forecast = predictions.get(trip.position)?.arr;
+    const pending = forecast === undefined && trip.model_input !== null;
+    // A line's runs are all the searched line; only a route of differently numbered trains (an ICE
+    // route) names each run, and only when it is not the searched train itself.
+    const ownName = selectedLine?.kind === "corridor" && trip.name !== selectedLabel;
     return (
       <div
-        key={tripKey(trip)}
-        data-trip={ghost ? undefined : tripKey(trip)}
+        key={slotKey(slot)}
+        data-trip={ghost ? undefined : slotKey(slot)}
         aria-hidden={ghost || undefined}
-        className={
+        className={`${RUN_ROW_HEIGHT} ${
           ghost
-            ? `pointer-events-none absolute inset-x-0 border-line ${
-                moving?.toEarlier ? "top-full border-t" : "bottom-full border-b"
-              }`
-            : undefined
-        }
+            ? `pointer-events-none border-line ${moving?.toEarlier ? "border-t" : "border-b"}`
+            : ""
+        }`}
       >
-        <Button
-          variant="ghost"
-          onClick={() => void navigate(v2Paths.train(trip.train_id, stationId))}
-          className="h-auto min-h-36 w-full items-start justify-between gap-4 rounded-none px-1 py-4 text-left hover:bg-ink sm:px-3"
-        >
-          <span className="flex min-w-0 items-start gap-3">
-            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-teal text-action-foreground">
-              <TrainFront className="size-4" />
-            </span>
-            <span className="min-w-0">
-              <span className="flex items-center gap-1 text-[12.67px] uppercase text-fog">
-                {label}
-              </span>
-              <span className="mt-1 block font-display font-semibold text-paper">
-                {trip.name}
-                <TrainNumber name={trip.name} numberName={trip.number_name} />
-              </span>
-              {startsHere && (
-                <Badge
-                  variant="outline"
-                  className="mt-1 border-amber text-[12.67px] font-normal text-amber"
-                >
-                  {t.startsHere}
-                </Badge>
-              )}
-            </span>
-          </span>
-          <span className="flex shrink-0 flex-col items-end justify-between gap-1 self-stretch text-right">
-            <span>
-              <span className="block text-[12.67px] uppercase font-normal text-fog">
-                {startsHere ? t.departure : t.arrival}
-              </span>
-              <span className="mt-1 block font-mono text-sm text-mist">
-                {(startsHere ? trip.sched_dep : trip.sched_arr) ?? "—"}
-              </span>
-              {!startsHere && (
-                <DelayBlock
-                  scheduled={trip.sched_arr}
-                  modelPred={modelPred?.arr}
-                  pending={modelPred === undefined && trip.model_input !== null}
-                  noPredictionLabel={t.noPrediction}
-                  t={t}
-                />
-              )}
-            </span>
-            <span className="mt-2 flex items-center justify-end gap-1 text-[12.67px] font-normal text-fog">
-              <Clock3 className="size-3" />
-              {t.openRoute}
-              <ArrowRight className="size-3" />
-            </span>
-          </span>
-        </Button>
+        <RunEntry
+          link={v2Paths.train(trip.train_id, stationId)}
+          arrival={trip.sched_arr}
+          departure={trip.sched_dep}
+          forecast={forecast}
+          pending={pending}
+          day={formatRunDay(addDays(date, trip.day_offset), locale)}
+          name={ownName ? trip.name : undefined}
+          focusable={!ghost}
+          t={t}
+        />
       </div>
     );
   };
 
-  const canSubmit =
-    selectedLine !== null &&
-    direction !== undefined &&
-    stationId !== undefined &&
-    Boolean(date) &&
-    Boolean(time);
+  // A station needs only a date and a time; a line or train needs all five.
+  const canSubmit = selectedStation
+    ? Boolean(date) && Boolean(time)
+    : selectedLine !== null &&
+      direction !== undefined &&
+      stationId !== undefined &&
+      Boolean(date) &&
+      Boolean(time);
+
+  const submit = () => {
+    if (selectedStation) {
+      setBoardFor({ id: selectedStation.id, date, time });
+      return;
+    }
+    setSubmitted(true);
+  };
+
+  // A station from the address: its board opens under the form, for the date and time in the
+  // address or, without them, for now.
+  useEffect(() => {
+    if (!initialStation) return;
+    setSelectedLine(null);
+    setSelectedStation({ id: initialStation.id, name: "" });
+    setSelectedLabel("");
+    setQuery("");
+    setDirection(undefined);
+    setStationId(undefined);
+    setSubmitted(false);
+    if (initialStation.date && initialStation.time) {
+      setDate(initialStation.date);
+      setTime(initialStation.time);
+    }
+    setBoardFor({
+      id: initialStation.id,
+      date: initialStation.date,
+      time: initialStation.time,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialStation?.id, initialStation?.date, initialStation?.time]);
+  // The board knows the station's name; the search field and the form take it once it does.
+  const nameStation = (name: string) => {
+    setSelectedStation((current) =>
+      current && current.name === "" ? { ...current, name } : current,
+    );
+    setSelectedLabel((label) => label || name);
+    setQuery((current) => current || name);
+  };
 
   useEffect(() => {
     if (!suggestionsOpen) return;
@@ -357,19 +369,23 @@ export function SearchV2({ locale }: Props) {
   // A line or a specific train both resolve to the SAME gated flow (pick
   // direction, stop, date, time, then press Prognose) -- picking a train by
   // name is just a shortcut to its line (or, for a train with no line, the
-  // route grouped around it), never a way to skip the gate. Only a station
-  // is its own, immediate destination (a live board, not a prediction for a
-  // chosen stop/time).
+  // route grouped around it), never a way to skip the gate. A station keeps the
+  // user here too: it needs only a date and a time, then opens its board for
+  // that moment.
   const chooseSuggestion = async (result: SuggestResult) => {
     setSuggestionsOpen(false);
-    if (result.kind === "station") {
-      void navigate(v2Paths.station(result.id));
-      return;
-    }
-
     setDirection(undefined);
     setStationId(undefined);
-    setSubmitted(false);
+    withdraw();
+    setSelectedLabel(result.name);
+
+    if (result.kind === "station") {
+      setSelectedLine(null);
+      setSelectedStation({ id: result.id, name: result.name });
+      setQuery(result.name);
+      return;
+    }
+    setSelectedStation(null);
 
     if (result.kind === "line") {
       setSelectedLine({ kind: "line", id: result.id });
@@ -393,6 +409,13 @@ export function SearchV2({ locale }: Props) {
     );
   };
 
+  const stopName = stations.find((s) => s.id === stationId)?.name ?? t.selectedStop;
+  const flowChosen = selectedLine !== null || selectedStation !== null;
+  const directionLabel = directions.find((d) => d.direction === direction)?.label;
+  const DirectionIcon = icons.direction;
+  const Train = icons.train;
+  const Stop = icons.stop;
+
   return (
     <div>
       <Card className="rounded-lg border border-line bg-panel p-4 text-paper shadow-none sm:p-5">
@@ -400,9 +423,9 @@ export function SearchV2({ locale }: Props) {
             direction, stop, date and time. */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>
-            <label htmlFor="train-state" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+            <FieldLabel kind="state" htmlFor="train-state" className="mb-1.5">
               {t.stateLabel}
-            </label>
+            </FieldLabel>
             <select
               id="train-state"
               value={region}
@@ -410,7 +433,7 @@ export function SearchV2({ locale }: Props) {
                 const next = event.target.value;
                 chooseRegion(isStateCode(next) ? next : "");
               }}
-              className="h-[46px] w-full rounded-md border border-line bg-ink px-3 text-sm font-medium text-paper outline-none focus:border-teal"
+              className={FIELD_CLASS}
             >
               <option value="">{t.allStates}</option>
               {statesFor(locale).map((s) => (
@@ -421,14 +444,11 @@ export function SearchV2({ locale }: Props) {
             </select>
           </div>
           <div className="relative lg:col-span-3" ref={searchFieldRef}>
-            <label
-              htmlFor="train-search"
-              className="mb-1.5 block text-[13.67px] uppercase text-fog"
-            >
+            <FieldLabel kind="search" htmlFor="train-search" className="mb-1.5">
               {t.trainLabel}
-            </label>
+            </FieldLabel>
             <div className="flex h-[46px] items-center gap-2 rounded-md border border-line bg-ink px-3 focus-within:border-teal">
-              <Search className="size-4 shrink-0 text-fog" aria-hidden="true" />
+              <icons.search className="size-4 shrink-0 text-fog" aria-hidden="true" />
               <input
                 id="train-search"
                 value={query}
@@ -436,9 +456,11 @@ export function SearchV2({ locale }: Props) {
                 onChange={(event) => {
                   setQuery(event.target.value);
                   setSelectedLine(null);
+                  setSelectedStation(null);
+                  setSelectedLabel("");
                   setDirection(undefined);
                   setStationId(undefined);
-                  setSubmitted(false);
+                  withdraw();
                   setSuggestionsOpen(Boolean(event.target.value.trim()));
                 }}
                 placeholder={t.trainPlaceholder}
@@ -488,22 +510,19 @@ export function SearchV2({ locale }: Props) {
             )}
           </div>
           <div>
-            <label
-              htmlFor="train-direction"
-              className="mb-1.5 block text-[13.67px] uppercase text-fog"
-            >
+            <FieldLabel kind="direction" htmlFor="train-direction" className="mb-1.5">
               {t.direction}
-            </label>
+            </FieldLabel>
             <select
               id="train-direction"
               value={direction ?? ""}
               onChange={(event) => {
                 setDirection(event.target.value === "" ? undefined : Number(event.target.value));
                 setStationId(undefined);
-                setSubmitted(false);
+                withdraw();
               }}
               disabled={!selectedLine || directions.length === 0}
-              className="h-[46px] w-full rounded-md border border-line bg-ink px-3 text-sm font-medium text-paper outline-none focus:border-teal disabled:opacity-50"
+              className={FIELD_CLASS}
             >
               <option value="">{t.allDirections}</option>
               {directions.map((d) => (
@@ -514,18 +533,18 @@ export function SearchV2({ locale }: Props) {
             </select>
           </div>
           <div>
-            <label htmlFor="train-stop" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+            <FieldLabel kind="stop" htmlFor="train-stop" className="mb-1.5">
               {t.selectedStop}
-            </label>
+            </FieldLabel>
             <select
               id="train-stop"
               value={stationId ?? ""}
               onChange={(event) => {
                 setStationId(event.target.value === "" ? undefined : Number(event.target.value));
-                setSubmitted(false);
+                withdraw();
               }}
               disabled={stations.length === 0}
-              className="h-[46px] w-full rounded-md border border-line bg-ink px-3 text-sm font-medium text-paper outline-none focus:border-teal disabled:opacity-50"
+              className={FIELD_CLASS}
             >
               <option value="">—</option>
               {stations.map((s) => (
@@ -536,113 +555,175 @@ export function SearchV2({ locale }: Props) {
             </select>
           </div>
           <div>
-            <label htmlFor="train-date" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+            <FieldLabel kind="date" htmlFor="train-date" className="mb-1.5">
               {t.searchDate}
-            </label>
+            </FieldLabel>
             <input
               id="train-date"
               type="date"
               value={date}
               onChange={(event) => {
                 setDate(event.target.value);
-                setSubmitted(false);
+                withdraw();
               }}
-              disabled={!selectedLine}
-              className="h-[46px] w-full rounded-md border border-line bg-ink px-3 text-sm font-medium text-paper outline-none focus:border-teal disabled:opacity-50"
+              disabled={!flowChosen}
+              className={FIELD_CLASS}
             />
           </div>
+          <button
+            type="button"
+            disabled={!flowChosen}
+            onClick={() => {
+              setDate(todayDate());
+              withdraw();
+            }}
+            className={`${QUICK_CLASS} sm:col-start-1 sm:row-start-4 lg:col-start-3 lg:row-start-3`}
+          >
+            {t.today}
+          </button>
           <div>
-            <label htmlFor="train-time" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+            <FieldLabel kind="time" htmlFor="train-time" className="mb-1.5">
               {t.searchTime}
-            </label>
+            </FieldLabel>
             <input
               id="train-time"
               type="time"
               value={time}
               onChange={(event) => {
                 setTime(event.target.value);
-                setSubmitted(false);
+                withdraw();
               }}
-              disabled={!selectedLine}
-              className="h-[46px] w-full rounded-md border border-line bg-ink px-3 text-sm font-medium text-paper outline-none focus:border-teal disabled:opacity-50"
+              disabled={!flowChosen}
+              className={FIELD_CLASS}
             />
           </div>
+          <button
+            type="button"
+            disabled={!flowChosen}
+            onClick={() => {
+              setTime(nowTime());
+              withdraw();
+            }}
+            className={`${QUICK_CLASS} sm:col-start-2 sm:row-start-4 lg:col-start-4 lg:row-start-3`}
+          >
+            {t.now}
+          </button>
+          <Button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="h-[42px] w-full rounded-md bg-teal font-display font-semibold text-action-foreground hover:bg-teal disabled:opacity-40 sm:col-span-2 sm:row-start-5 lg:col-span-1 lg:col-start-1 lg:row-start-3"
+          >
+            {selectedStation ? t.showBoard : t.getPrognose}
+          </Button>
         </div>
-        <Button
-          onClick={() => setSubmitted(true)}
-          disabled={!canSubmit}
-          className="mt-3 h-[42px] w-full rounded-md bg-teal font-display font-semibold text-action-foreground hover:bg-teal disabled:opacity-40 sm:w-auto sm:px-8"
-        >
-          {t.getPrognose}
-        </Button>
       </Card>
 
-      {!submitted && selectedLine && (
-        <Alert className="mx-auto mt-4 max-w-3xl border-line bg-panel">
+      {!submitted && boardFor === null && flowChosen && (
+        <Alert className="mt-4 border-line bg-panel">
           <AlertDescription className="text-center text-xs text-fog">
-            {t.pickAllFields}
+            {selectedStation ? t.pickStationFields : t.pickAllFields}
           </AlertDescription>
         </Alert>
       )}
 
+      {boardFor && (
+        <BoardV2
+          stationId={boardFor.id}
+          date={boardFor.date}
+          time={boardFor.time}
+          locale={locale}
+          onName={nameStation}
+        />
+      )}
+
       {submitted && (
         <Card
-          className="mx-auto mt-6 max-w-3xl rounded-lg border border-line bg-panel p-5 text-paper shadow-none sm:p-7"
+          className="mt-6 rounded-lg border border-line bg-panel p-5 text-paper shadow-none sm:p-7"
           aria-live="polite"
         >
           <div className="flex items-center gap-3 border-b border-line pb-4">
-            <span className="grid size-9 place-items-center rounded-md bg-ink text-teal">
-              <MapPin className="size-4" />
+            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-ink text-teal">
+              <Train className="size-4" />
             </span>
-            <div>
-              <p className="text-[13.67px] uppercase text-fog">{t.serviceAt}</p>
-              <h2 className="mt-0.5 font-display text-lg font-semibold text-paper">
-                {stations.find((s) => s.id === stationId)?.name ?? t.selectedStop}
+            <div className="min-w-0">
+              <h2 className="font-display text-lg font-semibold text-paper">
+                {selectedLabel || query}
               </h2>
-            </div>
-          </div>
-          <div className="relative overflow-hidden">
-            <div ref={cassetteRef} className="relative">
-              <div ref={listRef} className="divide-y divide-line">
-                {aroundLoading ? (
-                  <div className="space-y-3 px-1 py-4" aria-label={t.loading}>
-                    {Array.from({ length: 3 }).map((_, i) => (
-                      <Skeleton key={i} className="h-14 w-full bg-line" />
-                    ))}
-                  </div>
-                ) : visible.length > 0 ? (
-                  visible.map((trip) => tripRow(trip, false))
-                ) : (
-                  <p className="px-1 py-8 text-center text-sm text-fog">{t.nothingScheduled}</p>
+              <p className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13.67px] text-fog">
+                {directionLabel && (
+                  <span className="inline-flex items-center gap-1.5" title={t.direction}>
+                    <DirectionIcon className="size-3.5 shrink-0" aria-hidden="true" />
+                    {directionLabel}
+                  </span>
                 )}
-              </div>
-              {/* Outside the divided list: as a child of it, the run that left would give the last
-                  real run a divider line for the length of the animation. */}
-              {moving?.leaving.map((trip) => tripRow(trip, true))}
+                <span className="inline-flex items-center gap-1.5" title={t.selectedStop}>
+                  <Stop className="size-3.5 shrink-0" aria-hidden="true" />
+                  {stopName}
+                </span>
+              </p>
             </div>
           </div>
-          {visible.length > 0 && (
-            <div className="flex gap-3 border-t border-line px-1 pt-4 sm:px-3">
-              <Button
-                variant="outline"
-                onClick={() => setShift(shift - 1)}
-                disabled={!canEarlier}
-                className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40"
-              >
-                <ChevronUp className="size-4" />
-                {t.showEarlier}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setShift(shift + 1)}
-                disabled={!canLater}
-                className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40"
-              >
-                <ChevronDown className="size-4" />
-                {t.showLater}
-              </Button>
+          {/* The runs, with Earlier/Later beside them from tablet width up, below them on a phone. */}
+          <div className="pt-3 sm:flex sm:items-stretch sm:gap-5">
+            <div className="min-w-0 flex-1">
+              <RunColumnHeader t={t} />
+              <div className="relative overflow-hidden">
+                <div ref={cassetteRef} className="relative">
+                  <div ref={listRef} className="divide-y divide-line">
+                    {isLoading ? (
+                      <div aria-label={t.loading}>
+                        {Array.from({ length: 3 }).map((_, i) => (
+                          <div key={i} className={`${RUN_ROW_HEIGHT} px-2 py-2 sm:px-3`}>
+                            <Skeleton className="h-full w-full bg-line" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : isError ? (
+                      <p className="px-1 py-8 text-center text-sm text-fog">{t.error}</p>
+                    ) : slots.length > 0 ? (
+                      slots.map((slot) => runRow(slot, false))
+                    ) : (
+                      <p className="px-1 py-8 text-center text-sm text-fog">{t.nothingScheduled}</p>
+                    )}
+                  </div>
+                  {/* Outside the divided list: as a child of it, the runs that left would give the
+                      last real run a divider line for the length of the animation. */}
+                  {moving && moving.leaving.length > 0 && (
+                    <div
+                      ref={ghostsRef}
+                      className={`pointer-events-none absolute inset-x-0 ${
+                        moving.toEarlier ? "top-full" : "bottom-full"
+                      }`}
+                    >
+                      {moving.leaving.map((slot) => runRow(slot, true))}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
-          )}
+            {slots.length > 0 && (
+              <div className="mt-3 flex gap-3 border-t border-line pt-4 sm:mt-0 sm:w-36 sm:flex-col sm:justify-center sm:gap-3 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-5">
+                <Button
+                  variant="outline"
+                  onClick={() => step(true)}
+                  disabled={!canEarlier || stepping}
+                  className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40 sm:aspect-square sm:h-auto sm:w-full sm:flex-none sm:flex-col sm:justify-center sm:gap-2"
+                >
+                  <ChevronUp className="size-4" />
+                  {t.showEarlier}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => step(false)}
+                  disabled={!canLater || stepping}
+                  className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40 sm:aspect-square sm:h-auto sm:w-full sm:flex-none sm:flex-col sm:justify-center sm:gap-2"
+                >
+                  <ChevronDown className="size-4" />
+                  {t.showLater}
+                </Button>
+              </div>
+            )}
+          </div>
         </Card>
       )}
     </div>

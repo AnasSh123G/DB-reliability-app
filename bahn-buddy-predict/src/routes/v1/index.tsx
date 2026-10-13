@@ -14,7 +14,8 @@ export const Route = createFileRoute("/v1/")({
       { property: "og:title", content: "BahnPredict — German Train Delay Averages" },
       {
         property: "og:description",
-        content: "Historical delay averages for German trains — expected delay, timings, and train info.",
+        content:
+          "Historical delay averages for German trains — expected delay, timings, and train info.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },

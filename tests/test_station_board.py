@@ -70,3 +70,64 @@ def test_no_forecast_anywhere_without_average_data(session):
 
 def test_unknown_station_is_none(session):
     assert queries.station_board(session, 999999) is None
+
+
+# --- a board for a chosen date and time -------------------------------------------------------
+
+
+def _moment(query: str):
+    """What the board view makes of `query`: (epoch or None, error or None)."""
+    import os
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "dbrel.web.settings")
+    import django
+
+    django.setup()
+    from django.test import RequestFactory
+
+    from dbrel.web import views
+
+    return views._chosen_moment(RequestFactory().get(f"/api/station/1/board?{query}"))
+
+
+def test_a_chosen_moment_centres_the_board_on_it_not_on_now(session):
+    epoch, problem = _moment("date=2026-09-21&time=08:00")
+    assert problem is None
+    board = queries.station_board(session, STATION_ID, now=epoch)
+    assert board["window"]["date"] == "2026-09-21"
+    assert {c["train"] for c in board["calls"]} == {"RE 10", "RE 20"}
+    far = queries.station_board(session, STATION_ID, now=epoch + 5 * 3600)
+    assert far["calls"] == []
+
+
+def test_no_date_and_time_means_now():
+    assert _moment("") == (None, None)
+
+
+def test_date_without_time_is_refused():
+    epoch, problem = _moment("date=2026-09-21")
+    assert epoch is None and "together" in problem
+
+
+def test_an_unreadable_value_is_named():
+    assert "'21.09.2026'" in _moment("date=21.09.2026&time=08:00")[1]
+    assert "'8am'" in _moment("date=2026-09-21&time=8am")[1]
+
+
+def test_the_view_answers_400_for_a_bad_moment():
+    import json
+
+    from django.test import RequestFactory
+
+    from dbrel.web import views
+
+    _moment("")  # sets Django up
+    response = views.station_board(RequestFactory().get("/api/station/1/board?date=nope&time=08:00"), 1)
+    assert response.status_code == 400
+    assert "date" in json.loads(response.content)["error"]
+
+
+def test_the_repeated_autumn_hour_means_the_first_one():
+    first, _ = _moment("date=2026-10-25&time=02:30")
+    after, _ = _moment("date=2026-10-25&time=03:30")
+    assert after - first == 2 * 3600  # 02:30 CEST, then 02:30 CET, then 03:30 CET

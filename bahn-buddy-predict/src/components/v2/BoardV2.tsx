@@ -1,75 +1,45 @@
 // The v2 station board, generated from v1's StationBoard.tsx so it renders and behaves like it,
-// with its own visual identity (see openspec/changes/redesign-v2-visual-identity/design.md).
-// The desktop board uses `Table`; phone width keeps a stacked list, since `Table` doesn't
-// reflow.
-import { ArrowLeft, MapPin } from "lucide-react";
-import { useState } from "react";
-import { Link } from "@tanstack/react-router";
+// with its own visual identity (see openspec/changes/redesign-v2-visual-identity/design.md). Its
+// calls are the same entries as the Prognose card's (see RunEntry), with a title line for the train.
+import { useEffect, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { useStationBoard } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
-import type { StationBoardCall } from "@/lib/api";
-import { copy, type Copy, type Locale } from "@/lib/i18n";
-import type { SidePrediction } from "@/lib/tabm";
-import { ModelDelta } from "./ModelDelta";
+import { copy, type Locale } from "@/lib/i18n";
+import { RUN_ROW_HEIGHT_TITLED, RunColumnHeader, RunEntry } from "./RunEntry";
+import { icons } from "./icons";
 import { TrainNumber } from "./TrainNumber";
+import { formatRunDay } from "./run-format";
 import { v2Paths } from "./paths";
 
 interface Props {
   stationId: number;
+  /** With `time`, the moment to show the board for; without them it is the live board. */
+  date?: string | undefined;
+  time?: string | undefined;
   locale: Locale;
+  /** Told the station's name once the board has it, for the search field. */
+  onName?: ((name: string) => void) | undefined;
 }
 
-function CallTags({ call, endsHereLabel }: { call: StationBoardCall; endsHereLabel: string }) {
-  return (
-    <p className="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[13.67px] text-fog">
-      <span className="truncate">{call.headline}</span>
-      {call.terminates && (
-        <Badge variant="outline" className="border-amber text-[12.67px] font-normal text-amber">
-          {endsHereLabel}
-        </Badge>
-      )}
-    </p>
-  );
-}
-
-function DelayBlock({
-  scheduled,
-  modelPred,
-  noPredictionLabel,
-  t,
-}: {
-  scheduled: string | null;
-  modelPred: SidePrediction | undefined;
-  noPredictionLabel: string;
-  t: Copy;
-}) {
-  if (scheduled && modelPred !== undefined) {
-    return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
-  }
-  return <span className="block text-[12.67px] text-fog">{scheduled ? noPredictionLabel : "—"}</span>;
-}
-
-export function BoardV2({ stationId, locale }: Props) {
+export function BoardV2({ stationId, date, time, locale, onName }: Props) {
   const t = copy[locale];
   const [widened, setWidened] = useState(false);
   const {
     data: board,
     isLoading,
     isError,
-  } = useStationBoard(stationId, widened ? { backMin: 120, fwdMin: 240 } : undefined);
+  } = useStationBoard(stationId, {
+    ...(widened ? { backMin: 120, fwdMin: 240 } : {}),
+    ...(date && time ? { date, time } : {}),
+  });
+  const stationName = board?.station.name;
+  useEffect(() => {
+    if (stationName) onName?.(stationName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stationName]);
   const predictions = useModelPredictions(
     board?.model_stamp,
     (board?.calls ?? []).map((call) => ({
@@ -110,17 +80,6 @@ export function BoardV2({ stationId, locale }: Props) {
       aria-labelledby="board-heading"
     >
       <div className="flex items-start gap-3 border-b border-line pb-5">
-        <Button
-          variant="ghost"
-          size="icon"
-          asChild
-          aria-label={t.back}
-          className="rounded-md text-fog hover:bg-ink hover:text-paper"
-        >
-          <Link {...v2Paths.home()}>
-            <ArrowLeft />
-          </Link>
-        </Button>
         <div>
           <p className="text-xs text-fog">{t.stationBoard}</p>
           <h2 id="board-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
@@ -132,7 +91,14 @@ export function BoardV2({ stationId, locale }: Props) {
             )}
           </h2>
           <p className="mt-1 text-xs text-fog">
-            {t.windowLabel}: {board.window.from} – {board.window.to} ({board.window.date})
+            <span className="inline-flex items-center gap-1.5">
+              <icons.time className="size-3.5 shrink-0" aria-hidden="true" />
+              {t.windowLabel}: {board.window.from} – {board.window.to}
+            </span>
+            <span className="ml-3 inline-flex items-center gap-1.5">
+              <icons.date className="size-3.5 shrink-0" aria-hidden="true" />
+              {board.window.date}
+            </span>
           </p>
           {!board.station.tracked && (
             <Alert className="mt-2 border-line bg-ink">
@@ -145,95 +111,36 @@ export function BoardV2({ stationId, locale }: Props) {
       </div>
 
       {board.calls.length > 0 ? (
-        <>
-          {/* Phone: a stacked list -- `Table` doesn't reflow at narrow widths. */}
-          <ol className="mt-2 sm:hidden">
+        <div className="mt-3">
+          <RunColumnHeader t={t} />
+          <ol className="divide-y divide-line">
             {board.calls.map((call) => {
+              const forecast = predictions.get(call.station_stop_id)?.arr;
               return (
-                <li
-                  key={call.station_stop_id}
-                  className="flex flex-wrap items-center justify-between gap-3 border-t border-line py-4"
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-ink text-teal">
-                      <MapPin className="size-4" />
-                    </span>
-                    <div className="min-w-0">
-                      <Link
-                        {...v2Paths.train(call.train_id, stationId)}
-                        className="font-display font-semibold text-paper hover:underline"
-                      >
-                        {call.train}
-                      </Link>
-                      <TrainNumber name={call.train} numberName={call.number_name} />
-                      <CallTags call={call} endsHereLabel={t.endsHere} />
-                    </div>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <span className="block text-[12.67px] uppercase font-normal text-fog">
-                      {t.arrival}
-                    </span>
-                    <span className="mt-1 block font-mono text-sm text-mist">
-                      {call.arr ?? "—"}
-                    </span>
-                    <DelayBlock
-                      scheduled={call.arr}
-                      modelPred={predictions.get(call.station_stop_id)?.arr}
-                      noPredictionLabel={t.noPrediction}
-                      t={t}
-                    />
-                  </div>
+                <li key={call.station_stop_id} className={RUN_ROW_HEIGHT_TITLED}>
+                  <RunEntry
+                    link={v2Paths.train(call.train_id, stationId)}
+                    arrival={call.arr}
+                    departure={call.dep}
+                    forecast={forecast}
+                    pending={forecast === undefined && call.model_input !== null}
+                    day={formatRunDay(call.service_date, locale)}
+                    title={
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        <span className="shrink-0 font-display font-semibold text-paper">
+                          {call.train}
+                        </span>
+                        <TrainNumber name={call.train} numberName={call.number_name} />
+                        <span className="truncate text-[13.67px] text-fog">{call.headline}</span>
+                      </span>
+                    }
+                    t={t}
+                  />
                 </li>
               );
             })}
           </ol>
-
-          {/* Desktop: the same data as a real table. */}
-          <div className="mt-2 hidden sm:block">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-line hover:bg-transparent">
-                  <TableHead />
-                  <TableHead className="text-[12.67px] uppercase text-fog">{t.arrival}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {board.calls.map((call) => {
-                  return (
-                    <TableRow key={call.station_stop_id} className="border-line hover:bg-ink/40">
-                      <TableCell className="min-w-0">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-ink text-teal">
-                            <MapPin className="size-4" />
-                          </span>
-                          <div className="min-w-0">
-                            <Link
-                              {...v2Paths.train(call.train_id, stationId)}
-                              className="font-display font-semibold text-paper hover:underline"
-                            >
-                              {call.train}
-                            </Link>
-                            <TrainNumber name={call.train} numberName={call.number_name} />
-                            <CallTags call={call} endsHereLabel={t.endsHere} />
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <span className="block font-mono text-sm text-mist">{call.arr ?? "—"}</span>
-                        <DelayBlock
-                          scheduled={call.arr}
-                          modelPred={predictions.get(call.station_stop_id)?.arr}
-                          noPredictionLabel={t.noPrediction}
-                          t={t}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        </>
+        </div>
       ) : (
         <div className="px-1 py-8 text-center text-sm text-fog">
           <p>{t.nothingScheduled}</p>

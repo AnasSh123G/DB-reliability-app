@@ -10,7 +10,14 @@ export const v2Paths = {
       params: { trainId: String(trainId) },
       search: { station: stationId },
     }) as const,
-  station: (stationId: number) =>
-    ({ to: "/station/$stationId", params: { stationId: String(stationId) } }) as const,
+  // The board of a station is shown on the search page, under the form. `moment`: a date
+  // (YYYY-MM-DD) and time (HH:MM) to show it for, instead of now.
+  station: (stationId: number, moment?: { date: string; time: string }) =>
+    ({
+      to: "/",
+      search: moment
+        ? { station: stationId, date: moment.date, time: moment.time }
+        : { station: stationId },
+    }) as const,
   line: (lineId: number) => ({ to: "/line/$lineId", params: { lineId: String(lineId) } }) as const,
 };

@@ -23,6 +23,7 @@ from dbrel.config import (
     FRONTEND_PORT,
     FRONTEND_PROXY_TIMEOUT_S,
     ML_MODELS_DIR,
+    TZ,
 )
 from dbrel.db import read_scope
 from dbrel.ml.bakeoff import current_artifact
@@ -90,10 +91,41 @@ def line_detail(request, line_id: int):
     return JsonResponse(detail)
 
 
+def _chosen_moment(request) -> tuple[int | None, str | None]:
+    """The moment a board is asked for, from its `date` (YYYY-MM-DD) and `time` (HH:MM).
+
+    Args:
+        request: the Django request.
+
+    Returns:
+        (epoch, None) for a chosen moment in local time, (None, None) when neither parameter is
+        given (the board is then "now"), or (None, message) when the values cannot be used.
+    """
+    raw_date, raw_time = request.GET.get("date"), request.GET.get("time")
+    if not raw_date and not raw_time:
+        return None, None
+    if not raw_date or not raw_time:
+        return None, "date and time must be given together"
+    try:
+        day = datetime.strptime(raw_date, "%Y-%m-%d")
+    except ValueError:
+        return None, f"date must be YYYY-MM-DD, got {raw_date!r}"
+    try:
+        clock = datetime.strptime(raw_time, "%H:%M")
+    except ValueError:
+        return None, f"time must be HH:MM, got {raw_time!r}"
+    # fold=0: on the autumn day the clock hour happens twice, and the first one is meant.
+    moment = day.replace(hour=clock.hour, minute=clock.minute, tzinfo=TZ, fold=0)
+    return int(moment.timestamp()), None
+
+
 def station_board(request, station_id: int):
     back_s, fwd_s = _window(request)
+    now, problem = _chosen_moment(request)
+    if problem:
+        return JsonResponse({"error": problem}, status=400)
     with read_scope() as session:
-        board = queries.station_board(session, station_id, back_s=back_s, fwd_s=fwd_s)
+        board = queries.station_board(session, station_id, now=now, back_s=back_s, fwd_s=fwd_s)
     if board is None:
         return JsonResponse({"error": f"no station {station_id}"}, status=404)
     return JsonResponse(board)
@@ -180,6 +212,15 @@ def _trips_around_response(fetch, key_id: int, request):
         )
     time_of_day_s = clock.hour * 3600 + clock.minute * 60
     n_before, n_after = _window_size(request, "before", 2), _window_size(request, "after", 1)
+    # By position instead: `count` runs from `offset` (0 = the first run after the chosen time).
+    offset = count = None
+    if request.GET.get("offset") is not None:
+        try:
+            offset = int(request.GET["offset"])
+            count = int(request.GET.get("count", ""))
+        except ValueError:
+            return JsonResponse({"error": "offset and count must be whole numbers"}, status=400)
+        count = max(1, min(count, MAX_WINDOW_SIDE))
     with read_scope() as session:
         from dbrel.models import Station
 
@@ -197,6 +238,8 @@ def _trips_around_response(fetch, key_id: int, request):
             service_date=date.fromisoformat(date_str),
             n_before=n_before,
             n_after=n_after,
+            offset=offset,
+            count=count,
         )
     if result is None:
         return JsonResponse({"error": "no such line, direction or station"}, status=404)

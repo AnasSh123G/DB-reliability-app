@@ -68,8 +68,8 @@ Choosing a line or a specific train from the search suggestions SHALL keep the u
 search view and lead into the same input flow. A specific train SHALL resolve to its line's
 real directions and stops. Choosing a station SHALL also keep the user on the search view, with
 the station's name in the search field and the direction and stop inputs shown as unavailable;
-pressing the control after choosing a date and a time SHALL open that station's board at that
-date and time.
+pressing the control after choosing a date and a time SHALL show that station's board at that
+date and time underneath the form, on the same page, as a Prognose result is shown.
 
 #### Scenario: Choosing a train does not open its route page
 - **WHEN** a user chooses a specific train from the search suggestions
@@ -90,9 +90,35 @@ date and time.
 #### Scenario: Choosing a station opens its board
 - **WHEN** a user has chosen a station, the date 2026-10-20 and the time 07:30, and presses the
   control
-- **THEN** that station's board opens for 07:30 on 2026-10-20
+- **THEN** that station's board for 07:30 on 2026-10-20 appears underneath the form, the address
+  stays the same, and the form stays in view
+
+#### Scenario: Editing withdraws the board
+- **WHEN** a board is shown and the user changes the search, the date or the time
+- **THEN** the board is withdrawn until the control is pressed again
+
+#### Scenario: Old and linked addresses lead to the same place
+- **WHEN** a user opens `/station/<id>` (with or without `?date=…&time=…`), or follows a station
+  link from a train page
+- **THEN** the search page opens with that station in the search field and its board underneath,
+  live when no date and time were given
 
 #### Scenario: Switching from a station to a line
 - **WHEN** a station is chosen and the user then types and chooses a line instead
 - **THEN** the direction and stop inputs become available again for that line, and the control
   goes back to needing all five inputs
+
+## ADDED Requirements
+
+### Requirement: Stops offered for a line are in travel order
+The stop choices offered for a line or route and direction SHALL be in the order a train
+travels them, merging the stops of every run so that a stop only some runs call at (a branch or
+a detour) sits next to the stops it follows and precedes, not at the end of the list.
+
+#### Scenario: A branch stop sits at its junction
+- **WHEN** most runs call at A, B, C, D and a few call at A, B, X, D
+- **THEN** the stops are offered as A, B, C, X, D
+
+#### Scenario: A stop only a minority call at is not last
+- **WHEN** one run calls at a stop the main runs skip
+- **THEN** it appears between its neighbours on that run, not after the last stop

@@ -78,10 +78,14 @@ shared.
 ### 3. Runs are addressed by position and loaded in chunks
 The trips-around endpoint gets two new parameters, `offset` and `count`. Position 0 is the first
 run after the chosen time (`after_idx`). Position -1 is the last run at or before it, and so on,
-modulo `n_calls` exactly as today. Each returned trip carries its `position`. The `count` cap is
-`MAX_WINDOW_SIDE`. `before`/`after` keep working, so v1 is untouched. Internally both forms
-become one list of positions, so the picking code stays a single path. The existing per-response
-dedup (by `stop.id`) stays, for `n_calls < count`.
+modulo `n_calls`, so the timetable repeats day after day. Each returned trip carries its
+`position` and its `day_offset` (which day it is on, counted from the chosen date: `i // n` for
+the picked index `i`). The `count` cap is `MAX_WINDOW_SIDE`. `before`/`after` keep working, so v1
+is untouched. Internally both forms become one list of positions, so the picking code stays a
+single path. Only `before`/`after` requests de-duplicate by `stop.id`; a position request returns
+every position, so a stop with 4 runs a day and `count=12` returns 3 days of runs. The model input
+of a run is built for the chosen date plus its `day_offset`, so another day's run is forecast for
+that day (the stored averages still use the chosen day's day type).
 
 In the frontend, `useRouteTripsAround` is replaced by a chunk hook built on `useQueries`. Each
 chunk is its own query, keyed by `(route, direction, station, date, time, offset, count)`, so a
@@ -91,28 +95,32 @@ chunk is fetched once and stays cached while the inputs don't change. The hook r
 Load order after Prognose:
 1. `offset=-2,count=3`, the window shown. Its forecast is its own `useModelPredictions` batch.
 2. Only after step 1 has both data and forecasts: `offset=-14,count=12` and `offset=1,count=12`,
-   each forecast in its own batch.
+   each forecast in its own batch (the model keys forecasts by position).
 3. While the window is at `[s, s+2]`, with `lo…hi` loaded: when `hi - (s+2) <= 6`, request
    `offset=hi+1,count=12`. When `s - lo <= 6`, request `offset=lo-12,count=12`.
 
-Requests stop once the span `hi - lo + 1` reaches `n_calls`. Beyond that, positions would only
-repeat runs already loaded.
+The hook keeps runs by position (no sharing between positions that are a day apart, since each
+has its own date and so its own forecast). Fetching ahead has no end.
 
 *Alternative:* keep `before`/`after` and grow them. That was rejected because every growth step
 fetches and forecasts the whole set again, which is the slowness the user reported.
 
-### 4. Window stepping and limits on positions
-The window start `s` begins at -2. Over the whole visit, the window's positions must span at
-most `n` = `n_calls` positions together with the initial window -2…0, so no run is shown twice.
-That means `s ≥ 1 - n` and `s + 2 ≤ n - 3`. Later sets `s' = min(s + 3, n - 5)`, Earlier sets
-`s' = max(s - 3, 1 - n)`. Each button is disabled when `s'` equals `s`, when `n < 3`, or while a
-slide is running. With `n < 3` the card shows the runs there are, once each. A step whose 3 runs
-are not loaded yet (the network is slower than the user) shows the skeleton rows for the missing
-positions. The prefetch in decision 3 is there so that this is rare.
+### 4. Window stepping has no limits
+The window start `s` begins at -2. Later sets `s' = s + 3`, Earlier sets `s' = s - 3`, with no
+clamp: the timetable repeats daily, so a stop with few runs a day just shows its runs again on
+the next day, each with that day's date. Buttons are disabled only while a slide is running (and
+before the first chunk has loaded). A step whose 3 runs are not loaded yet shows skeleton rows for
+the missing positions, keyed by position. The prefetch in decision 3 is there so that this is
+rare.
 
-The cassette now moves by `(s' - s)` rows instead of 1. The ghost rows are the runs that left
-the window: up to 3, placed outside the window on the side they left from. The existing
-`rowHeight` measurement and `SLIDE_MS` stay.
+The cassette moves by the number of positions that changed. Slots are keyed by position, not by
+run, so a run that appears in two slots (a short day wrapping) is still two slots and the ghosts
+are the positions that left the window. Its distance is measured: for Earlier the height of the
+rows that came in at the top, for Later the height of the ghost rows.
+
+*Alternative (first built, then dropped):* clamp the window to one pass round the day
+(`1 - n … n - 5`). It made Earlier/Later stop at a few-run stop and let a wrapped run appear in
+two slots, so the content shifted by more slots than the animation moved.
 
 ### 5. Header name, and per-run names only for line-less routes
 `savedSearch` stores `selectedLabel`, the `name` of the suggestion the user picked. The card
@@ -121,24 +129,29 @@ header shows a train icon, `selectedLabel`, and the stop name with its icon. For
 a row shows `trip.name` only when it differs from `selectedLabel`, because those runs are
 genuinely different trains (ICE 610, 614, …) and labelling them all "ICE 612" would be wrong.
 
-### 6. One run row with fixed, labelled slots
-A new `RunRow` component lays a run out in a fixed grid: relation tag (Früher/Später) → notes →
-three labelled cells (scheduled arrival · delay · expected arrival) → "open route". A run that
-starts here replaces the three cells with one notice block: icon, the sentence "Startet hier –
-keine Ankunft zu prognostizieren", and the departure time with its label, in the same row
-height. A run that ends here keeps the three cells and adds a notice line with its icon. The
-notices use the bordered amber style at full width, not a small badge. `ModelDelta` gains a
-compact mode that returns a signed text ("+4 min", "pünktlich"/"on time") plus a tone icon
-(check / clock / alert-triangle), so colour is never the only signal. The board and train page
-use the same `ModelDelta` mode and the same notices.
+### 6. One run entry: two lines, three columns, one fixed height
+An entry is a link (the whole row opens the train page) with a fixed height (`h-[4.25rem]` on the
+outer element, so the divider counts inside it) laid out as a grid of three equal columns plus a
+chevron. A single column header row above the list (scheduled · delay · expected, each with its
+icon; icons hidden on a phone) replaces per-entry labels. Line 1: scheduled time (the departure
+for a run that starts here), the delay text, the expected time. Line 2: the day (weekday and
+date, always shown), and in the delay/expected columns the notes: "starts here" or "ends here"
+with their icons, and for a corridor route the run's own name. A run that starts here has no
+arrival, so line 1's delay/expected columns hold one sentence ("no arrival, no forecast"). No
+entry has an optional extra line, so no case can be taller than another. The board uses the same
+layout (see §9).
+
+*Alternatives (first built, then dropped):* labelled cells inside each entry plus a full-width
+bordered notice. The notice made the entry taller; reserving room for it left large empty space
+in every other entry.
 
 ### 7. Icons: one map, lucide only
-A new `components/v2/icons.ts` exports a single mapping from each kind of field or value to its
-lucide icon: state → `Map`, search → `Search`, direction → `Signpost`, stop/station → `MapPin`,
-date → `CalendarDays`, time → `Clock3`, arrival → `ArrowDownToLine`, departure →
-`ArrowUpFromLine`, delay → `Timer`, starts here → `CirclePlay`, ends here → `CircleStop`,
-train → `TrainFront`. Labels render `<Icon/> text` through a small `FieldLabel` component. The
-app already uses lucide-react, so nothing new is installed.
+`components/v2/icons.ts` maps each kind to one lucide icon: state → `Map`, search → `Search`,
+direction → `ArrowRightLeft` (two arrows the opposite ways), stop/station → `MapPin`, date →
+`CalendarDays`, time → `Clock3`, scheduled → `CalendarClock`, delay → `Hourglass`, expected and
+arrival → `ArrowRightToLine`, departure → `ArrowRightFromLine`, starts here → `CirclePlay`, ends
+here → `Flag`, train → `TrainFront`. The first choice (download and upload arrows for arrival and
+departure) read badly and was replaced. Labels render `<Icon/> text` through `FieldLabel`.
 
 ### 8. Width, logo row, highlight
 - **Width.** Remove `max-w-3xl mx-auto` from the search result card, the hint and the train
@@ -151,11 +164,39 @@ app already uses lucide-react, so nothing new is installed.
   stop can be read without colour. The page scrolls that row into view once, on load. When the
   train does not call at `stationId`, nothing is highlighted.
 
+### 9. Station board entries reuse the Prognose entry
+`BoardV2` renders its calls with the same entry component and column header as the Prognose card
+(shared in `components/v2`), without the Earlier/Later column. A call has `arr` and `dep`: a call
+with no arrival shows "starts here" and its departure; one that terminates shows "ends here".
+The board's own columns are the same three. The day (second line) is the board's date, or the
+call's `service_date`. The desktop table and the phone list are replaced by this one layout, which
+already works at phone width.
+
+### 10. Earlier/Later beside the list; dark text
+The result body is a flex row from `sm` up: the list takes the width, the two buttons sit in a
+column to its right (`w-36`, a left divider), vertically centred. Below `sm` the buttons are a row
+under the list. In the v2 dark theme `--fog` and `--mist` are lightened so labels and secondary
+times read comfortably.
+
+### 11. Stop order: merge every run's sequence
+`_stations_in_travel_order` used to take the longest run's order and put every other run's stops at
+the end. It now collects each run variant's stop sequence, de-duplicates identical ones, and
+merges them (`_merge_stop_orders`): the longest first, then each further stop is inserted just
+before the stop where its run rejoins the order, or else right after the stop where it left.
+
+*Alternative:* a topological sort of all runs' successor pairs. It breaks on the loops that real
+timetables have (a ring line, a run in the other direction in the data), where the merge simply
+keeps the first order.
+
 ## Risks / Trade-offs
 
-- [Up to 27 runs forecast per Prognose instead of 3–5] → They are three small batches after the
-  first one has rendered. `predictBatch` runs off the main thread, and positions are capped by
-  `n_calls`.
+- [Up to 27 runs forecast per Prognose instead of 3–5, and more as the user steps] → They are
+  small batches after the first one has rendered, one after another. `predictBatch` runs off the
+  main thread.
+- [Averages for a run on another day use the chosen day's day type] → The model forecast, which
+  is the number shown, uses the run's own date. The averages are not shown on this card.
+- [A fixed row height can clip a long note or name] → Notes and names truncate; the whole text is
+  in the row's tooltip.
 - [Each chunk request still reads every call at the stop server side] → The same work the
   current single request does. The 12-run chunks only add model-input encoding for the runs
   asked for. Measure one hub stop (for example Köln Hbf, RE1) locally before and after.

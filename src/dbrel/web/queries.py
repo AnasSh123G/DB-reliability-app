@@ -1607,33 +1607,53 @@ def _stations_in_travel_order(
     if not rows:
         return []
 
-    # A numbered TT train can hold more than one station_stop variant (a
-    # wing/coupled service some days, solo others -- see StationStop.path_sha1),
-    # sharing the same stop_sequence numbers for different physical stops. The
-    # reference is picked as one (train, variant) pair -- whichever covers the
-    # most stations -- so `position` is never built by interleaving two
-    # variants' stop_sequences together.
-    coverage: dict[tuple[int, str | None], int] = {}
-    for train_id, variant, _station_id, _seq, _name in rows:
-        key = (train_id, variant)
-        coverage[key] = coverage.get(key, 0) + 1
-    reference_id, reference_variant = max(coverage, key=coverage.get)
-
-    position = {
-        station_id: seq
-        for train_id, variant, station_id, seq, _name in rows
-        if train_id == reference_id and variant == reference_variant
-    }
+    # Each (train, variant) is one sequence of stops. A numbered TT train can hold more than one
+    # variant (a wing/coupled service some days, solo others -- see StationStop.path_sha1),
+    # sharing stop_sequence numbers for different physical stops, so a sequence is never built
+    # by interleaving two variants.
+    sequences: dict[tuple[int, str | None], list[tuple[int, int]]] = {}
     names: dict[int, str] = {}
-    for _train_id, _variant, station_id, _seq, name in rows:
+    for train_id, variant, station_id, seq, name in rows:
+        sequences.setdefault((train_id, variant), []).append((seq, station_id))
         names.setdefault(station_id, name)
-
-    # A station only a non-reference train serves (a short working's own extra
-    # stop, say) has no position from the reference train -- keep it, just after
-    # everything the reference train does cover, rather than dropping it.
-    fallback = max(position.values(), default=0) + 1
-    ordered_ids = sorted(names, key=lambda sid: position.get(sid, fallback))
+    # Identical sequences add nothing; the longest goes first and sets the main order.
+    distinct = {tuple(sid for _seq, sid in sorted(stops)) for stops in sequences.values()}
+    ordered_ids = _merge_stop_orders(sorted(distinct, key=lambda stops: (-len(stops), stops)))
     return [{"id": station_id, "name": names[station_id]} for station_id in ordered_ids]
+
+
+def _merge_stop_orders(sequences: list[tuple[int, ...]]) -> list[int]:
+    """One travel order for every stop of several runs, the first run's order kept as it is.
+
+    A stop the order does not have yet goes between the stops its own run called at around it:
+    just before the stop where the run rejoins the order (a detour, or a run coming in from a
+    branch), or else right after the stop where it left (a branch to its own end). Branch stops
+    so sit by their junction instead of piling up at the end of the list.
+
+    Args:
+        sequences: each run's stations in its own calling order, the run to follow first.
+
+    Returns:
+        Every station once, in travel order.
+    """
+    order: list[int] = []
+    placed: set[int] = set()
+    for stops in sequences:
+        for i, station_id in enumerate(stops):
+            if station_id in placed:
+                continue
+            placed.add(station_id)
+            before = next((sid for sid in reversed(stops[:i]) if sid in placed and sid != station_id), None)
+            after = next((sid for sid in stops[i + 1:] if sid in placed), None)
+            if after is not None and (before is None or order.index(after) > order.index(before)):
+                # A detour (or a run joining from a branch): its stops go just before it rejoins.
+                order.insert(order.index(after), station_id)
+            elif before is not None:
+                order.insert(order.index(before) + 1, station_id)
+            else:
+                order.append(station_id)
+    return order
+
 
 
 def resolve_day_type(
@@ -1685,6 +1705,8 @@ def trips_around(
     service_date: date_cls | None = None,
     n_before: int = 2,
     n_after: int = 1,
+    offset: int | None = None,
+    count: int | None = None,
 ) -> dict | None:
     """The `n_before` scheduled calls at or before a time and the `n_after` right after (2 and 1).
 
@@ -1697,6 +1719,10 @@ def trips_around(
     first, and pass that same date on as `service_date` for the model (which,
     unlike the averages, needs an actual date rather than a day-type bucket). A page that
     slides its window earlier or later asks for more calls on that side.
+
+    `offset` and `count` ask for calls by position instead: position 0 is the first call after
+    the chosen time, -1 the last at or before it, and so on around the day. `count` calls from
+    `offset` come back, each carrying its `position`; they win over `n_before`/`n_after`.
     """
     line = _line_header(session, line_id)
     station = session.get(Station, station_id)
@@ -1708,7 +1734,7 @@ def trips_around(
     return _trips_around_in(
         session, header, halves[direction], direction, station, time_of_day_s,
         day_type=day_type, line_id=line_id, service_date=service_date,
-        n_before=n_before, n_after=n_after,
+        n_before=n_before, n_after=n_after, offset=offset, count=count,
     )
 
 
@@ -1723,6 +1749,8 @@ def corridor_trips_around(
     service_date: date_cls | None = None,
     n_before: int = 2,
     n_after: int = 1,
+    offset: int | None = None,
+    count: int | None = None,
 ) -> dict | None:
     """trips_around for a line-less train's route; averages come per train."""
     station = session.get(Station, station_id)
@@ -1736,7 +1764,7 @@ def corridor_trips_around(
     return _trips_around_in(
         session, header, grouped[1][direction], direction, station, time_of_day_s,
         day_type=day_type, line_id=None, service_date=service_date,
-        n_before=n_before, n_after=n_after,
+        n_before=n_before, n_after=n_after, offset=offset, count=count,
     )
 
 
@@ -1753,6 +1781,8 @@ def _trips_around_in(
     service_date: date_cls | None = None,
     n_before: int = 2,
     n_after: int = 1,
+    offset: int | None = None,
+    count: int | None = None,
 ) -> dict:
     """The body of trips_around, for any set of trains running one direction.
 
@@ -1823,24 +1853,30 @@ def _trips_around_in(
     # Position in this 3-slot picture, not a fresh tod comparison: wrapping past
     # midnight can put the "next" call earlier in the day than the chosen time
     # (23:00 -> next is 06:00), and it must still read as "after", not "before".
+    first, last = (-n_before, n_after) if offset is None else (offset, offset + (count or 0))
     picks = [
-        (i % n, "before" if i < after_idx else "after")
-        for i in range(after_idx - n_before, after_idx + n_after)
+        (after_idx + position, position, "before" if position < 0 else "after")
+        for position in range(first, last)
     ]
 
     seen: set[int] = set()
     picked: list[tuple] = []
-    for i, relation in picks:
-        _tod, stop = candidates[i]
-        if stop.id in seen:
-            continue
-        seen.add(stop.id)
-        picked.append((stop, relation))
+    for i, position, relation in picks:
+        _tod, stop = candidates[i % n]
+        # By position, the schedule repeats day after day, so a short day shows the same run again
+        # on the next day: each position is returned. Without positions, a run is listed once.
+        if offset is None:
+            if stop.id in seen:
+                continue
+            seen.add(stop.id)
+        # Which day this run is on, counted from the chosen date: 0 for the rest of that day, 1 for
+        # the next, -1 for the day before.
+        picked.append((stop, relation, position, i // n))
 
     is_holiday_flag = _is_holiday_flag(day_type)
     averages_direction = _AveragesDirection(line_directions_cache)
     trips = []
-    for stop, relation in picked:
+    for stop, relation, position, day_offset in picked:
         train = trains_by_id[stop.train_id]
         trip_start_time = _train_trip_start_time(train)
         # The averages are keyed by service_line and its own direction split,
@@ -1864,7 +1900,7 @@ def _trips_around_in(
                 model[1],
                 train=train,
                 station_id=station_id,
-                service_date=model_service_date,
+                service_date=model_service_date + timedelta(days=day_offset),
                 direction=model_direction.get(session, train),
                 holiday_set=holiday_set,
                 arr_sec=stop.planned_arrival_sec,
@@ -1884,6 +1920,8 @@ def _trips_around_in(
                 "dep_pred": _delay_pred(session, side="dep", **pred_kwargs),
                 "model_input": model_input,
                 "relation": relation,
+                "position": position,
+                "day_offset": day_offset,
             }
         )
     payload["trips"] = trips
