@@ -226,3 +226,6 @@ data/
 
 # Comparison-only models (larger than the 35 MB budget) are never served or committed.
 models/v*-comparison/
+
+# test scratch output
+.test-tmp/

@@ -1,0 +1,32 @@
+---
+kind: review
+title: "Review: dated schedule correction cache"
+---
+
+# Findings
+
+1. **High: incomplete archive coverage can still produce an accepted “unique” plan.** The correction policy uses plan uniqueness as a gate, but [build_trip_schedule_corrections.py](../scripts/build_trip_schedule_corrections.py:104) silently continues when `list_day()` returns no files and records no absent-day/partition marker. `ArchiveStore.list_day()` documents that an absent archive day returns an empty list. If one neighbor day is missing, a plan seen in the remaining days can still have `len(pp) == 1` and be applied at lines 138–145. The supplied archive probe lists only the three target dates, not their required −1/+1 neighbor days. Record the expected and available neighbor coverage per target date, and do not call a plan unique or correct a label when the source window has unreported gaps.
+
+2. **High: the changed-time half of the correction gate is not persisted or endpoint-qualified.** The script accepts a target when any parsed response has `event.changed_ts == actual` ([line 134](../scripts/build_trip_schedule_corrections.py:134)); it does not constrain that evidence to the intended change endpoint or retain its recording time, response hash, partition, or API name. The correction CSV appends only the plan receipt record ([lines 148–159](../scripts/build_trip_schedule_corrections.py:148)). Thus the output cannot independently audit that each corrected label met the approved raw-changed-timestamp condition. Persist a matching changed-response trace for each applied row and define which endpoint(s) satisfy the policy.
+
+3. **Medium: an interrupted date can duplicate correction evidence on resume.** A date’s evidence rows are appended and fsynced before its entry is committed to `progress.json` ([lines 153–161](../scripts/build_trip_schedule_corrections.py:153)). If the process stops in that interval, the next run recomputes and appends the same rows. The source comment acknowledges duplicates, but no deduplication or integrity check follows. Write idempotent per-date evidence chunks or deduplicate by `(date, stop_id)` before finalizing the manifest.
+
+4. **Medium: resume does not bind copied inputs or completed dates to their original binary/database snapshot.** The setup identity hashes the policy, script, and source `key.json` files only ([line 58](../scripts/build_trip_schedule_corrections.py:58)); `copy_bounded()` skips any existing destination file without comparing it to the source ([lines 38–48](../scripts/build_trip_schedule_corrections.py:38)). Progress then skips completed dates by date string alone. A changed source binary or database between an interrupted run and resume could therefore combine old completed labels with new work, or retain an incorrect existing feature copy. Record source binary identities and a stable database snapshot identity in the setup; verify existing destination hashes before reuse and reject resume when they differ.
+
+5. **Medium: the download inventory is not resumable as a complete run manifest.** `download_records` starts empty on every invocation, and `archive-acquisition.json` is overwritten as new dates are visited ([lines 84–112](../scripts/build_trip_schedule_corrections.py:84)). On resume, partitions used only by already-completed dates are omitted from that file. Per-date `progress.json` does retain local input hashes, but the acquisition report should merge its previous entries or be explicitly described as downloads encountered in the current invocation.
+
+## Review scope
+
+Reviewed the correction builder, approved policy text, archive acquisition helpers, and the small `archive-probe.json` metadata output. No datasets, database contents, model artifacts, jobs, or GPU work were accessed or executed.
+
+## Follow-up review: correction builder v2
+
+The v2 changes close the earlier implementation findings: missing declared archive hours retain original labels with status 5; corrections require a `/fchg` match recorded at least five minutes after the stored actual; that changed response is persisted with endpoint, receipt time, hash and partition; per-date evidence is atomically replaced and checked on resume; source database/column identities are frozen; reused feature copies are hash-checked; completed output blocks are verified; and the archive acquisition inventory is merged on resume. The 2 GiB private cap, zero-swap guard, 7 GiB host-memory floor, 16-row Parquet batches and 35 GiB disk reserve remain in place.
+
+1. **High: the canonical recency dates still conflict.** The appended boundary note says actual training rows end August 21, making the ramp July 21–August 21. But [Step 4](delay-recency-and-cause-spec.md:110) still defines `T = 2026-08-22` and `S = 2026-07-22`, and [Step 5](delay-recency-and-cause-spec.md:126) still describes the fit as through August 22. The trainer now derives the weight window from complete correction metadata, so implementation can be correct while the spec still tells a reader a different experiment was run. Update the canonical step text to distinguish requested cutoff from actual last training date and set the anchor to July 21–August 21.
+
+2. **Medium: the approved policy should state the v2 evidence gates explicitly.** The approved paragraph requires a matching raw changed timestamp, but omits the implementation’s `/fchg` endpoint and `recorded_at >= actual + 300s` rule, the declared target/neighbor-hour coverage requirement, and status 5 for incomplete coverage. Add these settled conditions so the written policy and the resumable implementation define the same accepted-label population.
+
+3. **Medium: pilot selection can silently omit a requested date.** `wanted` filters `all_dates` but the builder does not assert that all three requested dates were present and processed ([lines 85–89](../scripts/build_trip_schedule_corrections.py:85)). A missing prepared date would yield a pilot result without that date rather than fail. The existing `archive-probe.json` is for the earlier August 22 pilot, so it does not independently show neighbor coverage for the updated August 21 pilot. Require the exact three requested dates and expose each date’s declared coverage/result counts in the pilot summary.
+
+The code review did not inspect or poll the v2 pilot job or open any prepared/raw data. The earlier v1 review notes remain as history; the v2 status above supersedes their resolved items.

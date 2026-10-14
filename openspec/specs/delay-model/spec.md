@@ -209,30 +209,6 @@ artifact SHALL NOT automatically replace the deployed artifact.
 - **THEN** a new artifact directory is created, the previous one is untouched, and the pointer
   moves only after the new artifact is complete, deployment checks pass and replacement is approved
 
-### Requirement: Replacement depends on per-arrival evidence and deployment approval
-There SHALL be no required improvement margin against flat or hierarchical historical averages.
-The report SHALL present candidate and incumbent errors against actual arrivals on the same test
-instances, including whether average absolute error improved, alongside the within-1/3/5-minute
-shares. The two-sided TabM artifact `20260924T183944Z` SHALL be scored on those same instances in
-every report, whether or not it is still `CURRENT`, and SHALL NOT be deleted. It SHALL NOT
-promise a minimum achievable accuracy. An experimental artifact SHALL leave `CURRENT` unchanged
-until browser size, compatibility and prediction-parity checks pass and the user approves
-deployment.
-
-#### Scenario: Research yields no convincing improvement
-- **WHEN** candidate results do not establish a worthwhile improvement in individual-arrival
-  accuracy or the candidate fails deployment checks
-- **THEN** the report records the outcome and the current artifact remains in use
-
-#### Scenario: A replacement is approved after evaluation
-- **WHEN** the user approves a complete, validated replacement after reviewing its results
-- **THEN** the pointer moves atomically, preserving the previous artifact for rollback
-
-#### Scenario: The old TabM is compared after it stops being current
-- **WHEN** a report is written after `CURRENT` has moved away from `20260924T183944Z`
-- **THEN** the report still lists that TabM's arrival errors on the same instances as every
-  candidate
-
 ### Requirement: Delays can be predicted offline from the command line
 After an arrival-only artifact is approved, the CLI SHALL predict, for a chosen train or line,
 station, date and time, an arrival delay estimate, with a 25th–75th percentile band only when the
@@ -539,3 +515,95 @@ report SHALL show both ablations' validation average error next to the winner's.
 - **WHEN** the compact track finishes
 - **THEN** the ranking lists the no-notice-rates trial with its validation average error on the
   same arrivals as every other trial
+
+### Requirement: Browser predictions match the Python reference within 0.01 minutes
+An exported model's browser prediction-parity check SHALL run the model in the pinned browser
+runtime and compare every forecast with the Python ONNX reference on the same fixture rows. It
+SHALL pass only when, for every required case:
+- the largest absolute difference from the Python reference is at most 0.01 minutes
+- the largest difference between one-at-a-time and batched browser predictions is at most
+  0.001 minutes
+- the case has at least one row, no output of the wrong shape, and its unknown-category handling
+  was checked
+
+The required cases SHALL be median, ±3-minute window and ±5-minute window for a probability
+output, and median alone for a quantile output. Other diagnostic numbers MAY be recorded but SHALL
+NOT decide the result.
+
+#### Scenario: Floating-point noise passes
+- **WHEN** browser forecasts differ from the Python reference by at most 0.0045 minutes
+- **THEN** the parity check passes
+
+#### Scenario: An export bug fails
+- **WHEN** any browser forecast differs from the Python reference by more than 0.01 minutes, or a
+  difference is missing or not a finite number
+- **THEN** the parity check fails
+
+#### Scenario: A required case is missing
+- **WHEN** a probability-output report lacks its median, ±3-minute or ±5-minute case
+- **THEN** the parity check fails
+
+### Requirement: The recency comparison ends in a user decision
+The recency comparison SHALL score control and recency-weighted models on the same eligible
+arrivals, and report for each the within-1/3/5-minute shares and the average absolute error. Its
+summary SHALL state in plain words whether weighting helped. `models/v2/CURRENT` SHALL remain
+unchanged unless the user approves a replacement after reading that summary.
+
+#### Scenario: Weighting does not help
+- **WHEN** the weighted models are not more accurate than control on the same arrivals
+- **THEN** the report says so and `CURRENT` stays unchanged
+
+#### Scenario: Weighting helps
+- **WHEN** a weighted model is more accurate and passes the browser checks
+- **THEN** the user is asked whether it replaces `CURRENT`, and nothing changes before the user
+  answers
+
+### Requirement: Model variants are compared with a matched control
+A training-variant experiment SHALL train a control and each variant on identical corrected data,
+architecture, epoch budget and evaluation rows, differing only in the variant's single change
+(training-date weighting or the time-of-year input). The report SHALL compare each variant with
+the control on the same arrivals, within 1/3/5 minutes and by average error, with paired per-day
+intervals.
+
+#### Scenario: A variant changes only one thing
+- **WHEN** the `strong` or `seasonal` condition is trained
+- **THEN** its key differs from control only in the recency amplitude, or only in the input trial
+  and its time-of-year columns
+
+#### Scenario: Time of year has no year in it
+- **WHEN** the seasonal inputs are computed for a row
+- **THEN** they come from the service date's month and day alone, and two rows with the same
+  month and day in different years get identical values
+
+### Requirement: A candidate replaces CURRENT only after a fair head-to-head
+Before `CURRENT` moves to a candidate artifact, the candidate SHALL be trained up to the same last
+training date as the current artifact. Both SHALL be scored on the same arrivals that neither
+trained on, each with its own input encoding and notice rates. `CURRENT` SHALL move only if the
+candidate is ahead on both within-5-minute share and average absolute error on the labels the
+report treats as correct, and the user approves. The deployed notice-rate totals SHALL match the
+artifact's fingerprint before production serves it.
+
+#### Scenario: Different training cutoffs
+- **WHEN** the candidate's training data ends earlier than the current artifact's
+- **THEN** it is retrained up to the current artifact's last date before the head-to-head
+
+#### Scenario: The candidate does not win
+- **WHEN** the head-to-head shows the candidate tied or behind on either measure
+- **THEN** `CURRENT` stays unchanged and the result is reported to the user
+
+### Requirement: Replacement depends on per-arrival evidence and user approval
+There SHALL be no required improvement margin against flat or hierarchical historical averages.
+The report SHALL present candidate and incumbent errors against actual arrivals on the same test
+instances, including whether average absolute error improved, alongside the within-1/3/5-minute
+shares. The report SHALL NOT promise a minimum achievable accuracy. An experimental artifact
+SHALL leave `CURRENT` unchanged until browser size, compatibility and prediction-parity checks
+pass and the user approves deployment.
+
+#### Scenario: Research yields no convincing improvement
+- **WHEN** candidate results do not establish a worthwhile improvement in individual-arrival
+  accuracy or the candidate fails deployment checks
+- **THEN** the report records the outcome and the current artifact remains in use
+
+#### Scenario: A replacement is approved after evaluation
+- **WHEN** the user approves a complete, validated replacement after reviewing its results
+- **THEN** the pointer moves atomically, preserving the previous artifact for rollback
