@@ -37,6 +37,10 @@ class Response:
     body: bytes
     elapsed_ms: int
     headers: dict[str, str] = field(default_factory=dict)
+    recorded_at: int | None = None
+    # Replay may have several original responses for one station/hour bucket.
+    # Earlier receipts remain evidence even when the latest response is served.
+    plan_history: tuple[Response, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -129,7 +133,8 @@ class TimetablesClient:
 
             self._count(requests=1)
             elapsed = int((time.monotonic() - started) * 1000)
-            out = Response(resp.status_code, resp.content, elapsed, dict(resp.headers))
+            out = Response(resp.status_code, resp.content, elapsed, dict(resp.headers),
+                           recorded_at=int(time.time()))
 
             if resp.status_code == 429:
                 # The server counted this request even though it served nothing, and

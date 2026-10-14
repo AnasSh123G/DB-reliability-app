@@ -20,8 +20,8 @@ That leaves this pass two jobs, both about absence:
 * Roll each run up from its stops: final and maximum delay, how many stops were
   actually recorded, and whether the run completed, was cancelled, or never showed.
 
-Gap rows are inserted ON CONFLICT DO NOTHING, so this pass can never overwrite or
-downgrade a value the poller recorded.
+Gap rows never replace observed actual times. Planned references and derived
+delays are reconciled against dated evidence available at this pass's cutoff.
 """
 
 from __future__ import annotations
@@ -41,15 +41,15 @@ from dbrel.models import (
     QUALITY_NO_DATA,
     QUALITY_PREDICTION_ONLY,
     QUALITY_RECORDED,
-    StationStop,
     Trip,
     TripStop,
     TtPoll,
 )
-from dbrel.ingest.runs import epoch_of_sec
+from dbrel.ingest.dated_schedule import DatedPlanned as _Planned, load_patterns as load_dated_patterns
+from dbrel.ingest.schedule_schema import require_dated_schedule_schema
 
-# rule_version 2: per-station listening record + explicit cancellation.
-RULE_VERSION_TT = 2
+# rule_version 3: gaps use the same dated schedule evidence as recorded facts.
+RULE_VERSION_TT = 3
 
 # Grades this pass is allowed to write, and therefore to replace on a re-run.
 GAP_QUALITIES = (QUALITY_NO_DATA, QUALITY_PREDICTION_ONLY)
@@ -110,6 +110,7 @@ def run_finalize_tt(
     now: int | None = None,
     progress=lambda msg: None,
 ) -> FinalizeTtResult:
+    require_dated_schedule_schema(session)
     started = time.monotonic()
     now = now or int(time.time())
     result = FinalizeTtResult()
@@ -164,9 +165,14 @@ def run_finalize_tt(
     dates_by_train: dict[int, dict[str, str | None]] = defaultdict(dict)
     for trip in trips:
         dates_by_train[trip.train_id][trip.service_date] = trip.path_sha1
-    pattern = _load_patterns(session, list(dates_by_train), dates_by_train)
+    pattern = _load_patterns(session, list(dates_by_train), dates_by_train, as_of=now)
 
     recorded = _recorded_sequences(session, trip_ids)
+    from dbrel.ingest.schedule_reconcile import reconcile_facts
+    for trip in trips:
+        if recorded.get(trip.id):
+            reconcile_facts(session, trip, recorded[trip.id], as_of=now,
+                            resolved=pattern.get((trip.train_id, trip.service_date), {}))
 
     gap_rows: list[dict] = []
     for trip in trips:
@@ -260,52 +266,12 @@ def run_finalize_tt(
     return result
 
 
-@dataclass(slots=True)
-class _Planned:
-    station_stop_id: int
-    station_id: int
-    platform_code: str | None
-    supposed_arr: int | None
-    supposed_dep: int | None
-
-
 def _load_patterns(
-    session: Session, train_ids: list[int], dates_by_train: dict[int, dict[str, str | None]]
+    session: Session, train_ids: list[int], dates_by_train: dict[int, dict[str, str | None]],
+    *, as_of: int | None = None,
 ) -> dict[tuple[int, str], dict[int, _Planned]]:
-    """(train_id, service_date) -> stop_sequence -> the planned stop.
-
-    `dates_by_train` maps each wanted service_date to that trip's own
-    path_sha1; a station_stop row is only offered to a service_date whose
-    trip was built from the SAME variant (`None == None` still matches, for
-    pre-migration/GTFS rows with no digest recorded either side). See the
-    caller's comment.
-    """
-    out: dict[tuple[int, str], dict[int, _Planned]] = {}
-    for start in range(0, len(train_ids), 900):
-        rows = session.execute(
-            select(
-                StationStop.id,
-                StationStop.train_id,
-                StationStop.path_sha1,
-                StationStop.stop_sequence,
-                StationStop.station_id,
-                StationStop.platform_code,
-                StationStop.planned_arrival_sec,
-                StationStop.planned_departure_sec,
-            ).where(StationStop.train_id.in_(train_ids[start : start + 900]))
-        ).all()
-        for ss_id, train_id, ss_path_sha1, seq, station_id, platform, arr_sec, dep_sec in rows:
-            for service_date, wanted_path_sha1 in dates_by_train.get(train_id, {}).items():
-                if ss_path_sha1 != wanted_path_sha1:
-                    continue
-                out.setdefault((train_id, service_date), {})[seq] = _Planned(
-                    station_stop_id=ss_id,
-                    station_id=station_id,
-                    platform_code=platform,
-                    supposed_arr=epoch_of_sec(arr_sec, service_date),
-                    supposed_dep=epoch_of_sec(dep_sec, service_date),
-                )
-    return out
+    """Use dated TT evidence; retain exact-feed GTFS compatibility."""
+    return load_dated_patterns(session, train_ids, dates_by_train, as_of=as_of)
 
 
 def _recorded_sequences(session: Session, trip_ids: list[int]) -> dict[int, set[int]]:

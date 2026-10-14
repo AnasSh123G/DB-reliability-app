@@ -19,7 +19,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date as date_cls
 from datetime import datetime, timedelta
 
@@ -36,6 +36,8 @@ from dbrel.models import (
 from dbrel.ingest.client import TimetablesClient
 from dbrel.ingest.parser import TtStop, parse_timetable
 from dbrel.ingest.timeutil import read_clock
+from dbrel.ingest.dated_schedule import PlanReceipt
+from dbrel.ingest.schedule_schema import require_dated_schedule_schema
 from dbrel.ingest.runs import (
     RunContext,
     RunCounters,
@@ -96,6 +98,7 @@ def import_plan(
     progress=lambda msg: None,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
 ) -> PlanImportResult:
+    require_dated_schedule_schema(session)
     started = time.monotonic()
     # None means live; an explicit value pins this import to a replayed instant.
     frozen = now
@@ -123,6 +126,7 @@ def import_plan(
     # boundary (ar 22:59, dp 23:00) is returned in BOTH buckets. Last write wins;
     # the two copies are the same stop.
     by_run: dict[str, dict[int, TtStop]] = defaultdict(dict)
+    observations_by_run: dict[str,list[tuple[TtStop,PlanReceipt]]] = defaultdict(list)
 
     # Computed up front, over every station, so on_progress can report a real
     # total from the first call -- each station's own bucket count differs in
@@ -165,7 +169,7 @@ def import_plan(
     for station in tracked:
         for day, hour in station_buckets[station.id]:
             existing = existing_by_key.get((station.eva, day, hour))
-            if not force and existing is not None and existing.http_status == 200:
+            if not force and existing is not None and existing.http_status == 200 and existing.error is None:
                 result.buckets_skipped += 1
                 done_buckets += 1
                 on_progress(done_buckets, total_buckets)
@@ -198,7 +202,7 @@ def import_plan(
             on_progress(done_buckets, total_buckets)
 
             fetch_row = existing or TtPlanFetch(eva=station.eva, plan_date=day, plan_hour=hour)
-            fetch_row.fetched_at = read_clock(frozen)
+            fetch_row.fetched_at = resp.recorded_at if resp.recorded_at is not None else read_clock(frozen)
             fetch_row.http_status = resp.status
             fetch_row.content_sha256 = hashlib.sha256(resp.body).hexdigest() if resp.ok else None
             fetch_row.error = None
@@ -218,16 +222,32 @@ def import_plan(
                 fetch_row.error = f"parse: {exc}"
                 session.add(fetch_row)
                 result.errors.append(f"{station.name} {day}:{hour}: {exc}")
-                continue
+                parsed = None
 
-            fetch_row.n_stops = len(parsed.stops)
+            fetch_row.n_stops = len(parsed.stops) if parsed is not None else 0
             session.add(fetch_row)
-            result.buckets_fetched += 1
-            result.stops_seen += len(parsed.stops)
-            for stop in parsed.stops:
-                if stop.eva is None:
-                    stop.eva = station.eva
-                by_run[stop.run_key][stop.stop_index] = stop
+            result.buckets_fetched += int(parsed is not None)
+            result.stops_seen += fetch_row.n_stops
+            # The current fetch summary stays latest-only, while dated evidence
+            # preserves every original response in a replayed archive bucket.
+            for original in (*resp.plan_history, resp):
+                if original is resp and parsed is None:
+                    continue
+                try:
+                    original_parsed = parsed if original is resp else parse_timetable(original.body)
+                except Exception as exc:
+                    result.errors.append(f"{station.name} {day}:{hour} history parse: {exc}")
+                    continue
+                receipt = PlanReceipt(
+                    observed_at=original.recorded_at if original.recorded_at is not None else fetch_row.fetched_at,
+                    content_sha256=hashlib.sha256(original.body).hexdigest(),
+                    source_kind="plan", eva=station.eva, plan_date=day, plan_hour=hour,
+                )
+                for stop in original_parsed.stops:
+                    if stop.eva is None:
+                        stop = replace(stop, eva=station.eva)
+                    by_run[stop.run_key][stop.stop_index] = stop
+                    observations_by_run[stop.run_key].append((stop, receipt))
 
             station.last_plan_hour = f"{day}:{hour:02d}"
     session.flush()
@@ -252,7 +272,8 @@ def import_plan(
     counters = RunCounters()
 
     for run_key, stops_by_index in by_run.items():
-        upsert_run(session, ctx, counters, run_key, list(stops_by_index.values()))
+        upsert_run(session, ctx, counters, run_key, list(stops_by_index.values()),
+                   schedule_observations=observations_by_run[run_key])
 
     result.trains_created = counters.trains_created
     result.trips_created = counters.trips_created

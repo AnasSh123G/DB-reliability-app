@@ -11,10 +11,10 @@ That filter is judged on `ct`, never `pt`. A train booked for 10:00 and running
 30 minutes late has not departed at 10:15, and grading it against its planned
 time would invent a departure that never occurred.
 
-Because a value that has already happened never moves again, this writes straight
-into `trip_stop` — the fact table — rather than into an observation log for a
-later pass to project. There is no revision history to keep. What `finalize` still
-has to do is the opposite job: account for the stops that produced *no* value.
+Recorded actual times go into `trip_stop`. Dated planned-time revisions remain
+in an append-only evidence table; later conflicting evidence invalidates a
+derived delay while retaining the observed actual time. `finalize` also accounts
+for stops that produced no observed value.
 
 One tt_poll row is written per station per sweep, including failures. A station
 timing out is data about our own coverage, and must not abort the sweep.
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 from sqlalchemy import case, select, text, update
@@ -38,7 +38,6 @@ from dbrel.models import (
     QUALITY_CANCELLED,
     QUALITY_RECORDED,
     Station,
-    StationStop,
     Train,
     Trip,
     TripStop,
@@ -46,17 +45,22 @@ from dbrel.models import (
     TtUnmatched,
 )
 from dbrel.ingest.client import TimetablesClient
+from dbrel.ingest.actual_time import ambiguous_actual
 from dbrel.ingest.parser import TtEvent, TtStop, parse_timetable
+from dbrel.ingest.dated_schedule import (
+    DatedPlanned as _Planned, PlanReceipt, record_plans,
+    load_patterns as load_dated_patterns,
+)
+from dbrel.ingest.schedule_schema import require_dated_schedule_schema
 from dbrel.ingest.runs import (
     RunContext,
     RunCounters,
-    epoch_of_sec,
     tt_feed_version,
     upsert_run,
 )
 
-# rule_version 2: per-station listening record + explicit cancellation.
-RULE_VERSION_TT = 2
+# rule_version 3: exact dated schedule evidence, without shared TT time fallback.
+RULE_VERSION_TT = 3
 
 # IRIS returns DELFI bus and tram halts alongside rail. This project is rail only.
 NON_RAIL_CATEGORIES = frozenset({"Bus", "STR", "STB", "U"})
@@ -66,6 +70,11 @@ NON_RAIL_CATEGORIES = frozenset({"Bus", "STR", "STB", "U"})
 # replaces: the row written, the row read back and the value compared had drifted
 # into three different column orders, which leaked 34% duplicate writes.
 VALUE_FIELDS = (
+    "supposed_arrival_utc",
+    "supposed_departure_utc",
+    "station_id",
+    "station_stop_id",
+    "planned_platform",
     "actual_arrival_utc",
     "actual_departure_utc",
     "arr_delay_s",
@@ -107,17 +116,6 @@ class _TripRef:
     # pattern lookup below never mixes two route variants of one numbered
     # train under one stop_sequence.
     path_sha1: str | None = None
-
-
-@dataclass(slots=True)
-class _Planned:
-    """One row of the constant schedule, as absolute instants for this run's date."""
-
-    station_stop_id: int
-    station_id: int
-    platform_code: str | None
-    supposed_arr: int | None
-    supposed_dep: int | None
 
 
 def _candidate_service_dates(now: int) -> list[str]:
@@ -168,6 +166,14 @@ def _has_happened(event: TtEvent | None, now: int) -> bool:
     """
     if event is None:
         return False
+    if event.is_cancelled:
+        # An explicit cancellation is known when received even if the delta
+        # omits both scheduled and actual time. It never creates an actual.
+        return event.cancelled_at is None or event.cancelled_at <= now
+    if event.changed_ts is not None and ambiguous_actual(event.changed_ts):
+        # The repeated autumn hour carries no offset in IRIS. Do not certify
+        # the parser's default fold or mistake a second-fold forecast for past.
+        return False
     reference = event.changed_ts or event.planned_ts
     if reference is None:
         return False
@@ -185,57 +191,18 @@ def _resolve(
     if supposed is None and time_utc is None:
         return None, None
     if time_utc is not None:
-        return time_utc, (time_utc - supposed) if supposed is not None else delay_s
+        return time_utc, (time_utc - supposed) if supposed is not None else None
     if delay_s is not None and supposed is not None:
         return supposed + delay_s, delay_s
     return None, delay_s
 
 
 def _load_patterns(
-    session: Session, train_ids: list[int], dates_by_train: dict[int, dict[str, str | None]]
+    session: Session, train_ids: list[int], dates_by_train: dict[int, dict[str, str | None]],
+    *, as_of: int | None = None,
 ) -> dict[tuple[int, str], dict[int, _Planned]]:
-    """(train_id, service_date) -> stop_sequence -> the planned stop.
-
-    The schedule stores seconds from a service-date anchor, so 25:30 is
-    representable; turning that into an instant needs the run's own date, which is
-    why the key carries it.
-
-    `dates_by_train` maps each wanted service_date to the REF's own path_sha1
-    (StationStop.path_sha1 / Trip.path_sha1 -- see runs.py upsert_run): a
-    numbered train can have two station_stop variants (e.g. a wing/coupled
-    service some days, solo others) sharing one stop_sequence numbering space
-    for different physical stops, so a row is only offered to a service_date
-    whose trip was built from the SAME variant. `None == None` still matches,
-    which keeps pre-migration/GTFS rows (no digest recorded either side)
-    working exactly as before.
-    """
-    out: dict[tuple[int, str], dict[int, _Planned]] = {}
-    chunk = 900  # SQLite's default parameter ceiling is 999
-    for start in range(0, len(train_ids), chunk):
-        rows = session.execute(
-            select(
-                StationStop.id,
-                StationStop.train_id,
-                StationStop.path_sha1,
-                StationStop.stop_sequence,
-                StationStop.station_id,
-                StationStop.platform_code,
-                StationStop.planned_arrival_sec,
-                StationStop.planned_departure_sec,
-            ).where(StationStop.train_id.in_(train_ids[start : start + chunk]))
-        ).all()
-        for ss_id, train_id, ss_path_sha1, seq, station_id, platform, arr_sec, dep_sec in rows:
-            for service_date, wanted_path_sha1 in dates_by_train.get(train_id, {}).items():
-                if ss_path_sha1 != wanted_path_sha1:
-                    continue
-                out.setdefault((train_id, service_date), {})[seq] = _Planned(
-                    station_stop_id=ss_id,
-                    station_id=station_id,
-                    platform_code=platform,
-                    supposed_arr=epoch_of_sec(arr_sec, service_date),
-                    supposed_dep=epoch_of_sec(dep_sec, service_date),
-                )
-    return out
+    """Use dated TT evidence; retain exact-feed GTFS compatibility."""
+    return load_dated_patterns(session, train_ids, dates_by_train, as_of=as_of)
 
 
 def _existing_values(session: Session, trip_ids: list[int]) -> dict[tuple[int, int], tuple]:
@@ -268,6 +235,7 @@ def run_tt_poll(
     now: int | None = None,
     progress=lambda msg: None,
 ) -> PollResult:
+    require_dated_schedule_schema(session)
     started = time.monotonic()
     # None means live: every clock read below goes to the wall clock, exactly as
     # before. An explicit value pins the whole sweep to a replayed instant.
@@ -318,11 +286,12 @@ def run_tt_poll(
     for station in tracked:
         fetch_started = time.monotonic()
         resp = client.changes(station.eva)
+        received_at = resp.recorded_at if resp.recorded_at is not None else read_clock(frozen)
         poll = TtPoll(
             sweep_id=result.sweep_id,
             station_id=station.id,
             eva=station.eva,
-            fetched_at=read_clock(frozen),
+            fetched_at=received_at,
             http_status=resp.status,
             bytes=len(resp.body),
             fetch_ms=resp.elapsed_ms,
@@ -354,7 +323,7 @@ def run_tt_poll(
         session.flush()
 
         store_started = time.monotonic()
-        observed_at = read_clock(frozen)
+        observed_at = received_at
         msg_rows: list[dict] = []
         unmatched_rows: list[dict] = []
         # (run, stop, realized arrival, realized departure) for this station.
@@ -365,14 +334,23 @@ def run_tt_poll(
 
         for stop in parsed.stops:
             if stop.eva is None:
-                stop.eva = station.eva
+                stop = replace(stop, eva=station.eva)
             ref = trip_by_run.get(stop.run_key)
-            if ref is None and _is_full_record(stop):
-                # An addition or replacement. /plan will never carry it, so this is
-                # the only chance to record it at all.
-                if stop.eva is None:
-                    stop.eva = station.eva
-                trip_id = upsert_run(session, run_ctx, run_counters, stop.run_key, [stop])
+            if _is_full_record(stop):
+                # Additions need a trip; known runs need only this stop's receipt.
+                receipt = PlanReceipt(observed_at=received_at,
+                                      content_sha256=hashlib.sha256(resp.body).hexdigest(),
+                                      source_kind="fchg", eva=station.eva)
+                was_known = ref is not None
+                if ref is not None:
+                    # A full station response still describes only one stop.
+                    # Keep the established route, endpoints and stop count.
+                    record_plans(session, ref.trip_id, ref.path_sha1, [(stop, receipt)],
+                                 run_ctx.station_id_by_eva)
+                    trip_id = ref.trip_id
+                else:
+                    trip_id = upsert_run(session, run_ctx, run_counters, stop.run_key, [stop],
+                                         schedule_observations=[(stop, receipt)])
                 if trip_id is not None:
                     trip = session.get(Trip, trip_id)
                     ref = _TripRef(
@@ -382,7 +360,7 @@ def run_tt_poll(
                         path_sha1=trip.path_sha1,
                     )
                     trip_by_run[stop.run_key] = ref
-                    station_created += 1
+                    station_created += not was_known
             if ref is None:
                 # A delta for a run we have no /plan row for. Recorded rather than
                 # dropped: a rising count is the alarm that the roller has fallen
@@ -408,12 +386,14 @@ def run_tt_poll(
             # Only the side that has actually happened contributes. A stop whose
             # arrival is past but whose departure is still ahead yields its arrival
             # now and its departure on a later poll.
-            ar = stop.arrival if _has_happened(stop.arrival, now) else None
-            dp = stop.departure if _has_happened(stop.departure, now) else None
+            ar = stop.arrival if _has_happened(stop.arrival, received_at) else None
+            dp = stop.departure if _has_happened(stop.departure, received_at) else None
             if ar is None and dp is None:
                 result.pending += 1
                 continue
-            if (ar is None or ar.changed_ts is None) and (dp is None or dp.changed_ts is None):
+            if (ar is None or (ar.changed_ts is None and not ar.is_cancelled)) and (
+                dp is None or (dp.changed_ts is None and not dp.is_cancelled)
+            ):
                 # Past, but IRIS published no time for it — nothing to record.
                 continue
             realized.append((ref, stop, ar, dp))
@@ -422,7 +402,7 @@ def run_tt_poll(
         dates_by_train: dict[int, dict[str, str | None]] = {}
         for ref, *_ in realized:
             dates_by_train.setdefault(ref.train_id, {})[ref.service_date] = ref.path_sha1
-        patterns = _load_patterns(session, list(dates_by_train), dates_by_train)
+        patterns = _load_patterns(session, list(dates_by_train), dates_by_train, as_of=received_at)
 
         fact_rows: list[dict] = []
         for ref, stop, ar, dp in realized:

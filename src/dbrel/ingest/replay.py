@@ -61,6 +61,8 @@ class ArchiveReplaySource:
         self._tracked = tracked_evas
         # (eva, yymmdd, hour) -> body, matching client.plan's own URL shape.
         self._plan: dict[tuple[int, str, int], bytes] = {}
+        self._plan_recorded_at: dict[tuple[int, str, int], int] = {}
+        self._plan_receipts: dict[tuple[int, str, int], list[Response]] = {}
         self._changes: dict[int, bytes] = {}
         self._recorded_at: dict[int, int] = {}
 
@@ -78,7 +80,14 @@ class ArchiveReplaySource:
             elif response.is_plan:
                 key = _plan_key(response)
                 if key is not None:
-                    self._plan[key] = response.body
+                    self._plan_receipts.setdefault(key, []).append(Response(
+                        status=200, body=response.body, elapsed_ms=0,
+                        recorded_at=response.recorded_at,
+                    ))
+                    previous = self._plan_recorded_at.get(key)
+                    if previous is None or response.recorded_at >= previous:
+                        self._plan[key] = response.body
+                        self._plan_recorded_at[key] = response.recorded_at
 
     @property
     def evas(self) -> set[int]:
@@ -93,7 +102,11 @@ class ArchiveReplaySource:
             return Response(status=_ABSENT, body=b"", elapsed_ms=0)
         with self._lock:
             self.counters.plan_served += 1
-        return Response(status=200, body=body, elapsed_ms=0)
+        receipts = sorted(self._plan_receipts[(eva, date, int(hour))],
+                          key=lambda receipt: receipt.recorded_at)
+        return Response(status=200, body=body, elapsed_ms=0,
+                        recorded_at=self._plan_recorded_at[(eva,date,int(hour))],
+                        plan_history=tuple(receipts[:-1]))
 
     def changes(self, eva: int) -> Response:
         body = self._changes.get(eva)
@@ -104,7 +117,8 @@ class ArchiveReplaySource:
             self.counters.changes_absent += 1
             return Response(status=_ABSENT, body=b"", elapsed_ms=0)
         self.counters.changes_served += 1
-        return Response(status=200, body=body, elapsed_ms=0)
+        return Response(status=200, body=body, elapsed_ms=0,
+                        recorded_at=self._recorded_at[eva])
 
 
 def _plan_key(response: ArchivedResponse) -> tuple[int, str, int] | None:

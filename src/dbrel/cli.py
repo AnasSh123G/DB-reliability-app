@@ -74,6 +74,20 @@ def init_db() -> None:
     typer.echo(f"schema ready at {DB_PATH}")
 
 
+@app.command("migrate-trip-schedule-schema")
+def migrate_trip_schedule_schema() -> None:
+    """Add dated trip-plan evidence. Leaves existing schedules and facts intact."""
+    from dbrel.db import get_engine
+    from dbrel.ingest.schedule_schema import ensure_dated_schedule_schema
+
+    try:
+        created = ensure_dated_schedule_schema(get_engine())
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"dated schedule schema {'created' if created else 'already present'} at {DB_PATH}")
+
+
 @app.command("import-static")
 def import_static(
     feed: str = typer.Option("fv,rv", help="comma-separated feeds: fv, rv"),

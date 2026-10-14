@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date as date_cls
 from datetime import datetime
 
@@ -45,6 +45,7 @@ from dbrel.models import (
     Trip,
 )
 from dbrel.ingest.parser import TtStop
+from dbrel.ingest.dated_schedule import PlanReceipt, record_plans
 
 TT_FEED_KIND = "tt"
 
@@ -193,13 +194,27 @@ def upsert_run(
     counters: RunCounters,
     run_key: str,
     stops: list[TtStop],
+    *,
+    schedule_observations: list[tuple[TtStop, PlanReceipt]] | None = None,
 ) -> int | None:
     """Resolve a run to a trip, creating train and schedule rows as needed.
 
     Returns the trip id. Only None if the run carries no usable stop at all.
     """
-    stops = sorted(stops, key=lambda s: s.stop_index)
+    originals = {stop.stop_index: stop for stop in stops}
+    # Parsing receipts remain unchanged. Normalize independent copies so an
+    # overlapping response cannot retain a different DST fold by accident.
+    stops = [_copy_stop(stop) for stop in sorted(stops, key=lambda s: s.stop_index)]
     counters.dst_fixups += fix_dst(stops)
+    if schedule_observations:
+        normalized = []
+        for stop, receipt in schedule_observations:
+            context = {**originals, stop.stop_index: stop}
+            copies = [_copy_stop(value) for value in sorted(context.values(), key=lambda s: s.stop_index)]
+            fix_dst(copies)
+            corrected = next(value for value in copies if value.stop_index == stop.stop_index)
+            normalized.append((corrected, receipt))
+        schedule_observations = normalized
     head = stops[0]
     station_name = ctx.station_name_by_eva.get(head.eva, "")
     full_path = head.full_path(station_name)
@@ -387,6 +402,8 @@ def upsert_run(
             )
         )
         counters.trips_created += 1
+        if schedule_observations:
+            record_plans(session, existing_id, digest, schedule_observations, ctx.station_id_by_eva)
         return existing_id
 
     session.execute(
@@ -418,10 +435,19 @@ def upsert_run(
         )
     )
     counters.trips_created += 1
-    return session.execute(
+    trip_id = session.execute(
         select(Trip.id).where(
             Trip.source == SOURCE_TT,
             Trip.source_run_key == run_key,
             Trip.service_date == head.service_date,
         )
     ).scalar_one()
+    if schedule_observations:
+        record_plans(session, trip_id, digest, schedule_observations, ctx.station_id_by_eva)
+    return trip_id
+
+
+def _copy_stop(stop: TtStop) -> TtStop:
+    return replace(stop,
+                   arrival=replace(stop.arrival) if stop.arrival is not None else None,
+                   departure=replace(stop.departure) if stop.departure is not None else None)

@@ -429,6 +429,38 @@ class TripStop(Base):
         return f"<TripStop trip={self.trip_id} seq={self.stop_sequence} dep_delay={self.dep_delay_s}>"
 
 
+class TripScheduleSnapshot(Base):
+    """Immutable dated plan evidence received from TT /plan or /fchg."""
+
+    __tablename__ = "trip_schedule_snapshot"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id"), index=True)
+    stop_sequence: Mapped[int] = mapped_column(Integer)
+    station_id: Mapped[int] = mapped_column(ForeignKey("station.id"))
+    station_stop_id: Mapped[int | None] = mapped_column(ForeignKey("station_stop.id"))
+    path_sha1: Mapped[str] = mapped_column(String(40))
+    supposed_arrival_utc: Mapped[int | None] = mapped_column(Integer)
+    supposed_departure_utc: Mapped[int | None] = mapped_column(Integer)
+    platform_code: Mapped[str | None] = mapped_column(String(32))
+    observed_at: Mapped[int] = mapped_column(Integer)
+    source_kind: Mapped[str] = mapped_column(String(8))
+    source_content_sha256: Mapped[str] = mapped_column(String(64))
+    source_stop_id: Mapped[str] = mapped_column(String(64))
+    source_eva: Mapped[int | None] = mapped_column(Integer)
+    source_plan_date: Mapped[str | None] = mapped_column(String(10))
+    source_plan_hour: Mapped[int | None] = mapped_column(Integer)
+    value_fingerprint: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trip_id", "stop_sequence", "observed_at", "source_content_sha256",
+            "value_fingerprint", name="uq_trip_schedule_snapshot_identity",
+        ),
+        Index("ix_tss_trip_seq_observed", "trip_id", "stop_sequence", "observed_at"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Provenance and lookup tables
 # ---------------------------------------------------------------------------
