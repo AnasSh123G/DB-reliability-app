@@ -17,7 +17,15 @@ interface Props {
 const DESKTOP_GRID =
   "hidden sm:grid sm:grid-cols-[minmax(0,1fr)_72px_72px] sm:gap-x-3 md:grid-cols-[minmax(0,1fr)_96px_96px] md:gap-x-4";
 
-function DelayCell({ scheduled, pred, noAverageLabel }: { scheduled: string | null; pred: DelayPred | null; noAverageLabel: string }) {
+function DelayCell({
+  scheduled,
+  pred,
+  noAverageLabel,
+}: {
+  scheduled: string | null;
+  pred: DelayPred | null;
+  noAverageLabel: string;
+}) {
   const expected = expectedTime(scheduled, pred);
   if (expected && pred) {
     return (
@@ -132,7 +140,11 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-paper">{nameNode}</p>
                   <p className="text-[12.67px] text-fog">
-                    {stop.monitored ? (stop.platform ? `${t.platform} ${stop.platform}` : null) : t.notMonitored}
+                    {stop.monitored
+                      ? stop.platform
+                        ? `${t.platform} ${stop.platform}`
+                        : null
+                      : t.notMonitored}
                   </p>
                 </div>
               </div>
@@ -147,7 +159,11 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                     <div>
                       <p className="text-[12.67px] uppercase text-fog">{t.expectedArrival}</p>
                       <p className="mt-1 font-display text-sm">
-                        <DelayCell scheduled={stop.arr} pred={stop.arr_pred} noAverageLabel={t.noAverage} />
+                        <DelayCell
+                          scheduled={stop.arr}
+                          pred={stop.arr_pred}
+                          noAverageLabel={t.noAverage}
+                        />
                       </p>
                     </div>
                   </div>
@@ -159,12 +175,22 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                       </span>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-paper">{nameNode}</p>
-                        {stop.platform && <p className="text-[12.67px] text-fog">{t.platform} {stop.platform}</p>}
+                        {stop.platform && (
+                          <p className="text-[12.67px] text-fog">
+                            {t.platform} {stop.platform}
+                          </p>
+                        )}
                       </div>
                     </div>
-                    <span className="self-center font-display text-sm text-mist">{stop.arr ?? "—"}</span>
+                    <span className="self-center font-display text-sm text-mist">
+                      {stop.arr ?? "—"}
+                    </span>
                     <span className="self-center font-display text-sm">
-                      <DelayCell scheduled={stop.arr} pred={stop.arr_pred} noAverageLabel={t.noAverage} />
+                      <DelayCell
+                        scheduled={stop.arr}
+                        pred={stop.arr_pred}
+                        noAverageLabel={t.noAverage}
+                      />
                     </span>
                   </div>
                 </>
@@ -176,7 +202,9 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
                     </span>
                     <p className="truncate text-sm font-medium text-paper">{nameNode}</p>
                   </div>
-                  <span className="col-span-2 self-center text-[13.67px] text-fog">{t.notMonitored}</span>
+                  <span className="col-span-2 self-center text-[13.67px] text-fog">
+                    {t.notMonitored}
+                  </span>
                 </div>
               )}
             </li>
@@ -185,7 +213,9 @@ export function TrainOverview({ trainId, locale, bare = false, className }: Prop
       </ol>
 
       {n_monitored === 0 && (
-        <p className="mt-4 rounded-xl border border-line bg-ink p-3 text-xs text-fog">{t.noMonitoredStops}</p>
+        <p className="mt-4 rounded-xl border border-line bg-ink p-3 text-xs text-fog">
+          {t.noMonitoredStops}
+        </p>
       )}
     </section>
   );
