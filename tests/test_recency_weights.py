@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from types import SimpleNamespace
-import torch
+torch = pytest.importorskip("torch")
 from recency_weights import policy, weights, per_arrival_loss, weighted_loss
 from dbrel.ml.arrival_nn import arrival_loss
 

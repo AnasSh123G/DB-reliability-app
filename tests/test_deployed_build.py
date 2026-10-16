@@ -84,7 +84,7 @@ def test_no_per_run_data_is_copied(collection, manifest, tmp_path):
     assert {"variant_run_data", "notice_rate_total", "pattern_stop", "train_data", "variant_path"} <= tables
     assert "stop_pattern" not in tables
     views = {name for (name,) in _query(out, "SELECT name FROM sqlite_master WHERE type = 'view'")}
-    assert views == {"station_stop", "train", "train_variant_run"}
+    assert views == {"station_stop", "train", "train_variant_run", "train_variant_weekday"}
     runs = "SELECT train_id, path_sha1, MAX(service_date), COUNT(*) FROM trip GROUP BY 1, 2 ORDER BY 1, 2"
     assert _query(out, "SELECT * FROM train_variant_run ORDER BY 1, 2") == _query(collection, runs)
 
@@ -176,3 +176,82 @@ def test_a_source_without_station_aliases_is_refused(tmp_path):
     with pytest.raises(DeployedBuildError, match="no station search aliases.*dbrel build-aliases"):
         build_deployed(source, tmp_path / "deployed.sqlite", log=lambda m: None)
     assert not (tmp_path / "deployed.sqlite").exists()
+
+
+def test_running_profile_matches_collection_and_reports_window(collection, tmp_path):
+    """The stored weekdays and window reproduce the collection loader, including the observation window."""
+    from sqlalchemy.orm import Session
+    from dbrel.planner.profile import load_run_profile
+
+    out, lines = tmp_path / "deployed.sqlite", []
+    counts = build_deployed(collection, out, log=lines.append)
+    with Session(make_engine(collection)) as source, Session(make_engine(out)) as target:
+        expected, actual = load_run_profile(source), load_run_profile(target)
+    assert actual == expected
+    assert actual.counts
+    rows = _query(out, "SELECT COUNT(*) FROM train_variant_weekday")[0][0]
+    assert rows == counts["running_profile"] > 0
+    assert _query(out, "SELECT * FROM running_profile_window") == [
+        (expected.first_date.isoformat(), expected.last_date.isoformat())]
+    assert f"running profile: {rows} rows, window {expected.first_date}..{expected.last_date}" in lines
+
+
+def test_retired_train_has_no_running_profile(with_retired, tmp_path):
+    """Retired trains do not retain weekday counts."""
+    out = tmp_path / "deployed.sqlite"
+    build_deployed(with_retired, out, log=lambda m: None)
+    assert _query(out, "SELECT * FROM variant_weekday_data WHERE train_id = 12") == []
+    assert _query(out, "SELECT COUNT(*) FROM variant_weekday_data WHERE train_id = 70")[0][0] > 0
+
+
+def test_running_profile_mismatch_keeps_previous_output(collection, tmp_path, monkeypatch):
+    """A source verification mismatch identifies the train and variant without replacing output."""
+    import dbrel.deployed_build as builder
+
+    out = tmp_path / "deployed.sqlite"
+    out.write_bytes(b"previous deployed database")
+    real_sql = builder.PROFILE_SQL
+
+    class MismatchingProfileSQL(str):
+        def format(self, **kwargs):
+            sql = real_sql.format(**kwargs)
+            if kwargs["trip"] == "trip":
+                return "SELECT train_id, path_sha1, weekday, n_runs + 1 AS n_runs FROM (" + sql + ")"
+            return sql
+
+    monkeypatch.setattr(builder, "PROFILE_SQL", MismatchingProfileSQL(real_sql))
+    with pytest.raises(DeployedBuildError, match=r"running profile row differs at train_id .*path_sha1 'main'.*weekday"):
+        build_deployed(collection, out, log=lambda m: None)
+    assert out.read_bytes() == b"previous deployed database"
+    assert not (tmp_path / "deployed.sqlite.partial").exists()
+
+
+def test_running_profile_keeps_null_variant_hash(collection, tmp_path):
+    """NULL variants survive the lookup-table join through path id zero."""
+    source, out = tmp_path / "source.sqlite", tmp_path / "deployed.sqlite"
+    with sqlite3.connect(collection) as conn:
+        conn.execute(f"VACUUM INTO '{source}'")
+    with sqlite3.connect(source) as conn:
+        conn.execute("UPDATE trip SET path_sha1 = NULL WHERE train_id = 70")
+    build_deployed(source, out, log=lambda m: None)
+    rows = _query(out, "SELECT path_sha1, weekday, n_runs FROM train_variant_weekday WHERE train_id = 70 ORDER BY weekday")
+    assert rows
+    assert all(path is None for path, _, _ in rows)
+    assert _query(out, "SELECT DISTINCT path_id FROM variant_weekday_data WHERE train_id = 70") == [(0,)]
+
+
+def test_empty_trip_history_has_an_empty_running_profile(collection, tmp_path):
+    """An empty source has no dates to store, and the deployed loader returns an empty profile."""
+    from sqlalchemy.orm import Session
+    from dbrel.planner.profile import RunProfile, load_run_profile
+
+    source, out = tmp_path / "source.sqlite", tmp_path / "deployed.sqlite"
+    with sqlite3.connect(collection) as conn:
+        conn.execute(f"VACUUM INTO '{source}'")
+    with sqlite3.connect(source) as conn:
+        conn.execute("DELETE FROM trip")
+    counts = build_deployed(source, out, log=lambda m: None)
+    with Session(make_engine(out)) as session:
+        assert load_run_profile(session) == RunProfile({}, None, None)
+    assert counts["running_profile"] == 0
+    assert _query(out, "SELECT * FROM running_profile_window") == []

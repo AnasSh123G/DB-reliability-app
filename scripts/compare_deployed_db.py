@@ -25,6 +25,17 @@ from dbrel.deployed_compare import compare, requests_for, sample
 from dbrel.ingest.timeutil import local_date, service_date_anchor
 
 
+def plan_pair(value: str) -> tuple[int, int]:
+    """Parse two positive station ids without passing strings into SQL."""
+    try:
+        origin, target = (int(part) for part in value.split(":"))
+        if origin <= 0 or target <= 0 or origin == target:
+            raise ValueError
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("plan must be FROM:TO with different positive station ids") from exc
+    return origin, target
+
+
 def main() -> int:
     """Run the parity check from the command line; returns 0 with no differences, else 1."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -38,6 +49,8 @@ def main() -> int:
     parser.add_argument("--train", type=int, action="append", default=[], help="also this train id")
     parser.add_argument("--line", type=int, action="append", default=[], help="also this line id")
     parser.add_argument("--term", action="append", default=[], help="also search for this")
+    parser.add_argument("--plan", type=plan_pair, action="append", default=[],
+                        help="also compare plans in both directions for FROM:TO station ids")
     parser.add_argument("--date", type=date.fromisoformat, default=local_date(int(time.time())),
                         help="service date for boards and runs-around (default: today in Germany)")
     parser.add_argument("--seed", type=int, default=0)
@@ -52,7 +65,7 @@ def main() -> int:
         picked["trains"] += args.train
         picked["lines"] += args.line
         picked["terms"] += args.term
-        requests = requests_for(s, now=now, service_date=args.date, **picked)
+        requests = requests_for(s, now=now, service_date=args.date, plans=args.plan, **picked)
     print(f"{len(requests)} requests: {len(picked['stations'])} stations, {len(picked['trains'])} trains, "
           f"{len(picked['lines'])} lines, {len(picked['corridors'])} line-less trains, "
           f"{len(picked['terms'])} search terms", flush=True)

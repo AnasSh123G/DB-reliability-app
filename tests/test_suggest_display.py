@@ -76,3 +76,58 @@ def test_line_shows_the_endpoints_of_its_longest_route(session):
 def test_train_shows_its_own_endpoints(session):
     train = next(r for r in queries.suggest(session, "re22501") if r["kind"] == "train")
     assert train["stops"] == "Euskirchen – Trier Hbf"
+
+
+def test_station_picker_lists_the_busiest_station_first(session, monkeypatch):
+    from types import SimpleNamespace
+
+    from dbrel.models import Station
+    from dbrel.planner import timetable
+
+    names_by_id = [(1, "Essen-Altenessen"), (2, "Essen Hbf"), (3, "Essen-Borbeck")]
+    for ident, name in names_by_id:
+        session.add(Station(id=ident, natural_key=f"k{ident}", name=name, lat=51.0, lon=7.0))
+    session.flush()
+    for ident, name in names_by_id:
+        session.add(SearchAlias(alias_norm=name.lower().replace(" ", "").replace("-", ""),
+                                alias_display=name, kind="station", station_id=ident))
+    session.flush()
+    stations = lambda: [r["name"] for r in queries.suggest(session, "essen", only="station")]  # noqa: E731
+
+    # Alphabetical until the planner timetable is loaded.
+    monkeypatch.setattr(timetable, "cached_timetable", lambda _session: None)
+    assert stations() == ["Essen-Altenessen", "Essen-Borbeck", "Essen Hbf"]
+
+    calls = {1: 300, 2: 9000, 3: 1200}
+    monkeypatch.setattr(timetable, "cached_timetable",
+                        lambda _session: SimpleNamespace(weekly_calls=lambda: calls))
+    assert stations() == ["Essen Hbf", "Essen-Borbeck", "Essen-Altenessen"]
+
+
+def test_station_picker_puts_name_starts_before_busier_word_matches(session, monkeypatch):
+    from types import SimpleNamespace
+
+    from dbrel.models import Station
+    from dbrel.planner import timetable
+
+    session.add_all([
+        Station(id=1, natural_key="k1", name="Hamburg Hbf", lat=53.5, lon=10.0),
+        Station(id=2, natural_key="k2", name="München Hackerbrücke", lat=48.1, lon=11.5),
+        Station(id=3, natural_key="k3", name="Altenbeken", lat=51.8, lon=8.9),
+    ])
+    session.flush()
+    session.add_all([
+        SearchAlias(alias_norm="hamburghbf", alias_display="Hamburg Hbf",
+                    kind="STATION_NAME", weight=100, station_id=1),
+        SearchAlias(alias_norm="hackerbrucke", alias_display="Hackerbrucke",
+                    kind="STATION_TOKEN", weight=60, station_id=2),
+        SearchAlias(alias_norm="ha", alias_display="HA", kind="STATION_DS100", weight=50,
+                    station_id=3),
+    ])
+    session.flush()
+    calls = {1: 100, 2: 5000, 3: 9000}
+    monkeypatch.setattr(timetable, "cached_timetable",
+                        lambda _session: SimpleNamespace(weekly_calls=lambda: calls))
+
+    names = [r["name"] for r in queries.suggest(session, "ha", only="station")]
+    assert names == ["Hamburg Hbf", "München Hackerbrücke", "Altenbeken"]

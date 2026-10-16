@@ -7,6 +7,13 @@ import {
   CalendarClock,
   CalendarDays,
   CirclePlay,
+  CircleDot,
+  Goal,
+  ArrowUpDown,
+  Waypoints,
+  Timer,
+  Repeat,
+  TriangleAlert,
   Clock3,
   Flag,
   Hourglass,
@@ -18,6 +25,13 @@ import {
 } from "lucide-react";
 
 export const icons = {
+  from: CircleDot,
+  to: Goal,
+  swap: ArrowUpDown,
+  planner: Waypoints,
+  duration: Timer,
+  change: Repeat,
+  risk: TriangleAlert,
   state: Map,
   search: Search,
   // Two arrows running opposite ways: a line's two directions.

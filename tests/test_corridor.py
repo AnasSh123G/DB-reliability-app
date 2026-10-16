@@ -110,3 +110,20 @@ def test_another_days_route_variant_adds_no_stops(session):
     names = [s["name"] for s in queries.corridor_stations(session, 10, 0)]
     assert "Bremen Hbf" not in names
     assert "Hannover Hbf" in names
+
+
+def test_train_route_forecasts_the_given_run_day(session, monkeypatch):
+    """A route opened from a Prognose run or a board call is forecast for that run's day."""
+    from datetime import date
+
+    seen = []
+
+    def fake_model_input(_session, _model, **kwargs):
+        seen.append(kwargs["service_date"])
+        return None
+
+    monkeypatch.setattr(queries, "current_model", lambda: ("stamp", object()))
+    monkeypatch.setattr(queries, "load_holiday_dates", lambda _session: set())
+    monkeypatch.setattr(queries, "_model_input", fake_model_input)
+    queries.train_route(session, 10, service_date=date(2026, 10, 20))
+    assert seen and set(seen) == {date(2026, 10, 20)}

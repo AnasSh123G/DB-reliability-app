@@ -25,6 +25,7 @@ from dbrel.deployed import (
     TRAIN_INDEXES,
     TRAIN_LOOKUPS,
     TRAIN_VARIANT_RUN_VIEW,
+    TRAIN_VARIANT_WEEKDAY_VIEW,
     UNREAD_TRAIN_COLUMNS,
     ScheduleRow,
     pattern_digest,
@@ -32,6 +33,7 @@ from dbrel.deployed import (
 )
 from dbrel.ml.notice_rates import NoticeRates, uses_notice_rates, write_totals
 from dbrel.models import Base
+from dbrel.planner.profile import PROFILE_SQL, profile_params
 from dbrel.web.queries import ACTIVE_WINDOW_DAYS
 
 # Copied whole, with the collection database's schema. stop_delay_average and
@@ -270,7 +272,15 @@ def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
             "INSERT INTO variant_run_data SELECT g.train_id, COALESCE(vp.id, 0), g.last_service_date, g.n_runs "
             f"FROM ({_RUN_SUMMARY.format(trip='src.trip', running=_running(out_retired))}) g "
             "LEFT JOIN variant_path vp ON vp.path_sha1 = g.path_sha1 ORDER BY 1, 2").rowcount
-        for view in (STATION_STOP_VIEW, TRAIN_VARIANT_RUN_VIEW, train_view(train_columns)):
+        params = profile_params(source_con, "trip", "train")
+        counts["running_profile"] = 0
+        if params is not None:
+            profile_sql = PROFILE_SQL.format(trip="src.trip", holiday="src.public_holiday", train="src.train")
+            counts["running_profile"] = out_con.execute(
+                "INSERT INTO variant_weekday_data SELECT g.train_id, COALESCE(vp.id, 0), g.weekday, g.n_runs "
+                f"FROM ({profile_sql}) g LEFT JOIN variant_path vp ON vp.path_sha1 = g.path_sha1", params).rowcount
+            out_con.execute("INSERT INTO running_profile_window VALUES (:first, :last)", params)
+        for view in (STATION_STOP_VIEW, TRAIN_VARIANT_RUN_VIEW, TRAIN_VARIANT_WEEKDAY_VIEW, train_view(train_columns)):
             out_con.execute(view)
         out_con.commit()
         log(f"schedule: {counts['variants']} variants -> {counts['patterns']} patterns, "
@@ -291,6 +301,14 @@ def build_deployed(source: Path, out: Path, *, manifest: dict | None = None,
         log(f"verified {counts['schedule_rows']} schedule rows of running trains, {counts['trains']} trains and "
             f"{counts['train_variant_run']} run-summary rows against the collection database "
             f"({counts['retired_trains']} retired trains keep only their train row)")
+        if params is not None:
+            columns = ("train_id", "path_sha1", "weekday", "n_runs")
+            profile_sql = PROFILE_SQL.format(trip="trip", holiday="public_holiday", train="train")
+            _verify("running profile", columns, 3, source_con.execute(profile_sql, params),
+                    out_con.execute("SELECT train_id, path_sha1, weekday, n_runs FROM train_variant_weekday "
+                                    "ORDER BY train_id, path_sha1, weekday"))
+        first, last = (params["first"], params["last"]) if params else (None, None)
+        log(f"running profile: {counts['running_profile']} rows, window {first}..{last}")
         for table in BUILD_INDEXES:  # the server only joins the lookups by id
             out_con.execute(f"DROP INDEX build_{table}")
         source_con.close()

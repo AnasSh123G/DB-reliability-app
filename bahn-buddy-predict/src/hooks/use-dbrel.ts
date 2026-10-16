@@ -1,5 +1,5 @@
-import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { keepPreviousData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "@/lib/api";
 
 // Matches dbrel.web.queries.MIN_QUERY_LEN -- below this the backend returns
@@ -13,11 +13,11 @@ const MIN_QUERY_LEN = 2;
  * @param state - a Bundesland code, or undefined for all of Germany.
  * @returns the react-query result holding the matches.
  */
-export function useSuggest(query: string, state?: string) {
+export function useSuggest(query: string, state?: string, only?: "station" | "line" | "train") {
   const trimmed = query.trim();
   return useQuery({
-    queryKey: ["suggest", trimmed, state ?? ""],
-    queryFn: () => api.suggest(trimmed, undefined, state),
+    queryKey: ["suggest", trimmed, state ?? "", only ?? ""],
+    queryFn: () => api.suggest(trimmed, only, state),
     enabled: trimmed.length >= MIN_QUERY_LEN,
     staleTime: 30_000,
   });
@@ -85,10 +85,10 @@ export function useRouteTripsAround(
   });
 }
 
-export function useTrainRoute(trainId: number | undefined, stationId?: number) {
+export function useTrainRoute(trainId: number | undefined, stationId?: number, date?: string) {
   return useQuery({
-    queryKey: ["train-route", trainId, stationId],
-    queryFn: () => api.trainRoute(trainId as number, stationId),
+    queryKey: ["train-route", trainId, stationId, date],
+    queryFn: () => api.trainRoute(trainId as number, stationId, date),
     enabled: trainId !== undefined,
   });
 }
@@ -136,8 +136,8 @@ export interface LoadedChunk extends ChunkSpec {
   trips: api.TripAround[];
 }
 
-/** The window the page opens on: the 2 runs at or before the chosen time and the 1 after it. */
-export const FIRST_CHUNK: ChunkSpec = { offset: -2, count: 3 };
+/** The window the page opens on: the 2 runs at or before the chosen time and the 4 after it. */
+export const FIRST_CHUNK: ChunkSpec = { offset: -2, count: 6 };
 
 /**
  * The runs at a stop around a chosen time, fetched in chunks that are each requested once.
@@ -233,4 +233,97 @@ export function useTripChunks(
     isLoading: enabled && (first?.isLoading ?? true),
     isError: first?.isError ?? false,
   };
+}
+
+/** Fetch only a submitted planner request; editing form fields does not start a search. */
+export function usePlan(params: api.PlanParams | undefined) {
+  return useQuery({
+    queryKey: ["plan", params?.from, params?.to, params?.date, params?.time],
+    queryFn: () => {
+      if (!params) throw new Error("Planner parameters are required");
+      return api.plan(params.from, params.to, params.date, params.time);
+    },
+    enabled: params !== undefined,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+/** One timings window of a route, shared by the list and the prefetch of all connections. */
+function planTimingsQuery(
+  params: { from: number; to: number; route: string },
+  { date, time }: { date: string; time: string },
+) {
+  return {
+    queryKey: ["plan-timings", params.from, params.to, date, time, params.route],
+    queryFn: () => api.planTimings(params.from, params.to, date, time, params.route),
+    staleTime: 5 * 60_000,
+    retry: false,
+  };
+}
+
+/**
+ * Load the first other-times window of every listed connection before any is opened, one after
+ * another (the server plans two requests at a time), the chosen connection first.
+ */
+export function usePrefetchPlanTimings(
+  params: { from: number; to: number } | undefined,
+  journeys: api.Journey[],
+  moment: (epoch: number) => { date: string; time: string },
+) {
+  const queryClient = useQueryClient();
+  const routes = journeys
+    .map((journey) => `${journey.route_key}@${journey.departure.epoch}`)
+    .join(",");
+  useEffect(() => {
+    if (!params || journeys.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const journey of journeys) {
+        if (cancelled) return;
+        await queryClient.prefetchQuery(
+          planTimingsQuery(
+            { ...params, route: journey.route_key },
+            moment(journey.departure.epoch),
+          ),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `routes` stands for `journeys`; the params are compared by value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient, params?.from, params?.to, routes]);
+}
+
+/**
+ * One route's runs, fetched as several two-hour-either-side windows, one per centre epoch.
+ *
+ * @param centres - the epochs to centre a window on; add one to load further runs.
+ * @returns the runs of all loaded windows, earliest first and without repeats, whether any window
+ *   is still loading, and whether every window failed.
+ */
+export function usePlanTimingWindows(
+  params: { from: number; to: number; route: string },
+  centres: number[],
+  moment: (epoch: number) => { date: string; time: string },
+) {
+  return useQueries({
+    queries: centres.map((centre) => planTimingsQuery(params, moment(centre))),
+    combine: (results) => {
+      const byKey = new Map<string, api.Journey>();
+      for (const result of results)
+        for (const instance of result.data?.instances ?? [])
+          byKey.set(
+            `${instance.departure.epoch}-${instance.legs.map((leg) => leg.train_id).join("-")}`,
+            instance,
+          );
+      return {
+        instances: [...byKey.values()].sort((a, b) => a.departure.epoch - b.departure.epoch),
+        isPending: results.some((result) => result.isPending),
+        isError: results.length > 0 && results.every((result) => result.isError),
+      };
+    },
+  });
 }

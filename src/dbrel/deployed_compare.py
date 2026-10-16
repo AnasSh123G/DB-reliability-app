@@ -13,13 +13,14 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from dbrel.models import PassengerLine, ServiceLine, Station, StationStop, Train
+from dbrel.config import TZ
 from dbrel.web import queries
 
 TIMES_OF_DAY = (7 * 3600, 12 * 3600, 17 * 3600 + 1800)
@@ -64,7 +65,7 @@ def _ends_and_middle(stations: list[dict]) -> list[int]:
 
 
 def requests_for(session: Session, *, now: int, service_date: date, stations=(), trains=(), lines=(),
-                 corridors=(), terms=()) -> list[Request]:
+                 corridors=(), terms=(), plans=()) -> list[Request]:
     """The requests for the given stations, trains, line ids and line-less trains.
 
     Directions and stops for the runs-around requests are looked up on `session` (any of the two
@@ -116,6 +117,22 @@ def requests_for(session: Session, *, now: int, service_date: date, stations=(),
             out.append(Request(f"corridor {train_id} stations dir {direction}",
                                lambda s, i=train_id, d=direction: queries.corridor_stations(s, i, d)))
             around("corridor", queries.corridor_trips_around, train_id, queries.corridor_stations, direction)
+    monday = service_date - timedelta(days=service_date.weekday())
+    at = int(datetime(monday.year, monday.month, monday.day, 8, tzinfo=TZ).timestamp())
+    picked = list(dict.fromkeys(stations))[:3]
+    pairs = list(plans)
+    if len(picked) == 3:
+        pairs = list(zip(picked, picked[1:] + picked[:1])) + pairs
+    directions = dict.fromkeys((a, b) for origin, target in pairs
+                               for a, b in ((origin, target), (target, origin)) if a != b)
+
+    def plan_payload(s, origin, target):
+        body = queries.plan(s, origin, target, at, monday.isoformat(), "08:00")[1]
+        return {key: value for key, value in body.items() if key != "stats"}
+
+    for origin, target in directions:
+        out.append(Request(f"plan {origin}>{target}",
+                           lambda s, a=origin, b=target: plan_payload(s, a, b)))
     return out
 
 

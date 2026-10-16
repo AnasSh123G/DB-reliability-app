@@ -496,7 +496,7 @@ class ArrivalNetPredictor:
 
     BATCH = 4096
 
-    def __init__(self, artifact: Path, manifest: dict, session=None):
+    def __init__(self, artifact: Path, manifest: dict, session=None, *, inference_threads: int | None = None):
         if manifest.get("kind") != ARRIVAL_KIND:
             raise ValueError(f"not an {ARRIVAL_KIND} artifact")
         self.manifest = manifest
@@ -504,8 +504,16 @@ class ArrivalNetPredictor:
         if session is None:
             import onnxruntime
 
+            options = {}
+            if inference_threads is not None:
+                if inference_threads < 1:
+                    raise ValueError("inference_threads must be positive")
+                config = onnxruntime.SessionOptions()
+                config.intra_op_num_threads = inference_threads
+                config.inter_op_num_threads = 1
+                options["sess_options"] = config
             session = onnxruntime.InferenceSession(str(artifact / manifest["model_file"]),
-                                                   providers=["CPUExecutionProvider"])
+                                                   providers=["CPUExecutionProvider"], **options)
         self.session = session
 
     def predict(self, encoded: dict[str, np.ndarray]) -> ArrivalForecast:

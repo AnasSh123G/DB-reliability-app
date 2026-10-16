@@ -176,7 +176,7 @@ export interface LineDetail {
   directions: { label: string; n_runs: number; runs: LineRun[] }[];
 }
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
@@ -239,8 +239,9 @@ export function stationBoard(
   });
 }
 
-export function trainRoute(trainId: number, stationId?: number) {
-  return apiFetch<TrainRoute>(`/api/train/${trainId}/route`, { station: stationId });
+/** One train's route; with `date` (YYYY-MM-DD) its stops are forecast for that run's day. */
+export function trainRoute(trainId: number, stationId?: number, date?: string) {
+  return apiFetch<TrainRoute>(`/api/train/${trainId}/route`, { station: stationId, date });
 }
 
 // What the direction/stop/Prognose flow runs on: a real line, or -- for a
@@ -316,4 +317,112 @@ export function routeTripsChunk(
 
 export function lineDetail(lineId: number) {
   return apiFetch<LineDetail>(`/api/line/${lineId}/detail`);
+}
+
+/** A local Berlin clock time and its unambiguous instant. */
+export interface Moment {
+  epoch: number;
+  date: string;
+  time: string;
+}
+
+export interface PlanForecast {
+  p25_min: number;
+  p50_min: number;
+  p75_min: number;
+}
+
+export interface PlanStation {
+  id: number;
+  name: string;
+}
+
+export interface PlanLeg {
+  train_id: number;
+  name: string;
+  number_name: string;
+  category: string | null;
+  line_key: string;
+  from: PlanStation;
+  to: PlanStation;
+  departure: Moment;
+  arrival: Moment;
+  expected_arrival: Moment;
+  forecast: PlanForecast | null;
+  n_stops: number;
+}
+
+/** Chance of missing a change: under 25%, 25-50%, 50-75%, over 75%. */
+export type MissChance = "low" | "medium" | "high" | "very_high";
+
+export interface PlanChange {
+  station: PlanStation;
+  planned_min: number;
+  left_min: number;
+  at_risk: boolean;
+  miss_chance: MissChance | null;
+}
+
+export interface Journey {
+  route_key: string;
+  departure: Moment;
+  arrival: Moment;
+  expected_arrival: Moment;
+  delay_min: number;
+  forecast: PlanForecast | null;
+  duration_min: number;
+  n_changes: number;
+  at_risk: boolean;
+  /** The worst change's chance; null for a direct journey or without forecasts. */
+  miss_chance: MissChance | null;
+  legs: PlanLeg[];
+  changes: PlanChange[];
+}
+
+export interface PlanStats {
+  searches: number;
+  runs_forecast: number;
+  ms: number;
+}
+
+interface PlanContext {
+  from: PlanStation;
+  to: PlanStation;
+  date: string;
+  time: string;
+  model_stamp: string;
+  data_until: string | null;
+  stats: PlanStats;
+}
+
+export type PlanReason = "from_unserved" | "to_unserved" | "search_limit" | "no_connection";
+
+export interface PlanResponse extends PlanContext {
+  journeys: Journey[];
+  reason: PlanReason | null;
+}
+
+export interface TimingsResponse extends PlanContext {
+  route_key: string;
+  window: { from: Moment; to: Moment };
+  instances: Journey[];
+}
+
+export interface PlanParams {
+  from: number;
+  to: number;
+  date: string;
+  time: string;
+}
+
+export interface PlanTimingsParams extends PlanParams {
+  route: string;
+}
+
+export function plan(from: number, to: number, date: string, time: string) {
+  return apiFetch<PlanResponse>("/api/plan", { from, to, date, time });
+}
+
+export function planTimings(from: number, to: number, date: string, time: string, route: string) {
+  return apiFetch<TimingsResponse>("/api/plan/timings", { from, to, date, time, route });
 }

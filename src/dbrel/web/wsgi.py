@@ -22,6 +22,17 @@ def _warm() -> None:
 
         logging.getLogger("dbrel.web").exception("warming the delay model failed")
 
+    try:
+        from dbrel.db import read_scope
+        from dbrel.planner.timetable import get_timetable
+
+        with read_scope() as session:
+            get_timetable(session)
+    except Exception:
+        import logging
+
+        logging.getLogger("dbrel.web").exception("warming the planner timetable failed")
+
 
 # Off the startup path: the server answers at once, and the rates (about 25 s) load in the background.
 threading.Thread(target=_warm, name="warm-model", daemon=True).start()

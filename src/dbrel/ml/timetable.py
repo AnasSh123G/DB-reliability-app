@@ -42,10 +42,17 @@ class ScheduledCall:
 
     def raw(self, *, direction: int, holiday_set: set[tuple[str, str]],
             arrival_clock: bool = False) -> dict[str, list]:
-        """This call as a one-row `RAW_COLUMNS` dict.
+        """This call as a one-row `RAW_COLUMNS` dict."""
+        values = self.raw_values(direction=direction, holiday_set=holiday_set,
+                                 arrival_clock=arrival_clock)
+        return {name: [value] for name, value in zip(RAW_COLUMNS, values, strict=True)}
 
-        `arrival_clock`: the planned arrival as the scheduled time (arrival-only
-        models), instead of the departure-preferred time the v2 model uses.
+    def raw_values(self, *, direction: int, holiday_set: set[tuple[str, str]],
+                   arrival_clock: bool = False) -> tuple:
+        """Scalar inputs in `RAW_COLUMNS` order, without per-column containers.
+
+        `arrival_clock` uses the planned arrival for arrival-only models;
+        otherwise the scheduled time prefers departure, then arrival.
         """
         train, station = self.train, self.station
         if arrival_clock:
@@ -55,26 +62,24 @@ class ScheduledCall:
             if sched is None:
                 sched = self.planned_arrival_sec
         start = self.trip_start_sec
-        row = {
-            "station_id": station.id,
-            "train_id": train.id,
-            "line_id": train.line_id if train.line_id is not None else NO_LINE,
-            "category": train.category,
-            "operator": train.operator,
-            "state": station.state,
-            "lat": station.lat,
-            "lon": station.lon,
-            "weekday": weekday_of(self.service_date),
-            "is_holiday": int(is_holiday(self.service_date, station.state, holiday_set)),
-            "sched_local_sec": sched,
-            "trip_start_sec": np.nan if start is None else start,
-            "stop_rank": self.stop_rank,
-            "n_stops": self.n_stops,
-            "direction": direction,
-            "day_of_year_idx": day_of_year_index(self.service_date),
-        }
-        assert tuple(row) == RAW_COLUMNS
-        return {key: [value] for key, value in row.items()}
+        return (
+            station.id,
+            train.id,
+            train.line_id if train.line_id is not None else NO_LINE,
+            train.category,
+            train.operator,
+            station.state,
+            station.lat,
+            station.lon,
+            weekday_of(self.service_date),
+            int(is_holiday(self.service_date, station.state, holiday_set)),
+            sched,
+            np.nan if start is None else start,
+            self.stop_rank,
+            self.n_stops,
+            direction,
+            day_of_year_index(self.service_date),
+        )
 
 
 def _variant_trip_start(train: Train, stops: list[StationStop]) -> int | None:

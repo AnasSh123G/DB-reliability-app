@@ -12,6 +12,9 @@ replace-web-ui-with-bahn-buddy).
 from __future__ import annotations
 
 import json
+import re
+import threading
+from contextlib import contextmanager
 from datetime import date, datetime
 
 import httpx
@@ -27,6 +30,7 @@ from dbrel.config import (
 )
 from dbrel.db import read_scope
 from dbrel.ml.bakeoff import current_artifact
+from dbrel.planner.constants import PLAN_CONCURRENCY, PLAN_QUEUE_SECONDS
 from dbrel.web import queries
 
 # Headers that describe THIS hop's transport, not the proxied response's actual
@@ -76,8 +80,20 @@ def suggest(request):
 
 def train_route(request, train_id: int):
     station = request.GET.get("station", "")
+    raw_date = request.GET.get("date", "")
+    service_date = None
+    if raw_date:
+        try:
+            service_date = date.fromisoformat(raw_date)
+        except ValueError:
+            return JsonResponse({"error": "date must be YYYY-MM-DD"}, status=400)
     with read_scope() as session:
-        route = queries.train_route(session, train_id, station_id=int(station) if station.isdigit() else None)
+        route = queries.train_route(
+            session,
+            train_id,
+            station_id=int(station) if station.isdigit() else None,
+            service_date=service_date,
+        )
     if route is None:
         return JsonResponse({"error": f"no train {train_id}"}, status=404)
     return JsonResponse(route)
@@ -335,3 +351,53 @@ def frontend_proxy(request, path: str = ""):
         if key.lower() not in _HOP_BY_HOP:
             response[key] = value
     return response
+
+
+
+_PLAN_SLOTS = threading.BoundedSemaphore(PLAN_CONCURRENCY)
+
+
+@contextmanager
+def _planner_slot():
+    acquired = _PLAN_SLOTS.acquire(timeout=PLAN_QUEUE_SECONDS)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            _PLAN_SLOTS.release()
+
+
+def _plan_response(request, timings=False):
+    try:
+        source, target = int(request.GET.get("from", "")), int(request.GET.get("to", ""))
+        if source <= 0 or target <= 0:
+            raise ValueError
+    except ValueError:
+        return JsonResponse({"error": "from and to must be station ids"}, status=400)
+    if source == target:
+        return JsonResponse({"error": "from and to must be different stations"}, status=400)
+    if request.GET.get("date") and not request.GET.get("time"):
+        return JsonResponse({"error": "time must be HH:MM"}, status=400)
+    epoch, problem = _chosen_moment(request)
+    if problem or epoch is None:
+        return JsonResponse({"error": problem or "date and time are required"}, status=400)
+    # strptime accepts shortened fields; the planner's public format is exact.
+    for key, pattern, expected in (("date", r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "YYYY-MM-DD"),
+                                   ("time", r"[0-9]{2}:[0-9]{2}", "HH:MM")):
+        if not re.fullmatch(pattern, request.GET[key]):
+            return JsonResponse({"error": f"{key} must be {expected}"}, status=400)
+    with read_scope() as session:
+        args = (session, source, target, epoch, request.GET['date'], request.GET['time'])
+        if timings:
+            status, body = queries.plan_timings(*args, request.GET.get('route', ''), slot=_planner_slot)
+        else:
+            status, body = queries.plan(*args, slot=_planner_slot)
+    return JsonResponse(body, status=status)
+
+
+def plan(request):
+    return _plan_response(request)
+
+
+def plan_timings(request):
+    return _plan_response(request, timings=True)

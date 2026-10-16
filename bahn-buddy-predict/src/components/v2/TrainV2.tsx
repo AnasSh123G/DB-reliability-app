@@ -1,69 +1,39 @@
-// The v2 train route view, generated from v1's TrainOverview.tsx so it renders and behaves like
-// it, with its own visual identity (see
-// openspec/changes/redesign-v2-visual-identity/design.md). The desktop route list uses `Table`;
-// phone width keeps a stacked list, since `Table` doesn't reflow.
+// The v2 train route view. Its stops are the same entries as the Prognose card's runs and the
+// station board's calls (see RunEntry), under the same scheduled · delay · expected header, so a
+// run reads the same in the list and in its route. On the lookup page it sits beside the list
+// (`embedded`); at /train/<id> it is a page of its own.
 import { ArrowLeft, MapPin } from "lucide-react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { useTrainRoute } from "@/hooks/use-dbrel";
 import { useModelPredictions } from "@/hooks/use-tabm";
-import { copy, type Copy, type Locale } from "@/lib/i18n";
-import type { SidePrediction } from "@/lib/tabm";
-import { ModelDelta } from "./ModelDelta";
-import { FieldLabel } from "./FieldLabel";
+import { copy, type Locale } from "@/lib/i18n";
+import { RUN_ROW_HEIGHT_TITLED, RunColumnHeader, RunEntry, SCROLL_CLASS } from "./RunEntry";
 import { TrainNumber } from "./TrainNumber";
+import { icons } from "./icons";
+import { formatRunDay } from "./run-format";
 import { v2Paths } from "./paths";
 
 interface Props {
   trainId: number;
   /** The stop the user came from; the route shown calls there. */
   stationId?: number | undefined;
+  /** The run's day (YYYY-MM-DD); its stops are forecast for that day. Without it, for today. */
+  date?: string | undefined;
   locale: Locale;
-  bare?: boolean;
+  /**
+   * Beside the lookup list: no back button, and the stops scroll inside the card, whose height
+   * `className` fixes.
+   */
+  embedded?: boolean;
+  /** Choosing a stop opens its station's board for the run's day and time at that stop. */
+  onStop?: ((stop: { stationId: number; date: string; time: string }) => void) | undefined;
   className?: string;
-}
-
-function DelayCell({
-  scheduled,
-  modelPred,
-  noPredictionLabel,
-  t,
-}: {
-  scheduled: string | null;
-  modelPred: SidePrediction | undefined;
-  noPredictionLabel: string;
-  t: Copy;
-}) {
-  if (scheduled && modelPred !== undefined) {
-    return <ModelDelta pred={modelPred} scheduled={scheduled} t={t} />;
-  }
-  return <span className="block text-mist">{scheduled ? noPredictionLabel : "—"}</span>;
-}
-
-/** The tag that marks the stop the user came from, in words as well as colour. */
-function YourStopTag({ label }: { label: string }) {
-  return (
-    <Badge
-      variant="outline"
-      className="shrink-0 gap-1 border-teal text-[12.67px] font-normal text-teal"
-    >
-      <MapPin className="size-3 fill-current" aria-hidden="true" />
-      {label}
-    </Badge>
-  );
 }
 
 /**
@@ -84,27 +54,39 @@ function formatDay(day: string | null, locale: Locale): string {
   );
 }
 
-export function TrainV2({ trainId, stationId, locale, bare = false, className }: Props) {
+export function TrainV2({
+  trainId,
+  stationId,
+  date,
+  locale,
+  embedded = false,
+  onStop,
+  className,
+}: Props) {
   const t = copy[locale];
-  const { data: route, isLoading, isError } = useTrainRoute(trainId, stationId);
+  const { data: route, isLoading, isError } = useTrainRoute(trainId, stationId, date);
   const predictions = useModelPredictions(
     route?.model_stamp,
     (route?.stops ?? []).map((stop) => ({ key: stop.seq, model_input: stop.model_input })),
   );
 
-  // Bring the stop the user came from into view once the route is on screen. The phone list and
-  // the desktop table both carry the marker; only the visible one has a size.
-  const scrolled = useRef(false);
+  // Bring the stop the user came from into view once the route is on screen: inside the card's
+  // own scroll area beside the list, in the page on a page of its own.
+  const listRef = useRef<HTMLOListElement>(null);
+  const scrolledFor = useRef<unknown>(null);
   useEffect(() => {
-    if (scrolled.current || !route || stationId === undefined) return;
-    const rows = document.querySelectorAll<HTMLElement>("[data-your-stop]");
-    const visible = Array.from(rows).find((row) => row.offsetParent !== null);
-    if (!visible) return;
-    scrolled.current = true;
-    visible.scrollIntoView({ block: "center" });
-  }, [route, stationId]);
+    if (!route || stationId === undefined || scrolledFor.current === route) return;
+    const row = listRef.current?.querySelector<HTMLElement>("[data-your-stop]");
+    const list = listRef.current;
+    if (!row || !list) return;
+    scrolledFor.current = route;
+    if (embedded) list.scrollTop = row.offsetTop - list.clientHeight / 2 + row.offsetHeight / 2;
+    else row.scrollIntoView({ block: "center" });
+  }, [route, stationId, embedded]);
 
-  const wrapperClass = `${bare ? "" : "rise mt-6 rounded-lg border border-line bg-panel p-5 text-paper shadow-none sm:p-7"} ${className ?? ""}`;
+  const wrapperClass = `rise flex flex-col rounded-lg border border-line bg-panel p-5 text-paper shadow-none sm:p-7 ${
+    embedded ? "" : "mt-6"
+  } ${className ?? ""}`;
 
   if (isLoading) {
     return (
@@ -113,7 +95,7 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
         <Skeleton className="mt-2 h-4 w-1/3 bg-line" />
         <div className="mt-5 space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 w-full bg-line" />
+            <Skeleton key={i} className={`${RUN_ROW_HEIGHT_TITLED} w-full bg-line`} />
           ))}
         </div>
       </Card>
@@ -129,70 +111,69 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
   }
 
   const { train, stops, n_monitored, retired } = route;
-  // The stop the user came from: the one marked on the page. Only a stop the train calls at.
   const isYourStop = (stop: (typeof stops)[number]) =>
     stationId !== undefined && stop.station_id === stationId;
-
-  const nameNodeFor = (stop: (typeof stops)[number]): ReactNode =>
-    stop.monitored && stop.station_id ? (
-      <Link {...v2Paths.station(stop.station_id)} className="hover:underline">
-        {stop.name}
-      </Link>
-    ) : (
-      stop.name
-    );
+  // Under the times: when the train leaves the stop, and from which platform.
+  const stopNote = (stop: (typeof stops)[number]) =>
+    stop.monitored
+      ? [
+          stop.dep && stop.arr ? t.departsAt.replace("{time}", stop.dep) : null,
+          stop.platform ? t.platformShort.replace("{platform}", stop.platform) : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : t.notMonitored;
 
   return (
     <Card className={wrapperClass} role="region" aria-labelledby="train-heading">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-5">
-        <div className="flex items-start gap-3">
-          {!bare && (
-            <Button
-              variant="ghost"
-              size="icon"
-              asChild
-              aria-label={t.back}
-              className="rounded-md text-fog hover:bg-ink hover:text-paper"
-            >
-              <Link {...v2Paths.home()}>
-                <ArrowLeft />
-              </Link>
-            </Button>
-          )}
-          <div>
-            <p className="text-xs text-fog">
-              {t.trainRoute} {train.destination ?? "—"}
-            </p>
-            <h2 id="train-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
-              {train.name}
-              <TrainNumber name={train.name} numberName={train.number_name} />
-              {train.replacement_bus && (
-                <Badge
-                  variant="outline"
-                  className="ml-2 align-middle border-amber font-mono text-[12.67px] font-normal text-amber"
-                >
-                  {t.replacementBus}
-                </Badge>
-              )}
-            </h2>
-            <p className="mt-1 text-xs text-fog">
-              {[train.category, train.operator].filter(Boolean).join(" · ")}
-              {!retired && (
-                <>
-                  {" · "}
-                  {train.n_stops} {t.stops}
-                </>
-              )}
-            </p>
-            {train.line && (
-              <Link
-                {...v2Paths.line(train.line.id)}
-                className="mt-1 inline-block text-xs text-teal hover:underline"
+      <div className="flex shrink-0 items-start gap-3 border-b border-line pb-5">
+        {!embedded && (
+          <Button
+            variant="ghost"
+            size="icon"
+            asChild
+            aria-label={t.back}
+            className="rounded-md text-fog hover:bg-ink hover:text-paper"
+          >
+            <Link {...v2Paths.home()}>
+              <ArrowLeft />
+            </Link>
+          </Button>
+        )}
+        <div className="min-w-0">
+          <p className="text-xs text-fog">
+            {t.trainRoute} {train.destination ?? "—"}
+          </p>
+          <h2 id="train-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
+            {train.name}
+            <TrainNumber name={train.name} numberName={train.number_name} />
+            {train.replacement_bus && (
+              <Badge
+                variant="outline"
+                className="ml-2 align-middle border-amber font-mono text-[12.67px] font-normal text-amber"
               >
-                {train.line.name}
+                {t.replacementBus}
+              </Badge>
+            )}
+          </h2>
+          <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fog">
+            {date && (
+              <span className="inline-flex items-center gap-1.5">
+                <icons.date className="size-3.5 shrink-0" aria-hidden="true" />
+                {formatRunDay(date, locale)}
+              </span>
+            )}
+            {!retired && (
+              <span>
+                {train.n_stops} {t.stops}
+              </span>
+            )}
+            {train.line && (
+              <Link {...v2Paths.line(train.line.id)} className="text-teal hover:underline">
+                {t.lineNamed.replace("{line}", train.line.name)}
               </Link>
             )}
-          </div>
+          </p>
         </div>
       </div>
 
@@ -204,126 +185,67 @@ export function TrainV2({ trainId, stationId, locale, bare = false, className }:
         </Alert>
       )}
 
-      {/* Phone: a stacked list -- `Table` doesn't reflow at narrow widths. */}
-      <ol className="mt-2 sm:hidden">
-        {stops.map((stop) => (
-          <li
-            key={stop.seq}
-            data-your-stop={isYourStop(stop) ? "" : undefined}
-            className={`border-t border-line py-4 ${
-              isYourStop(stop) ? "-mx-3 border-l-4 border-l-teal bg-ink px-2" : ""
+      {!retired && stops.length > 0 && (
+        <div className="mt-3 flex min-h-0 flex-1 flex-col">
+          <RunColumnHeader t={t} chevron={false} />
+          <ol
+            ref={listRef}
+            className={`relative divide-y divide-line ${
+              embedded ? `min-h-0 flex-1 overflow-y-auto ${SCROLL_CLASS}` : ""
             }`}
           >
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="grid size-6 shrink-0 place-items-center rounded-lg bg-ink text-teal">
-                <MapPin className="size-3.5" />
-              </span>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-paper">{nameNodeFor(stop)}</p>
-                {isYourStop(stop) && <YourStopTag label={t.yourStop} />}
-                {!stop.monitored && (
-                  <Badge variant="outline" className="mt-1 text-[12.67px] font-normal text-fog">
-                    {t.notMonitored}
-                  </Badge>
-                )}
-              </div>
-            </div>
-
-            {stop.monitored && (
-              <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4">
-                <div>
-                  <FieldLabel kind="arrival" className="text-[12.67px] font-normal">
-                    {t.arrival}
-                  </FieldLabel>
-                  <p className="mt-1 font-mono text-sm text-mist">{stop.arr ?? "—"}</p>
-                </div>
-                <div>
-                  <FieldLabel kind="expected" className="text-[12.67px] font-normal">
-                    {t.expectedArrival}
-                  </FieldLabel>
-                  <p className="mt-1 text-sm">
-                    <DelayCell
-                      scheduled={stop.arr}
-                      modelPred={predictions.get(stop.seq)?.arr}
-                      noPredictionLabel={t.noPrediction}
-                      t={t}
-                    />
-                  </p>
-                </div>
-              </div>
-            )}
-          </li>
-        ))}
-      </ol>
-
-      {/* Desktop: the same data as a real table. */}
-      <div className={retired ? "hidden" : "mt-5 hidden sm:block"}>
-        <Table>
-          <TableHeader>
-            <TableRow className="border-line hover:bg-transparent">
-              <TableHead>
-                <FieldLabel kind="stop" className="text-[12.67px] font-normal">
-                  {t.stop}
-                </FieldLabel>
-              </TableHead>
-              <TableHead>
-                <FieldLabel kind="arrival" className="text-[12.67px] font-normal">
-                  {t.arrival}
-                </FieldLabel>
-              </TableHead>
-              <TableHead>
-                <FieldLabel kind="expected" className="text-[12.67px] font-normal">
-                  {t.expectedArrival}
-                </FieldLabel>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {stops.map((stop) => (
-              <TableRow
-                key={stop.seq}
-                data-your-stop={isYourStop(stop) ? "" : undefined}
-                className={`border-line hover:bg-ink/40 ${
-                  isYourStop(stop) ? "bg-ink shadow-[inset_4px_0_0_var(--color-teal)]" : ""
-                }`}
-              >
-                <TableCell className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span
-                      className={`grid size-6 shrink-0 place-items-center rounded-lg bg-ink ${stop.monitored ? "text-teal" : "text-fog"}`}
-                    >
-                      <MapPin className="size-3.5" />
-                    </span>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-paper">{nameNodeFor(stop)}</p>
-                    </div>
-                    {isYourStop(stop) && <YourStopTag label={t.yourStop} />}
-                  </div>
-                </TableCell>
-                {stop.monitored ? (
-                  <>
-                    <TableCell className="font-mono text-sm text-mist">{stop.arr ?? "—"}</TableCell>
-                    <TableCell className="text-sm">
-                      <DelayCell
-                        scheduled={stop.arr}
-                        modelPred={predictions.get(stop.seq)?.arr}
-                        noPredictionLabel={t.noPrediction}
-                        t={t}
-                      />
-                    </TableCell>
-                  </>
-                ) : (
-                  <TableCell colSpan={2}>
-                    <Badge variant="outline" className="text-[13.67px] font-normal text-fog">
-                      {t.notMonitored}
-                    </Badge>
-                  </TableCell>
-                )}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+            {stops.map((stop) => {
+              const forecast = predictions.get(stop.seq)?.arr;
+              const yours = isYourStop(stop);
+              const time = stop.arr ?? stop.dep;
+              const station = stop.monitored ? stop.station_id : null;
+              return (
+                <li
+                  key={stop.seq}
+                  data-your-stop={yours ? "" : undefined}
+                  className={RUN_ROW_HEIGHT_TITLED}
+                >
+                  <RunEntry
+                    link={
+                      !onStop && station
+                        ? v2Paths.station(station, date && time ? { date, time } : undefined)
+                        : undefined
+                    }
+                    onSelect={
+                      onStop && station && date && time
+                        ? () => onStop({ stationId: station, date, time })
+                        : undefined
+                    }
+                    selected={yours}
+                    arrival={stop.monitored ? stop.arr : null}
+                    departure={stop.monitored ? stop.dep : null}
+                    forecast={stop.monitored ? forecast : undefined}
+                    pending={stop.monitored && forecast === undefined && stop.model_input !== null}
+                    day={stopNote(stop)}
+                    chevron={false}
+                    title={
+                      <span className="flex min-w-0 items-center gap-2">
+                        <MapPin
+                          className={`size-3.5 shrink-0 ${stop.monitored ? "text-teal" : "text-fog"}`}
+                          aria-hidden="true"
+                        />
+                        <span
+                          className={`truncate font-display font-semibold ${
+                            yours ? "text-teal" : "text-paper"
+                          }`}
+                        >
+                          {stop.name}
+                        </span>
+                      </span>
+                    }
+                    t={t}
+                  />
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
 
       {n_monitored === 0 && !retired && (
         <Alert className="mt-4 border-line bg-ink">
