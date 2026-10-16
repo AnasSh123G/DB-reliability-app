@@ -1,6 +1,7 @@
-# Tests on every push and pull request; deploys to Fly.io only when the tests pass on main.
-# Needs the repository secret FLY_API_TOKEN (fly tokens create deploy -a bahnpredict).
-# The database on the Fly volume is not part of this: it is uploaded separately.
+# Tests on every push and pull request; deploys only when the tests pass on main:
+# - deploy-home: the home server, through the self-hosted runner labelled "home" (deploy/compose.yaml)
+# - deploy: Fly.io, until the switch to the home server; needs the secret FLY_API_TOKEN
+# The database is not part of either: scripts/push_slim_db.sh uploads it to the home server.
 name: Test and deploy
 
 on:
@@ -29,3 +30,13 @@ jobs:
       - run: flyctl deploy --remote-only -a bahnpredict --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-home:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, home]
+    concurrency: deploy-home   # one deploy at a time
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/compose.yaml up -d --build --wait --wait-timeout 300
+      - run: docker image prune -f
