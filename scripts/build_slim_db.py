@@ -8,7 +8,7 @@ output. The source is opened read-only; only the output file is written.
 
     dbrel ml launch build-slim --memory 4G -- env PYTHONPATH=src .venv/bin/python scripts/build_slim_db.py
 
-Then copy the file to the server's volume (see fly.toml / README "Deploying").
+Then copy it to the server with scripts/push_slim_db.sh (see README "Deploying").
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# Home-server deployment (replaces fly.toml). Run from this directory on the server:
+# Home-server deployment. Run from this directory on the server:
 #   docker compose up -d --build --wait
 # Secrets and host names live in /srv/bahnpredict/.env, the database in /srv/bahnpredict/data.
 # The fixed name makes a manual run and the GitHub runner's checkout manage the same containers.
