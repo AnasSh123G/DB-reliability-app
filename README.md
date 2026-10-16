@@ -416,10 +416,12 @@ per train per station, so the web board does not recompute it per request.
 `show-train` and `show-station` both take `--format tsv` for piping straight into a
 training script.
 
-## Deploying (Fly.io)
+## Deploying (home server)
 
-One Fly machine runs the image from the `Dockerfile` (Django API, the built frontend and the
-served model from `models/v2/`), with the database on a volume at `/data`. The 48 GB collection
+The home server runs the image from the `Dockerfile` (Django API, the built frontend and the
+served model from `models/v2/`) with `deploy/compose.yaml`, next to a Cloudflare Tunnel container
+that carries `bahnpredict.de`. The database is a file at `/srv/bahnpredict/data/dbrel.sqlite`,
+mounted at `/data`. The 48 GB collection
 database stays on the collector machine. The server reads a deployed copy (`dbrel.deployed`)
 holding:
 - the trains, stations, lines, holidays and search aliases
@@ -459,17 +461,20 @@ directions, stations and details, the runs before and after a time, and search. 
 the busiest stations, the trains with the most route variants and a seeded random sample, compares
 the JSON exactly and exits 1 on any difference.
 
-First deployment (needs `flyctl` and a Fly account):
+Every push to `main` that passes the tests deploys itself: the `deploy-home` job runs on the
+self-hosted GitHub runner on the server and does `docker compose up -d --build --wait`. The
+database is not part of that. Upload a new copy with:
 
 ```bash
-fly launch --no-deploy --copy-config            # pick an app name; keeps fly.toml
-fly volumes create dbrel_data --region fra --size 3
-fly deploy                                      # the machine starts without data until the next step
-fly ssh sftp shell                              # then: put data/deploy/slim.sqlite /data/dbrel.sqlite
-fly machine restart
+scripts/push_slim_db.sh [data/deploy/slim.sqlite]   # checkpoint, upload, verify, swap, restart
 ```
 
-The model is committed, so a new model means `dbrel ml promote`, a commit and `fly deploy`. A model
+First setup of the server: Docker, `/srv/bahnpredict/.env` (`DBREL_ALLOWED_HOSTS`,
+`DBREL_SECRET_KEY`, `TUNNEL_TOKEN` from a Cloudflare Tunnel whose route points to
+`http://app:8080`), the database via the script above, and a self-hosted runner labelled `home`
+(repository Settings > Actions > Runners).
+
+The model is committed, so a new model means `dbrel ml promote`, a commit and a push to `main`. A model
 that uses notice rates reads `notice_rate_total` from the slim database and refuses to predict if
 the totals no longer match its manifest fingerprint, so rebuild the slim copy from the same data
 the model was trained on.

@@ -15,7 +15,7 @@ flowchart LR
     TRAIN["Model training, evaluation,<br/>deployment"]
   end
 
-  subgraph SERVER["Server (Fly.io)"]
+  subgraph SERVER["Server (home server)"]
     subgraph DEP["Deployments"]
       DM["Deployed model"]
       TDB[("Trimmed database")]

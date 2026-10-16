@@ -1,7 +1,6 @@
-# Tests on every push and pull request; deploys only when the tests pass on main:
-# - deploy-home: the home server, through the self-hosted runner labelled "home" (deploy/compose.yaml)
-# - deploy: Fly.io, until the switch to the home server; needs the secret FLY_API_TOKEN
-# The database is not part of either: scripts/push_slim_db.sh uploads it to the home server.
+# Tests on every push and pull request; deploys to the home server only when the tests pass on main,
+# through the self-hosted runner labelled "home" (deploy/compose.yaml).
+# The database is not part of this: scripts/push_slim_db.sh uploads it to the server.
 name: Test and deploy
 
 on:
@@ -18,18 +17,6 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen --all-extras
       - run: uv run pytest -q
-
-  deploy:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    concurrency: deploy-bahnpredict   # one deploy at a time
-    steps:
-      - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only -a bahnpredict --ha=false
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-home:
     needs: test
