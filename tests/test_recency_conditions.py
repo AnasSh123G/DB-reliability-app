@@ -48,6 +48,7 @@ def test_condition_list_defaults_to_control_weighted(tmp_path):
 
 
 def test_seasonal_columns_ignore_the_year():
+    pytest.importorskip("torch")
     import train_recency_delay as runner
     prep = {"stats": {"doy_sin": [0.0, 1.0], "doy_cos": [0.0, 1.0]}}
     values = runner.seasonal_inputs(epoch("2025-10-14", "2026-10-14", "2025-03-01", "2026-03-01",
@@ -79,6 +80,7 @@ def _layouts(n=40):
 
 
 def test_seasonal_columns_land_at_the_trial_slots_with_its_scaling(tmp_path):
+    pytest.importorskip("torch")
     import train_recency_delay as runner
     days, encoded, base, seasonal = _layouts()
     positions = runner.seasonal_positions(base, seasonal)
@@ -99,6 +101,7 @@ def test_seasonal_columns_land_at_the_trial_slots_with_its_scaling(tmp_path):
 
 
 def test_seasonal_layout_refuses_any_other_input_difference():
+    pytest.importorskip("torch")
     import train_recency_delay as runner
     _, _, base, seasonal = _layouts()
     changed = json.loads(json.dumps(seasonal))
