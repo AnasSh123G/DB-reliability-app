@@ -48,3 +48,32 @@ export function formatRunDay(day: string, locale: Locale): string {
     timeZone: "UTC",
   }).format(new Date(`${day}T00:00:00Z`));
 }
+
+/** A Unix moment as the Berlin calendar and clock show it, including DST. */
+export function berlinMoment(epoch: number): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Berlin",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(epoch * 1000));
+  const value = (kind: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === kind)?.value ?? "";
+  return {
+    date: `${value("year")}-${value("month")}-${value("day")}`,
+    time: `${value("hour")}:${value("minute")}`,
+  };
+}
+
+/** Journey duration in the page language. */
+export function formatDuration(min: number, locale: Locale): string {
+  const hours = Math.floor(min / 60);
+  const minutes = min % 60;
+  const unit = locale === "de" ? "Min." : "min";
+  return hours > 0
+    ? `${hours} ${locale === "de" ? "Std." : "h"} ${minutes} ${unit}`
+    : `${minutes} ${unit}`;
+}

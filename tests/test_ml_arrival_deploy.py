@@ -449,3 +449,19 @@ def test_changed_counts_make_serving_refuse(env, tmp_path, monkeypatch):  # noqa
         _model_input(s, manifest, station_id=station, arr_sec=arr_sec, dep_sec=dep_sec,
                      train=s.get(Train, 70), service_date=START, direction=F.all_directions(s)[70],
                      holiday_set=load_holiday_dates(s))
+
+
+def test_planner_can_bound_onnx_threads_without_changing_default(tmp_path, monkeypatch):
+    import onnxruntime
+    seen = []
+    class Session:
+        def __init__(self, path, **kwargs):
+            seen.append(kwargs)
+    monkeypatch.setattr(onnxruntime, 'InferenceSession', Session)
+    manifest = {'kind': ARRIVAL_KIND, 'edges': None, 'model_file': 'model.onnx'}
+    (tmp_path / 'manifest.json').write_text(json.dumps(manifest))
+    DelayModel(tmp_path, inference_threads=1)
+    assert seen[-1]['sess_options'].intra_op_num_threads == 1
+    assert seen[-1]['sess_options'].inter_op_num_threads == 1
+    DelayModel(tmp_path)
+    assert 'sess_options' not in seen[-1]

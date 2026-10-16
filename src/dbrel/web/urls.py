@@ -5,6 +5,8 @@ from django.urls import path, re_path
 from dbrel.web import views
 
 urlpatterns = [
+    path("api/plan", views.plan, name="plan"),
+    path("api/plan/timings", views.plan_timings, name="plan-timings"),
     path("api/suggest", views.suggest, name="suggest"),
     path("api/station/<int:station_id>/board", views.station_board, name="station-board"),
     path("api/train/<int:train_id>/route", views.train_route, name="train-route"),

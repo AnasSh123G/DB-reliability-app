@@ -50,14 +50,15 @@ class Prediction:
 
 
 class DelayModel:
-    def __init__(self, artifact: Path):
+    def __init__(self, artifact: Path, *, inference_threads: int | None = None):
         self.artifact = artifact
         self.manifest = json.loads((artifact / MANIFEST_NAME).read_text())
         self.models = {}
         self.tabm = None
         self.arrival = None
         if self.manifest.get("kind") == ARRIVAL_KIND:
-            self.arrival = ArrivalNetPredictor(artifact, self.manifest)
+            self.arrival = ArrivalNetPredictor(artifact, self.manifest,
+                                               inference_threads=inference_threads)
             return
         if self.manifest.get("kind") == TABM_KIND:
             self.tabm = TabMPredictor(artifact, self.manifest)
@@ -85,16 +86,19 @@ class DelayModel:
             return []
         holiday_set = load_holiday_dates(session)
         directions: dict[int, int] = {}
-        raw: dict[str, list] = {name: [] for name in RAW_COLUMNS}
+        rows = []
         for call in calls:
             if call.train.id not in directions:
                 directions[call.train.id] = direction(session, call.train)
-            row = call.raw(direction=directions[call.train.id], holiday_set=holiday_set,
-                           arrival_clock=self.arrival is not None)
-            for name in RAW_COLUMNS:
-                raw[name].extend(row[name])
-        arrays = {name: np.array(values, dtype=object if name in ("category", "operator", "state")
-                                 else np.float64) for name, values in raw.items()}
+            rows.append(call.raw_values(
+                direction=directions[call.train.id], holiday_set=holiday_set,
+                arrival_clock=self.arrival is not None,
+            ))
+        arrays = {
+            name: np.array(values, dtype=object if name in ("category", "operator", "state")
+                           else np.float64)
+            for name, values in zip(RAW_COLUMNS, zip(*rows), strict=True)
+        }
         features = encode_categoricals(compute_features(arrays), self.manifest["vocab"])
         if self.arrival is not None:
             features = add_serving_rates(features, arrays, self.manifest, session.get_bind())

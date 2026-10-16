@@ -37,13 +37,14 @@ from dbrel.direction import (
 )
 from dbrel.holidays_de import load_holiday_dates
 from dbrel.derive.passenger_lines import BARE_CATEGORY_LINES, is_bare_category_line
-from dbrel.identity import prefix_range, search_norm
+from dbrel.identity import ALIAS_STATION_SHORT, ALIAS_STATION_TOKEN, prefix_range, search_norm
 from dbrel.ml.arrival import ARRIVAL_KIND, arrival_inputs
 from dbrel.ml.notice_rates import add_serving_rates, serving_rates, uses_notice_rates
 from dbrel.ml.bakeoff import MANIFEST_NAME, current_artifact
 from dbrel.ml.features import UNKNOWN_DIRECTION, compute_features, direction_for, encode_categoricals
 from dbrel.ml.nn import model_inputs
 from dbrel.ml.timetable import calls_at
+from dbrel.planner import timetable as planner_timetable
 from dbrel.models import (
     DAY_TYPE_SUNDAY_HOLIDAY,
     DAY_TYPE_WEEKDAY,
@@ -184,12 +185,8 @@ def _delay_pred(
     return {"p50_min": p50, "lo_min": p50, "hi_min": p50}
 
 
-# The delay model is served to the browser (add-browser-delay-predictions): the
-# web layer encodes a call's features and hands the browser the tensors its
-# ONNX runtime needs, but never itself loads onnxruntime or runs inference.
-# Only the manifest (vocabulary, per-feature stats, cards) is loaded here --
-# small (under a megabyte) and cheap to cache in the process, unlike the 20 MB
-# model weights, which the browser fetches directly (see views.model_file).
+# Boards serve model features to the browser. The journey planner is the one
+# place where the server runs the delay model. Cache only its manifest here.
 _model_cache: dict = {"stamp": None, "manifest": None}
 
 
@@ -320,6 +317,10 @@ def _model_input(
 # How a mixed result list is ordered once exact matches are out of the way. A
 # line is more useful than any one of its three hundred numbered runs, and an
 # unmonitored station is a dead end, so it sorts last.
+# How many alias rows a station picker reads to rank by traffic: more than any two-letter prefix
+# matches, so the busiest station is never cut off alphabetically.
+_STATION_RANK_SCAN = 20_000
+
 _KIND_RANK = {"station": 0, "line": 1, "train": 2, "station_untracked": 3}
 
 
@@ -574,6 +575,16 @@ def suggest(
         # Before the limit too, so trains elsewhere cannot take the places of this state's.
         conditions.append(SearchAlias.train_id.is_(None) | _stops_in_state(session, SearchAlias.train_id, state))
 
+    # A station picker ranks every matching station by how busy it is, so it reads them all
+    # rather than the first alphabetical few. Only once the planner timetable is loaded (it is
+    # warmed at startup); until then the order stays alphabetical.
+    traffic = None
+    if only == "station":
+        from dbrel.planner.timetable import cached_timetable
+
+        timetable = cached_timetable(session)
+        traffic = timetable.weekly_calls() if timetable is not None else None
+
     rows = session.execute(
         select(
             SearchAlias.alias_norm,
@@ -591,7 +602,7 @@ def suggest(
             SearchAlias.weight.desc(),
             SearchAlias.alias_norm,
         )
-        .limit(limit * 20)
+        .limit(_STATION_RANK_SCAN if traffic is not None else limit * 20)
     ).all()
     if not rows:
         return []
@@ -601,7 +612,8 @@ def suggest(
     order: list[tuple[str, int]] = []
     exact: set[tuple[str, int]] = set()
     seen: set[tuple[str, int]] = set()
-    for alias_norm, _display, _weight, station_id, line_id, train_id in rows:
+    best_weight: dict[tuple[str, int], int] = {}
+    for alias_norm, _display, weight, station_id, line_id, train_id in rows:
         if station_id:
             key = ("station", station_id)
         elif line_id:
@@ -610,6 +622,7 @@ def suggest(
             key = ("train", train_id)
         else:
             continue
+        best_weight[key] = max(best_weight.get(key, 0), weight or 0)
         if key in seen:
             continue
         seen.add(key)
@@ -747,7 +760,17 @@ def suggest(
                 }
             )
 
-    results.sort(key=lambda r: (not r["exact"], r["rank"]))
+    if traffic is not None:
+        # How the name matched comes first -- its start, then a later word, then a DS100 code or
+        # EVA number -- so "ha" offers the Hamburg stations rather than a busier "Hackerbrücke"
+        # or Altenbeken (DS100 "HA"); the busiest station leads within each.
+        def tier(r: dict) -> int:
+            weight = best_weight.get(("station", r["id"]), 0)
+            return 0 if weight >= ALIAS_STATION_SHORT[1] else 1 if weight >= ALIAS_STATION_TOKEN[1] else 2
+
+        results.sort(key=lambda r: (tier(r), not r["exact"], -traffic.get(r["id"], 0)))
+    else:
+        results.sort(key=lambda r: (not r["exact"], r["rank"]))
     # One number can be stored as many trains (an operator disagreement parks
     # each route variant on its own identity, see ingest/runs.py), which would
     # list e.g. "ICE 100 · Interlaken Ost – Dortmund Hbf" dozens of times.
@@ -2065,3 +2088,101 @@ def line_detail(
             for direction, runs in enumerate(result_halves)
         ],
     }
+
+
+
+
+def _planner_forecaster(session, tt):
+    from dbrel.planner.forecast import ModelForecaster
+    model = current_model()
+    artifact = current_artifact(ML_MODELS_DIR)
+    if model is None or artifact is None:
+        return None
+    return ModelForecaster(tt, session, artifact, model[0])
+
+
+def _planner_names(session):
+    from functools import cache
+
+    @cache
+    def names(train_id):
+        train = session.get(Train, train_id)
+        return passenger_name(session, train), train.display_name or f'#{train.id}', train.category
+    return names
+
+
+def _planner_budget():
+    from dbrel.planner.search import Budget
+    return Budget()
+
+
+def _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, route, slot):
+    from contextlib import nullcontext
+    from dbrel.planner.constants import TIMINGS_HALF_WINDOW_S
+    from dbrel.planner.respond import journey_json, moment
+    from dbrel.planner.routes import parse_route_key, plan_routes, route_instances, tighten
+
+    tt = planner_timetable.get_timetable(session)
+    spec = None
+    if route is not None:
+        spec = parse_route_key(tt, route, from_id, to_id)
+        if spec is None:
+            return 400, {'error': 'route is not a valid route key'}
+    for station_id in (from_id, to_id):
+        if station_id not in tt.si_of_id:
+            return 404, {'error': f'no station {station_id}'}
+    fc = _planner_forecaster(session, tt)
+    if fc is None:
+        return 503, {'error': 'no delay model is available'}
+    with slot() if slot else nullcontext(True) as acquired:
+        if not acquired:
+            return 503, {'error': 'the planner is busy, try again'}
+        start = time.monotonic()
+        cache = {}
+        budget = _planner_budget()
+        source, target = tt.si_of_id[from_id], tt.si_of_id[to_id]
+        base = {'from': {'id': from_id, 'name': tt.station_name[source]},
+                'to': {'id': to_id, 'name': tt.station_name[target]},
+                'date': date_str, 'time': time_str, 'model_stamp': fc.stamp,
+                'data_until': tt.last_date.isoformat() if tt.last_date else None}
+        names = _planner_names(session)
+        searches = 0
+        if route is None:
+            accepted, hit_limit, searches = plan_routes(tt, fc, source, target, at_epoch, budget=budget, cache=cache)
+            accepted = tighten(tt, fc, accepted, cache, budget=budget)
+            journeys = [journey_json(tt, cache, legs, names) for legs, _ in accepted]
+            reason = None
+            if not journeys:
+                if tt.dep_start[source] == tt.dep_start[source + 1]:
+                    reason = 'from_unserved'
+                elif not tt.si_has_arrival[target]:
+                    reason = 'to_unserved'
+                else:
+                    reason = 'search_limit' if hit_limit else 'no_connection'
+            base.update(journeys=journeys, reason=reason)
+        else:
+            lo, hi = at_epoch - TIMINGS_HALF_WINDOW_S, at_epoch + TIMINGS_HALF_WINDOW_S
+            instances = route_instances(tt, fc, spec, lo, hi, cache=cache, budget=budget)
+            base.update(route_key=route, window={'from': moment(lo), 'to': moment(hi)},
+                        instances=[journey_json(tt, cache, legs, names) for legs in instances])
+        base['stats'] = {'searches': searches, 'runs_forecast': len(cache),
+                         'ms': round((time.monotonic() - start) * 1000)}
+        return 200, base
+
+
+def plan(session, from_id, to_id, at_epoch, date_str, time_str, *, slot=None):
+    result = _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, None, slot)
+    if result[0] == 200:
+        from dbrel.ml.memory import release_memory
+
+        release_memory()
+    return result
+
+
+def plan_timings(session, from_id, to_id, at_epoch, date_str, time_str, route, *, slot=None):
+    result = _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, route, slot)
+    if result[0] == 200:
+        from dbrel.ml.memory import release_memory
+
+        release_memory()
+    return result

@@ -71,6 +71,33 @@ SELECT r.train_id AS train_id, vp.path_sha1 AS path_sha1, r.last_service_date AS
 FROM variant_run_data r JOIN variant_path vp ON vp.id = r.path_id
 """
 
+# The rolling weekday profile uses the same NULL path lookup as the lifetime summary.
+VARIANT_WEEKDAY_DATA = Table(
+    "variant_weekday_data", metadata,
+    Column("train_id", Integer, primary_key=True),
+    Column("path_id", Integer, primary_key=True),
+    Column("weekday", Integer, primary_key=True),
+    Column("n_runs", Integer, nullable=False),
+    sqlite_with_rowid=False,
+)
+RUNNING_PROFILE_WINDOW = Table(
+    "running_profile_window", metadata,
+    Column("first_date", Text, nullable=False),
+    Column("last_date", Text, nullable=False),
+)
+TRAIN_VARIANT_WEEKDAY = Table(
+    "train_variant_weekday", view_metadata,
+    Column("train_id", Integer),
+    Column("path_sha1", String(40)),
+    Column("weekday", Integer),
+    Column("n_runs", Integer),
+)
+TRAIN_VARIANT_WEEKDAY_VIEW = """
+CREATE VIEW train_variant_weekday AS
+SELECT d.train_id AS train_id, vp.path_sha1 AS path_sha1, d.weekday AS weekday, d.n_runs AS n_runs
+FROM variant_weekday_data d JOIN variant_path vp ON vp.id = d.path_id
+"""
+
 # The schedule (see "shared stop patterns" below). `station_stop` is a view over these.
 PATTERN_STOP = Table(
     "pattern_stop",

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PlanRouteImport } from './routes/plan'
 import { Route as LineLineIdRouteImport } from './routes/line/$lineId'
 import { Route as StationStationIdRouteImport } from './routes/station/$stationId'
 import { Route as TrainTrainIdRouteImport } from './routes/train/$trainId'
@@ -23,6 +24,11 @@ import { Route as V1TrainTrainIdRouteImport } from './routes/v1/train/$trainId'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PlanRoute = PlanRouteImport.update({
+  id: '/plan',
+  path: '/plan',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LineLineIdRoute = LineLineIdRouteImport.update({
@@ -73,6 +79,7 @@ const V1TrainTrainIdRoute = V1TrainTrainIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/plan': typeof PlanRoute
   '/line/$lineId': typeof LineLineIdRoute
   '/station/$stationId': typeof StationStationIdRoute
   '/train/$trainId': typeof TrainTrainIdRoute
@@ -85,6 +92,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/plan': typeof PlanRoute
   '/line/$lineId': typeof LineLineIdRoute
   '/station/$stationId': typeof StationStationIdRoute
   '/train/$trainId': typeof TrainTrainIdRoute
@@ -98,6 +106,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/plan': typeof PlanRoute
   '/line/$lineId': typeof LineLineIdRoute
   '/station/$stationId': typeof StationStationIdRoute
   '/train/$trainId': typeof TrainTrainIdRoute
@@ -112,6 +121,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/plan'
     | '/line/$lineId'
     | '/station/$stationId'
     | '/train/$trainId'
@@ -124,6 +134,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/plan'
     | '/line/$lineId'
     | '/station/$stationId'
     | '/train/$trainId'
@@ -136,6 +147,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/plan'
     | '/line/$lineId'
     | '/station/$stationId'
     | '/train/$trainId'
@@ -149,6 +161,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  PlanRoute: typeof PlanRoute
   LineLineIdRoute: typeof LineLineIdRoute
   StationStationIdRoute: typeof StationStationIdRoute
   TrainTrainIdRoute: typeof TrainTrainIdRoute
@@ -167,6 +180,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/plan': {
+      id: '/plan'
+      path: '/plan'
+      fullPath: '/plan'
+      preLoaderRoute: typeof PlanRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/line/$lineId': {
@@ -237,6 +257,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  PlanRoute: PlanRoute,
   LineLineIdRoute: LineLineIdRoute,
   StationStationIdRoute: StationStationIdRoute,
   TrainTrainIdRoute: TrainTrainIdRoute,

@@ -2,6 +2,8 @@
 // so no v2 component can link into v1 (now under /v1) by accident. Spread
 // the result into a <Link> or pass it to navigate().
 export const v2Paths = {
+  plan: (search?: { from?: number; to?: number; date?: string; time?: string; option?: number }) =>
+    ({ to: "/plan", search: search ?? {} }) as const,
   home: () => ({ to: "/" }) as const,
   // `stationId`: the stop the user came from, so the page shows a route that calls there.
   train: (trainId: number, stationId?: number | undefined) =>

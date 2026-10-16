@@ -77,3 +77,33 @@ def test_a_copy_without_a_retired_trains_rows_still_answers_identically(tmp_path
         requests = _requests(s)
         assert queries.train_route(s, 12)["retired"] == {"last_seen_date": "2026-08-01"}
     assert compare(collection, deployed, requests, log=lambda m: None) == []
+
+
+def test_plans_use_monday_eight_include_both_directions_and_omit_stats(monkeypatch):
+    """Plan parity compares the stable payload for sampled and explicit pairs."""
+    from dbrel.config import TZ
+    from datetime import datetime
+
+    calls = []
+
+    def plan(session, origin, target, epoch, day, clock):
+        calls.append((origin, target, epoch, day, clock))
+        return 200, {"journeys": [], "reason": "no_connection", "stats": {"ms": len(calls)}}
+
+    monkeypatch.setattr(queries, "plan", plan, raising=False)
+    requests = requests_for(None, now=0, service_date=date(2026, 10, 22),
+                            stations=(), plans=[(41, 42)])
+    assert [r.label for r in requests] == ["plan 41>42", "plan 42>41"]
+    assert requests[0].call(None) == {"journeys": [], "reason": "no_connection"}
+    assert requests[1].call(None) == {"journeys": [], "reason": "no_connection"}
+    assert calls == [(41, 42, int(datetime(2026, 10, 19, 8, tzinfo=TZ).timestamp()),
+                      "2026-10-19", "08:00"),
+                     (42, 41, int(datetime(2026, 10, 19, 8, tzinfo=TZ).timestamp()),
+                      "2026-10-19", "08:00")]
+
+
+def test_sampled_station_plans_cover_three_pairs(monkeypatch):
+    monkeypatch.setattr(queries, "station_board", lambda *a, **k: {})
+    requests = requests_for(None, now=0, service_date=date(2026, 10, 22), stations=[1, 2, 3, 4])
+    assert [r.label for r in requests if r.label.startswith("plan ")] == [
+        "plan 1>2", "plan 2>1", "plan 2>3", "plan 3>2", "plan 3>1", "plan 1>3"]

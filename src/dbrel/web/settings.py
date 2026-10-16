@@ -70,3 +70,17 @@ USE_TZ = True
 
 STATIC_URL = "/static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Keep the planner's index build time and size visible in startup/deployment logs.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"planner_console": {"class": "logging.StreamHandler"}},
+    "loggers": {
+        "dbrel.planner": {
+            "handlers": ["planner_console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
