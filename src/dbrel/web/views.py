@@ -80,8 +80,20 @@ def suggest(request):
 
 def train_route(request, train_id: int):
     station = request.GET.get("station", "")
+    raw_date = request.GET.get("date", "")
+    service_date = None
+    if raw_date:
+        try:
+            service_date = date.fromisoformat(raw_date)
+        except ValueError:
+            return JsonResponse({"error": "date must be YYYY-MM-DD"}, status=400)
     with read_scope() as session:
-        route = queries.train_route(session, train_id, station_id=int(station) if station.isdigit() else None)
+        route = queries.train_route(
+            session,
+            train_id,
+            station_id=int(station) if station.isdigit() else None,
+            service_date=service_date,
+        )
     if route is None:
         return JsonResponse({"error": f"no train {train_id}"}, status=404)
     return JsonResponse(route)

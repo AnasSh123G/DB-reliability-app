@@ -85,10 +85,10 @@ export function useRouteTripsAround(
   });
 }
 
-export function useTrainRoute(trainId: number | undefined, stationId?: number) {
+export function useTrainRoute(trainId: number | undefined, stationId?: number, date?: string) {
   return useQuery({
-    queryKey: ["train-route", trainId, stationId],
-    queryFn: () => api.trainRoute(trainId as number, stationId),
+    queryKey: ["train-route", trainId, stationId, date],
+    queryFn: () => api.trainRoute(trainId as number, stationId, date),
     enabled: trainId !== undefined,
   });
 }
@@ -136,8 +136,8 @@ export interface LoadedChunk extends ChunkSpec {
   trips: api.TripAround[];
 }
 
-/** The window the page opens on: the 2 runs at or before the chosen time and the 1 after it. */
-export const FIRST_CHUNK: ChunkSpec = { offset: -2, count: 3 };
+/** The window the page opens on: the 2 runs at or before the chosen time and the 4 after it. */
+export const FIRST_CHUNK: ChunkSpec = { offset: -2, count: 6 };
 
 /**
  * The runs at a stop around a chosen time, fetched in chunks that are each requested once.

@@ -77,3 +77,14 @@ export function formatDuration(min: number, locale: Locale): string {
     ? `${hours} ${locale === "de" ? "Std." : "h"} ${minutes} ${unit}`
     : `${minutes} ${unit}`;
 }
+
+/** A run chosen in the lookup list (a Prognose run or a board call), whose route is shown. */
+export interface RunChoice {
+  /** Which entry it is, to mark it in its list. */
+  key: string;
+  trainId: number;
+  /** The run's day, YYYY-MM-DD. */
+  date: string;
+  /** The stop the list is about, marked in the route. */
+  stationId: number | undefined;
+}

@@ -4,7 +4,7 @@ import { useModelPredictionGroups } from "@/hooks/use-tabm";
 import type { RouteRef, TripAround } from "@/lib/api";
 
 /** How many runs the card shows at once, and how far one Earlier/Later press moves it. */
-export const WINDOW_SIZE = 3;
+export const WINDOW_SIZE = 6;
 /** How many runs one background request fetches. */
 const CHUNK_SIZE = 12;
 /** A further chunk is fetched once the window is this many runs from the loaded edge. */

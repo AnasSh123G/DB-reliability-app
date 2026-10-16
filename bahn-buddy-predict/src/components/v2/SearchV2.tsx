@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRouteDirections, useRouteStations, useSuggest } from "@/hooks/use-dbrel";
-import { useRunWindow, type RunSlot } from "@/hooks/use-run-window";
+import { useRunWindow, WINDOW_SIZE, type RunSlot } from "@/hooks/use-run-window";
 import { copy, type Locale } from "@/lib/i18n";
 import { trainRoute, type RouteRef, type SuggestResult } from "@/lib/api";
 import { isStateCode, statesFor, type StateCode } from "@/lib/states";
@@ -18,8 +18,8 @@ import { RUN_ROW_HEIGHT, RunColumnHeader, RunEntry } from "./RunEntry";
 import { TrainNumber } from "./TrainNumber";
 import { BoardV2 } from "./BoardV2";
 import { icons } from "./icons";
-import { addDays, formatRunDay } from "./run-format";
-import { v2Paths } from "./paths";
+import { addDays, formatRunDay, type RunChoice } from "./run-format";
+import { TrainV2 } from "./TrainV2";
 
 interface Props {
   locale: Locale;
@@ -38,6 +38,8 @@ interface BoardFor {
   id: number;
   date?: string | undefined;
   time?: string | undefined;
+  /** For a stop of a route: the run the user came from, marked on the board. */
+  fromRun?: { trainId: number; date: string } | undefined;
 }
 
 interface SavedSearch {
@@ -52,10 +54,19 @@ interface SavedSearch {
   time: string;
   submitted: boolean;
   start: number;
+  chosen: RunChoice | null;
+  stopBoard: BoardFor | null;
 }
 
 // How long the Prognose card's slide animation takes.
 const SLIDE_MS = 400;
+
+// The height of a station board under the form, and of a stop's board; what does not fit scrolls
+// inside the card.
+const RESULT_HEIGHT = "h-[36rem] lg:h-[40rem]";
+// Beside the list the route takes the list's height (the Prognose card's, or a board's); under it,
+// on a phone or tablet, a fixed one. Its stops scroll inside it.
+const ROUTE_HEIGHT = "h-[36rem] lg:absolute lg:inset-0 lg:h-auto";
 
 // Module-level, not browser storage: it survives navigating to a train page
 // and back (the module stays loaded), and is empty again after a full reload
@@ -154,10 +165,34 @@ export function SearchV2({ locale, initialStation }: Props) {
   const [submitted, setSubmitted] = useState(savedSearch?.submitted ?? false);
   // The board of a station, shown under the form like a Prognose result.
   const [boardFor, setBoardFor] = useState<BoardFor | null>(savedSearch?.boardFor ?? null);
+  // The run whose route is shown beside the list (below it on a phone).
+  const [chosen, setChosen] = useState<RunChoice | null>(savedSearch?.chosen ?? null);
+  // A stop chosen on the route: its station's board replaces the list and the route, until Back.
+  const [stopBoard, setStopBoard] = useState<BoardFor | null>(savedSearch?.stopBoard ?? null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const showStopBoard = (next: BoardFor | null) => {
+    setStopBoard(next);
+    // The board takes the place of both cards: keep their top in view.
+    requestAnimationFrame(() => {
+      const top = resultsRef.current?.getBoundingClientRect().top;
+      if (top !== undefined && top < 0) resultsRef.current?.scrollIntoView({ block: "start" });
+    });
+  };
+  const routeRef = useRef<HTMLDivElement>(null);
+  const choose = (choice: RunChoice, byUser: boolean) => {
+    setChosen(choice);
+    // On a phone the route is under the list: bring it into view when the user picked a run.
+    if (byUser && !window.matchMedia("(min-width: 1024px)").matches)
+      requestAnimationFrame(() =>
+        routeRef.current?.scrollIntoView({ block: "start", behavior: "smooth" }),
+      );
+  };
   // Any edit withdraws what is shown under the form.
   const withdraw = () => {
     setSubmitted(false);
     setBoardFor(null);
+    setChosen(null);
+    setStopBoard(null);
   };
 
   const { data: suggestData } = useSuggest(query, region || undefined);
@@ -194,8 +229,12 @@ export function SearchV2({ locale, initialStation }: Props) {
       time,
       submitted,
       start,
+      chosen,
+      stopBoard,
     };
   }, [
+    chosen,
+    stopBoard,
     query,
     selectedLine,
     selectedStation,
@@ -259,6 +298,13 @@ export function SearchV2({ locale, initialStation }: Props) {
     );
   }, [moving]);
 
+  const runChoice = (slot: RunSlot): RunChoice => ({
+    key: `run-${slot.position}`,
+    trainId: slot.trip!.train_id,
+    date: addDays(date, slot.trip!.day_offset),
+    stationId,
+  });
+
   // One run's row: two lines in three columns (scheduled · delay · expected), always the same
   // height whatever the run is -- the date and any note have fixed places on the second line.
   // `ghost` is a run that just left the window: it is placed just outside the end it left from,
@@ -293,7 +339,8 @@ export function SearchV2({ locale, initialStation }: Props) {
         }`}
       >
         <RunEntry
-          link={v2Paths.train(trip.train_id, stationId)}
+          onSelect={ghost ? undefined : () => choose(runChoice(slot), true)}
+          selected={!ghost && chosen?.key === runChoice(slot).key}
           arrival={trip.sched_arr}
           departure={trip.sched_dep}
           forecast={forecast}
@@ -306,6 +353,15 @@ export function SearchV2({ locale, initialStation }: Props) {
       </div>
     );
   };
+
+  // Nothing chosen yet: the first run after the chosen time, so the route beside the list is
+  // never empty.
+  const firstRun =
+    slots.find((slot) => slot.trip && slot.position >= 0) ?? slots.find((s) => s.trip);
+  useEffect(() => {
+    if (submitted && !chosen && firstRun) choose(runChoice(firstRun), false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submitted, chosen, firstRun?.position, firstRun?.trip?.train_id]);
 
   // A station needs only a date and a time; a line or train needs all five.
   const canSubmit = selectedStation
@@ -335,6 +391,8 @@ export function SearchV2({ locale, initialStation }: Props) {
     setDirection(undefined);
     setStationId(undefined);
     setSubmitted(false);
+    setChosen(null);
+    setStopBoard(null);
     if (initialStation.date && initialStation.time) {
       setDate(initialStation.date);
       setTime(initialStation.time);
@@ -626,105 +684,167 @@ export function SearchV2({ locale, initialStation }: Props) {
         </Alert>
       )}
 
-      {boardFor && (
-        <BoardV2
-          stationId={boardFor.id}
-          date={boardFor.date}
-          time={boardFor.time}
-          locale={locale}
-          onName={nameStation}
-        />
+      {(boardFor || submitted) && stopBoard && (
+        <div ref={resultsRef} className="mt-6 scroll-mt-4">
+          <BoardV2
+            key={`${stopBoard.id}-${stopBoard.date}-${stopBoard.time}`}
+            stationId={stopBoard.id}
+            date={stopBoard.date}
+            time={stopBoard.time}
+            locale={locale}
+            onBack={() => showStopBoard(null)}
+            fromRun={stopBoard.fromRun}
+            embedded
+            className={RESULT_HEIGHT}
+          />
+        </div>
       )}
 
-      {submitted && (
-        <Card
-          className="mt-6 rounded-lg border border-line bg-panel p-5 text-paper shadow-none sm:p-7"
-          aria-live="polite"
+      {(boardFor || submitted) && !stopBoard && (
+        // The list on the left and the chosen run's route on the right, as tall as the list (the
+        // route has no chevrons, so it needs less width); on a phone and tablet the route comes
+        // under the list.
+        <div
+          ref={resultsRef}
+          className="mt-6 scroll-mt-4 lg:grid lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:gap-6"
         >
-          <div className="flex items-center gap-3 border-b border-line pb-4">
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-ink text-teal">
-              <Train className="size-4" />
-            </span>
-            <div className="min-w-0">
-              <h2 className="font-display text-lg font-semibold text-paper">
-                {selectedLabel || query}
-              </h2>
-              <p className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13.67px] text-fog">
-                {directionLabel && (
-                  <span className="inline-flex items-center gap-1.5" title={t.direction}>
-                    <DirectionIcon className="size-3.5 shrink-0" aria-hidden="true" />
-                    {directionLabel}
+          <div className="min-w-0">
+            {boardFor && (
+              <BoardV2
+                stationId={boardFor.id}
+                date={boardFor.date}
+                time={boardFor.time}
+                locale={locale}
+                onName={nameStation}
+                chosen={chosen}
+                onChoose={choose}
+                embedded
+                className={RESULT_HEIGHT}
+              />
+            )}
+
+            {submitted && (
+              <Card
+                className="rounded-lg border border-line bg-panel p-5 text-paper shadow-none sm:p-7"
+                aria-live="polite"
+              >
+                <div className="flex items-center gap-3 border-b border-line pb-4">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-md bg-ink text-teal">
+                    <Train className="size-4" />
                   </span>
-                )}
-                <span className="inline-flex items-center gap-1.5" title={t.selectedStop}>
-                  <Stop className="size-3.5 shrink-0" aria-hidden="true" />
-                  {stopName}
-                </span>
-              </p>
-            </div>
-          </div>
-          {/* The runs, with Earlier/Later beside them from tablet width up, below them on a phone. */}
-          <div className="pt-3 sm:flex sm:items-stretch sm:gap-5">
-            <div className="min-w-0 flex-1">
-              <RunColumnHeader t={t} />
-              <div className="relative overflow-hidden">
-                <div ref={cassetteRef} className="relative">
-                  <div ref={listRef} className="divide-y divide-line">
-                    {isLoading ? (
-                      <div aria-label={t.loading}>
-                        {Array.from({ length: 3 }).map((_, i) => (
-                          <div key={i} className={`${RUN_ROW_HEIGHT} px-2 py-2 sm:px-3`}>
-                            <Skeleton className="h-full w-full bg-line" />
-                          </div>
-                        ))}
-                      </div>
-                    ) : isError ? (
-                      <p className="px-1 py-8 text-center text-sm text-fog">{t.error}</p>
-                    ) : slots.length > 0 ? (
-                      slots.map((slot) => runRow(slot, false))
-                    ) : (
-                      <p className="px-1 py-8 text-center text-sm text-fog">{t.nothingScheduled}</p>
-                    )}
+                  <div className="min-w-0">
+                    <h2 className="font-display text-lg font-semibold text-paper">
+                      {selectedLabel || query}
+                    </h2>
+                    <p className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13.67px] text-fog">
+                      {directionLabel && (
+                        <span className="inline-flex items-center gap-1.5" title={t.direction}>
+                          <DirectionIcon className="size-3.5 shrink-0" aria-hidden="true" />
+                          {directionLabel}
+                        </span>
+                      )}
+                      <span className="inline-flex items-center gap-1.5" title={t.selectedStop}>
+                        <Stop className="size-3.5 shrink-0" aria-hidden="true" />
+                        {stopName}
+                      </span>
+                    </p>
                   </div>
-                  {/* Outside the divided list: as a child of it, the runs that left would give the
+                </div>
+                {/* The runs, with Earlier/Later on their left from a tablet up and below them on a
+                    phone. */}
+                <div className="pt-3 sm:flex sm:items-stretch sm:gap-5">
+                  <div className="min-w-0 flex-1">
+                    <RunColumnHeader t={t} />
+                    <div className="relative overflow-hidden">
+                      <div ref={cassetteRef} className="relative">
+                        <div ref={listRef} className="divide-y divide-line">
+                          {isLoading ? (
+                            <div aria-label={t.loading}>
+                              {Array.from({ length: WINDOW_SIZE }).map((_, i) => (
+                                <div key={i} className={`${RUN_ROW_HEIGHT} px-2 py-2 sm:px-3`}>
+                                  <Skeleton className="h-full w-full bg-line" />
+                                </div>
+                              ))}
+                            </div>
+                          ) : isError ? (
+                            <p className="px-1 py-8 text-center text-sm text-fog">{t.error}</p>
+                          ) : slots.length > 0 ? (
+                            slots.map((slot) => runRow(slot, false))
+                          ) : (
+                            <p className="px-1 py-8 text-center text-sm text-fog">
+                              {t.nothingScheduled}
+                            </p>
+                          )}
+                        </div>
+                        {/* Outside the divided list: as a child of it, the runs that left would give the
                       last real run a divider line for the length of the animation. */}
-                  {moving && moving.leaving.length > 0 && (
-                    <div
-                      ref={ghostsRef}
-                      className={`pointer-events-none absolute inset-x-0 ${
-                        moving.toEarlier ? "top-full" : "bottom-full"
-                      }`}
-                    >
-                      {moving.leaving.map((slot) => runRow(slot, true))}
+                        {moving && moving.leaving.length > 0 && (
+                          <div
+                            ref={ghostsRef}
+                            className={`pointer-events-none absolute inset-x-0 ${
+                              moving.toEarlier ? "top-full" : "bottom-full"
+                            }`}
+                          >
+                            {moving.leaving.map((slot) => runRow(slot, true))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  {slots.length > 0 && (
+                    <div className="mt-3 flex gap-3 border-t border-line pt-4 sm:order-first sm:mt-0 sm:w-28 sm:shrink-0 sm:flex-col sm:border-t-0 sm:border-r sm:pt-9 sm:pr-5">
+                      <Button
+                        variant="outline"
+                        onClick={() => step(true)}
+                        disabled={!canEarlier || stepping}
+                        className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40 sm:h-auto sm:w-full sm:flex-col sm:justify-center"
+                      >
+                        <ChevronUp className="size-4" />
+                        {t.showEarlier}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => step(false)}
+                        disabled={!canLater || stepping}
+                        className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40 sm:h-auto sm:w-full sm:flex-col sm:justify-center"
+                      >
+                        <ChevronDown className="size-4" />
+                        {t.showLater}
+                      </Button>
                     </div>
                   )}
                 </div>
-              </div>
-            </div>
-            {slots.length > 0 && (
-              <div className="mt-3 flex gap-3 border-t border-line pt-4 sm:mt-0 sm:w-36 sm:flex-col sm:justify-center sm:gap-3 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-5">
-                <Button
-                  variant="outline"
-                  onClick={() => step(true)}
-                  disabled={!canEarlier || stepping}
-                  className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40 sm:aspect-square sm:h-auto sm:w-full sm:flex-none sm:flex-col sm:justify-center sm:gap-2"
-                >
-                  <ChevronUp className="size-4" />
-                  {t.showEarlier}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => step(false)}
-                  disabled={!canLater || stepping}
-                  className="h-[42px] flex-1 gap-2 border-line bg-ink text-paper hover:bg-panel disabled:opacity-40 sm:aspect-square sm:h-auto sm:w-full sm:flex-none sm:flex-col sm:justify-center sm:gap-2"
-                >
-                  <ChevronDown className="size-4" />
-                  {t.showLater}
-                </Button>
-              </div>
+              </Card>
             )}
           </div>
-        </Card>
+          <div ref={routeRef} className="relative mt-6 min-w-0 scroll-mt-4 lg:mt-0">
+            {chosen ? (
+              <TrainV2
+                key={`${chosen.trainId}-${chosen.date}`}
+                trainId={chosen.trainId}
+                stationId={chosen.stationId}
+                date={chosen.date}
+                locale={locale}
+                embedded
+                onStop={({ stationId: id, date: day, time: at }) =>
+                  showStopBoard({
+                    id,
+                    date: day,
+                    time: at,
+                    fromRun: { trainId: chosen.trainId, date: chosen.date },
+                  })
+                }
+                className={ROUTE_HEIGHT}
+              />
+            ) : (
+              <Card
+                className={`grid place-items-center rounded-lg border border-dashed border-line bg-panel p-7 text-center text-sm text-fog shadow-none ${ROUTE_HEIGHT}`}
+              >
+                {t.chooseRun}
+              </Card>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

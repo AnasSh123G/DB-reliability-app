@@ -6,11 +6,12 @@ export const v2Paths = {
     ({ to: "/plan", search: search ?? {} }) as const,
   home: () => ({ to: "/" }) as const,
   // `stationId`: the stop the user came from, so the page shows a route that calls there.
-  train: (trainId: number, stationId?: number | undefined) =>
+  // `date`: the run's day (YYYY-MM-DD), so the stops are forecast for that day, not today.
+  train: (trainId: number, stationId?: number | undefined, date?: string | undefined) =>
     ({
       to: "/train/$trainId",
       params: { trainId: String(trainId) },
-      search: { station: stationId },
+      search: { station: stationId, date },
     }) as const,
   // The board of a station is shown on the search page, under the form. `moment`: a date
   // (YYYY-MM-DD) and time (HH:MM) to show it for, instead of now.

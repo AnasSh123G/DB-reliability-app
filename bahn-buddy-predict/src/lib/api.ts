@@ -239,8 +239,9 @@ export function stationBoard(
   });
 }
 
-export function trainRoute(trainId: number, stationId?: number) {
-  return apiFetch<TrainRoute>(`/api/train/${trainId}/route`, { station: stationId });
+/** One train's route; with `date` (YYYY-MM-DD) its stops are forecast for that run's day. */
+export function trainRoute(trainId: number, stationId?: number, date?: string) {
+  return apiFetch<TrainRoute>(`/api/train/${trainId}/route`, { station: stationId, date });
 }
 
 // What the direction/stop/Prognose flow runs on: a real line, or -- for a

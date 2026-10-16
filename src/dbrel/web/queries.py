@@ -1012,9 +1012,18 @@ def station_board(
 
 
 def train_route(
-    session: Session, train_id: int, *, day_type: str = DAY_TYPE_WEEKDAY, station_id: int | None = None
+    session: Session,
+    train_id: int,
+    *,
+    day_type: str = DAY_TYPE_WEEKDAY,
+    station_id: int | None = None,
+    service_date: date_cls | None = None,
 ) -> dict | None:
     """One train's journey: the stops it has scheduled times at.
+
+    `service_date` is the day of the run the caller is showing (a Prognose run, a board call); the
+    model forecasts the stops for that day. Without it, the route is a dateless pattern forecast
+    for today.
 
     `station_id` is the stop the caller came from (a board row, a search result). The route shown
     is then the variant a board shows for that stop -- one that calls there -- so the page never
@@ -1049,12 +1058,12 @@ def train_route(
     )
     trip_start_time = _train_trip_start_time(train)
 
-    # This view shows a dateless pattern, not a specific run, so the model --
+    # Without a run's day this view shows a dateless pattern, so the model --
     # which needs an actual calendar date for its weekday/holiday features --
     # is asked about today, the same "typical day" the averages fall back to
     # via `day_type`'s own default.
     model = current_model()
-    model_service_date = local_date(int(time.time()))
+    model_service_date = service_date or local_date(int(time.time()))
     holiday_set = load_holiday_dates(session) if model is not None else None
     if model is None:
         model_direction = None

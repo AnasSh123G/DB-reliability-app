@@ -37,7 +37,7 @@ export function ShellV2({ locale, isDark, setLocale, setIsDark, children }: Prop
     <div
       className={`v2 ${isDark ? "dark" : ""} min-h-screen bg-ink text-paper font-sans antialiased`}
     >
-      <div className="mx-auto max-w-5xl px-5 py-6 sm:px-8 sm:py-9">
+      <div className="mx-auto max-w-[max(64rem,55vw)] px-5 py-6 sm:px-8 sm:py-9">
         <header className="flex items-center justify-between gap-1 border-b sm:gap-3 border-line pb-4">
           <Link {...v2Paths.home()} className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
             <span className="inline-grid size-8 place-items-center rounded-md bg-teal text-action-foreground">
