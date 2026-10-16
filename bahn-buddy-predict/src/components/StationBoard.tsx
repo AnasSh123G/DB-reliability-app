@@ -13,10 +13,11 @@ interface Props {
 export function StationBoard({ stationId, locale }: Props) {
   const t = copy[locale];
   const [widened, setWidened] = useState(false);
-  const { data: board, isLoading, isError } = useStationBoard(
-    stationId,
-    widened ? { backMin: 120, fwdMin: 240 } : undefined,
-  );
+  const {
+    data: board,
+    isLoading,
+    isError,
+  } = useStationBoard(stationId, widened ? { backMin: 120, fwdMin: 240 } : undefined);
 
   if (isLoading) {
     return (
@@ -35,18 +36,27 @@ export function StationBoard({ stationId, locale }: Props) {
   }
 
   return (
-    <section className="rise mt-6 rounded-2xl border border-line bg-panel p-5 sm:p-7" aria-labelledby="board-heading">
+    <section
+      className="rise mt-6 rounded-2xl border border-line bg-panel p-5 sm:p-7"
+      aria-labelledby="board-heading"
+    >
       <div className="border-b border-line pb-5">
         <p className="text-xs text-fog">{t.stationBoard}</p>
         <h2 id="board-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
           {board.station.name}
-          {board.station.eva && <span className="ml-2 align-middle text-xs font-normal text-fog">EVA {board.station.eva}</span>}
+          {board.station.eva && (
+            <span className="ml-2 align-middle text-xs font-normal text-fog">
+              EVA {board.station.eva}
+            </span>
+          )}
         </h2>
         <p className="mt-1 text-xs text-fog">
           {t.windowLabel}: {board.window.from} – {board.window.to} ({board.window.date})
         </p>
         {!board.station.tracked && (
-          <p className="mt-2 rounded-xl border border-line bg-ink p-3 text-xs text-amber">{t.notTrackedStation}</p>
+          <p className="mt-2 rounded-xl border border-line bg-ink p-3 text-xs text-amber">
+            {t.notTrackedStation}
+          </p>
         )}
       </div>
 
@@ -55,7 +65,10 @@ export function StationBoard({ stationId, locale }: Props) {
           {board.calls.map((call) => {
             const expectedArr = expectedTime(call.arr, call.arr_pred);
             return (
-              <li key={call.station_stop_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-line py-4 sm:py-3">
+              <li
+                key={call.station_stop_id}
+                className="flex flex-wrap items-center justify-between gap-3 border-t border-line py-4 sm:py-3"
+              >
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-ink text-teal">
                     <MapPin className="size-4" />
@@ -71,19 +84,31 @@ export function StationBoard({ stationId, locale }: Props) {
                     <p className="truncate text-[13.67px] text-fog">
                       {call.headline}
                       {call.terminates && <span className="ml-2 text-amber">{t.endsHere}</span>}
-                      {call.platform && <span className="ml-2">{t.platform} {call.platform}</span>}
+                      {call.platform && (
+                        <span className="ml-2">
+                          {t.platform} {call.platform}
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
                 <div className="shrink-0 text-right">
-                  <span className="block text-[12.67px] uppercase font-normal text-fog">{t.arrival}</span>
-                  <span className="mt-1 block font-display text-sm text-mist">{call.arr ?? "—"}</span>
+                  <span className="block text-[12.67px] uppercase font-normal text-fog">
+                    {t.arrival}
+                  </span>
+                  <span className="mt-1 block font-display text-sm text-mist">
+                    {call.arr ?? "—"}
+                  </span>
                   {expectedArr && call.arr_pred ? (
-                    <span className={`block text-[12.67px] font-semibold ${delayColor(call.arr_pred.p50_min)}`}>
+                    <span
+                      className={`block text-[12.67px] font-semibold ${delayColor(call.arr_pred.p50_min)}`}
+                    >
                       {expectedArr} · +{call.arr_pred.p50_min}
                     </span>
                   ) : (
-                    <span className="block text-[12.67px] text-fog">{call.arr ? t.noAverage : "—"}</span>
+                    <span className="block text-[12.67px] text-fog">
+                      {call.arr ? t.noAverage : "—"}
+                    </span>
                   )}
                 </div>
               </li>

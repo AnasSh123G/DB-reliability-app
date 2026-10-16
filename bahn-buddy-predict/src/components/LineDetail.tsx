@@ -29,13 +29,18 @@ export function LineDetail({ lineId, locale }: Props) {
   }
 
   return (
-    <section className="rise mt-6 rounded-2xl border border-line bg-panel p-5 sm:p-7" aria-labelledby="line-heading">
+    <section
+      className="rise mt-6 rounded-2xl border border-line bg-panel p-5 sm:p-7"
+      aria-labelledby="line-heading"
+    >
       <div className="border-b border-line pb-5">
         <p className="text-xs text-fog">{t.lineDetail}</p>
         <h2 id="line-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
           {detail.line.name}
           {detail.line.replacement_bus && (
-            <span className="ml-2 align-middle text-xs font-normal text-amber">{t.replacementBus}</span>
+            <span className="ml-2 align-middle text-xs font-normal text-amber">
+              {t.replacementBus}
+            </span>
           )}
         </h2>
         <p className="mt-1 text-xs text-fog">
@@ -50,7 +55,9 @@ export function LineDetail({ lineId, locale }: Props) {
             <section key={index}>
               <h3 className="flex items-center justify-between border-b border-line pb-2 text-xs uppercase text-fog">
                 <span>{dir.label}</span>
-                <span>{dir.n_runs} {t.runs}</span>
+                <span>
+                  {dir.n_runs} {t.runs}
+                </span>
               </h3>
               {dir.runs.length > 0 ? (
                 <ol>
@@ -73,7 +80,9 @@ export function LineDetail({ lineId, locale }: Props) {
                           </Link>
                           <p className="truncate text-[13.67px] text-fog">
                             → {run.destination ?? "—"}
-                            {run.partial && <span className="ml-2 text-amber">{t.partOfRoute}</span>}
+                            {run.partial && (
+                              <span className="ml-2 text-amber">{t.partOfRoute}</span>
+                            )}
                             {run.current && <span className="ml-2 text-teal">{t.thisRun}</span>}
                           </p>
                         </div>
