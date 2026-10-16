@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { copy, type Locale } from "@/lib/i18n";
+import { FeedbackChat } from "./FeedbackChat";
 import { icons } from "./icons";
 import { v2Paths } from "./paths";
 
@@ -136,6 +137,7 @@ export function ShellV2({ locale, isDark, setLocale, setIsDark, children }: Prop
 
         <section className="mt-5 sm:mt-6">{children}</section>
       </div>
+      <FeedbackChat locale={locale} />
     </div>
   );
 }
