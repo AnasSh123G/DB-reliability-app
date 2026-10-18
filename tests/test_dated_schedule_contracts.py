@@ -243,7 +243,12 @@ def test_replay_keeps_every_conflicting_plan_response_for_one_bucket(session, mo
     monkeypatch.setattr(archive, "covered_hours", lambda _paths: {(date_type(2026, 9, 1), 12)})
     monkeypatch.setattr(archive, "read_partition", lambda _path: iter(responses))
 
-    replay_day(session[0], object(), date_type(2026, 9, 1), tracked_evas={EVA_A})
+    result = replay_day(session[0], object(), date_type(2026, 9, 1), tracked_evas={EVA_A})
+    assert result.plan_s >= 0
+    assert result.sweeps_s >= 0
+    assert result.finalize_s >= 0
+    assert result.total_s >= result.plan_s + result.sweeps_s + result.finalize_s - 0.01
+    assert result.upsert_calls > 0
     rows = session[0].scalars(select(TripScheduleSnapshot).order_by(
         TripScheduleSnapshot.observed_at)).all()
     assert len(rows) == 2, "same-hour archive records are distinct immutable schedule evidence"

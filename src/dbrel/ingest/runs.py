@@ -16,8 +16,12 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import date as date_cls
 from datetime import datetime
+from typing import TYPE_CHECKING, NamedTuple
 
-from sqlalchemy import insert, select, update
+if TYPE_CHECKING:
+    from dbrel.ingest.schedule_reconcile import PendingSettle
+
+from sqlalchemy import insert, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -48,6 +52,7 @@ from dbrel.ingest.parser import TtStop
 from dbrel.ingest.dated_schedule import PlanReceipt, record_plans
 
 TT_FEED_KIND = "tt"
+_STATION_STOP_INSERT = insert(StationStop)
 
 
 @dataclass(slots=True)
@@ -64,6 +69,7 @@ class RunContext:
 
 @dataclass(slots=True)
 class RunCounters:
+    upsert_calls: int = 0
     trains_created: int = 0
     trips_created: int = 0
     station_stops_written: int = 0
@@ -74,6 +80,7 @@ class RunCounters:
     # (category, number) identity under a shifted index numbering. Counted
     # rather than silently absorbed.
     pattern_conflicts: int = 0
+    batch_epochs: int = 0
 
 
 def tt_feed_version(session: Session) -> int:
@@ -188,18 +195,27 @@ def upsert_line(
     return found
 
 
-def upsert_run(
-    session: Session,
+class NormalizedRun(NamedTuple):
+    """The pure, database-free part of an `upsert_run` call."""
+
+    stops: list[TtStop]
+    observations: list[tuple[TtStop, PlanReceipt]] | None
+    head: TtStop
+    full_path: list[str]
+    digest: str
+    identity: str
+
+
+def _normalize_run(
     ctx: RunContext,
     counters: RunCounters,
-    run_key: str,
     stops: list[TtStop],
-    *,
-    schedule_observations: list[tuple[TtStop, PlanReceipt]] | None = None,
-) -> int | None:
-    """Resolve a run to a trip, creating train and schedule rows as needed.
+    schedule_observations: list[tuple[TtStop, PlanReceipt]] | None,
+) -> NormalizedRun:
+    """Copy and DST-fix a run's stops and derive its path digest and identity.
 
-    Returns the trip id. Only None if the run carries no usable stop at all.
+    Shared by `upsert_run` and the batched writer so the fingerprint (including
+    its drift on a differently spelled head stop) is computed in one place.
     """
     originals = {stop.stop_index: stop for stop in stops}
     # Parsing receipts remain unchanged. Normalize independent copies so an
@@ -219,8 +235,6 @@ def upsert_run(
     station_name = ctx.station_name_by_eva.get(head.eva, "")
     full_path = head.full_path(station_name)
     digest = path_sha1(full_path)
-    line_id = upsert_line(session, ctx.line_cache, head.category, head.line, head.owner)
-
     identity = train_identity_key(
         SOURCE_TT,
         head.category,
@@ -228,6 +242,29 @@ def upsert_run(
         path_hash=digest,
         start_hhmm=head.start_stamp[6:],
     )
+
+    return NormalizedRun(stops, schedule_observations, head, full_path, digest, identity)
+
+
+def upsert_run(
+    session: Session,
+    ctx: RunContext,
+    counters: RunCounters,
+    run_key: str,
+    stops: list[TtStop],
+    *,
+    schedule_observations: list[tuple[TtStop, PlanReceipt]] | None = None,
+    pending: PendingSettle | None = None,
+) -> int | None:
+    """Resolve a run to a trip, creating train and schedule rows as needed.
+
+    Returns the trip id. Only None if the run carries no usable stop at all.
+    """
+    counters.upsert_calls += 1
+    norm = _normalize_run(ctx, counters, stops, schedule_observations)
+    stops, schedule_observations = norm.stops, norm.observations
+    head, full_path, digest, identity = norm.head, norm.full_path, norm.digest, norm.identity
+    line_id = upsert_line(session, ctx.line_cache, head.category, head.line, head.owner)
 
     train_id = ctx.train_by_key.get(identity)
     if train_id is not None:
@@ -366,7 +403,7 @@ def upsert_run(
             }
         )
     if ss_rows:
-        session.execute(insert(StationStop), ss_rows)
+        session.execute(_STATION_STOP_INSERT, ss_rows)
         counters.station_stops_written += len(ss_rows)
 
     # --- trip -------------------------------------------------------
@@ -391,20 +428,31 @@ def upsert_run(
         select(Trip.id).where(Trip.train_id == train_id, Trip.service_date == head.service_date)
     ).scalar_one_or_none()
     if existing_id is not None:
-        session.execute(
-            update(Trip)
-            .where(Trip.id == existing_id)
-            .values(
-                supposed_departure_utc=first_dep,
-                supposed_arrival_utc=last_arr,
-                n_stops_tracked=len(stops),
-                path_sha1=digest,
-            )
-        )
+        trip = session.get(Trip, existing_id)
+        if pending is not None and trip.path_sha1 != digest:
+            pending.settle(session, [existing_id])
+        trip.supposed_departure_utc = first_dep
+        trip.supposed_arrival_utc = last_arr
+        trip.n_stops_tracked = len(stops)
+        trip.path_sha1 = digest
         counters.trips_created += 1
         if schedule_observations:
-            record_plans(session, existing_id, digest, schedule_observations, ctx.station_id_by_eva)
+            record_plans(session, existing_id, digest, schedule_observations,
+                         ctx.station_id_by_eva, pending=pending, trip=trip)
         return existing_id
+
+    if pending is not None:
+        # The ON CONFLICT upsert below re-points an existing source-key row
+        # without a Python-side check, so settle it against its old path first.
+        keyed = session.execute(
+            select(Trip.id, Trip.path_sha1).where(
+                Trip.source == SOURCE_TT,
+                Trip.source_run_key == run_key,
+                Trip.service_date == head.service_date,
+            )
+        ).first()
+        if keyed is not None and keyed.path_sha1 != digest:
+            pending.settle(session, [keyed.id])
 
     session.execute(
         sqlite_insert(Trip)
@@ -443,7 +491,8 @@ def upsert_run(
         )
     ).scalar_one()
     if schedule_observations:
-        record_plans(session, trip_id, digest, schedule_observations, ctx.station_id_by_eva)
+        record_plans(session, trip_id, digest, schedule_observations,
+                     ctx.station_id_by_eva, pending=pending)
     return trip_id
 
 

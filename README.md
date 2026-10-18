@@ -188,10 +188,51 @@ uv run dbrel backfill --from 2026-08-24        # replay them into the database
 Both default to the last 30 days. `archive-fetch` writes nothing to the database and is
 resumable — a partition already held intact is reused. `backfill` records each day it
 finishes, so an interrupted run continues rather than restarting; `--restart` redoes the
-window, `--dry-run` grades and reports without writing.
+window, `--dry-run` grades and reports without writing. `--done-file PATH` selects a
+separate resume record (default: `<root>/replayed.json`), so scratch replays can share
+archive partitions without marking production days done. `--timings` prints each day's
+plan, sweep, finalize and total seconds, together with upsert and reference-refresh counts.
 
-No API key is needed for either. The replay feeds the archived bytes through the same
-`parse_timetable` → `upsert_run` → `finalize` path as live collection, so backfilled stops
+**Plan writer.** `backfill --plan-writer per_run|batch` selects how imported `/plan`
+runs are written. Backfill defaults to `per_run`; use `--plan-writer batch` for batched
+database writes, or `--plan-writer per_run` for the original write path. With `--timings`,
+`batch_epochs` reports the number of batch write epochs.
+
+Live `tt-import-plan` and `collect` use the same batch writer by default through
+`import_plan(writer="batch")`. Python callers can explicitly select `writer="per_run"`;
+the live commands do not expose a `--plan-writer` option.
+
+**Merging plan hours (opt-in).** `backfill --merge-plan-hours` imports all `/plan`
+hours in each archive partition together. It defaults to off (`--no-merge-plan-hours`),
+which imports each hour separately. This option changes run grouping independently of
+`--plan-writer` and can change the imported data.
+
+On the S sample (2026-06-09, 24 tracked stations), merging took 9.30 s versus 10.55 s
+for the reference, but failed the equivalence comparison (exit 1). Seven tables differed:
+`station_stop`, `trip`, `trip_stop`, `trip_schedule_snapshot`, `tt_message`, `tt_poll`
+and `service_line`, even after allowing differences in `train.n_runs_seen` and
+`train.n_stops_tracked`. Grouping runs differently can affect pinned-station and route
+digest decisions. The flag therefore remains opt-in and off by default; W1/W3
+equivalence checks are still pending.
+
+Both backfill and collection hold `<resolved DB_PATH>.writer.lock` for the entire run,
+including for a custom database. Resume files cannot replace a database, its WAL/SHM files, or writer/sweep lock files. Against the default database
+it also holds the collection sweep lock; an overlapping collector or backfill fails fast
+with the lock holder's details.
+
+Backfill uses temporary bulk settings by default: 2 GiB of SQLite page cache, an 8 GiB
+memory-map request (SQLite may clamp it), and a 20,000-page WAL checkpoint interval.
+Use `--no-bulk-pragmas` to keep normal settings; `BACKFILL_CACHE_MIB` and
+`BACKFILL_MMAP_MIB` override the requests. Normal connection settings are restored on exit.
+
+For an existing **scratch database**, run `DBREL_DB=/path/to/scratch.sqlite uv run dbrel
+migrate-backfill-indexes` before benchmarking. The command takes the database writer lock,
+adds four indexes if absent, runs `ANALYZE`, and reports elapsed times. Index sorting uses
+file-backed temporary storage. A live migration is a separate decision after backup and
+scratch validation; no live migration is performed by this change's validation.
+
+No API key is needed for either. Replay feeds archived bytes through the same parsing,
+plan import and finalization code as live collection, so backfilled stops
 carry the same `rule_version`, the same four quality grades and the same `tt_message` delay
 causes. Each archived sweep is judged against **the instant it was recorded**, not against
 now, so IRIS's forecasts are still rejected as forecasts — see `read_clock` in
@@ -240,7 +281,7 @@ they could not cover, and a hole becomes a measured `poll_gap_s` rather than a s
 | `tt-finalize [--service-date D] [--force]` | Grade the stops that produced no value; roll each run up |
 | `collect [--every 15m --for 7d] [--stations FILE] [--once]` | Run daily backfill → plan → poll → finalize → averages on a timer; cold-starts an empty database |
 | `archive-fetch [--from D --to D] [--days N]` | Download archived IRIS responses from the public mirror; resumable, no API key |
-| `backfill [--from D --to D] [--dry-run] [--restart]` | Replay downloaded partitions into the database; resumes per day |
+| `backfill [--from D --to D] [--dry-run] [--restart] [--done-file PATH] [--timings] [--plan-writer per_run\|batch] [--merge-plan-hours]` | Replay downloaded partitions into the database; resumes per day; writer defaults to `per_run`, hour merging defaults off |
 | `reset-db [--yes]` | Delete the database; keeps `data/feeds` and `data/probe` |
 | `build-aliases` | Index every station for search; run once after `import-static` |
 | `compute-averages [--full]` | Average each train's delay at each station into `train_station_delay` |

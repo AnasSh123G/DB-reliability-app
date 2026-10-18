@@ -29,6 +29,7 @@ from __future__ import annotations
 import time
 from bisect import bisect_left
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 from sqlalchemy import delete, func, select
@@ -78,18 +79,25 @@ def _polled_between(polls: list[int], start: int, end: int) -> bool:
     return index < len(polls) and polls[index] <= end
 
 
-def _poll_times_by_station(session: Session) -> dict[int, list[int]]:
-    """station_id -> ascending fetch times of successful polls."""
+def _poll_times_by_station(
+    session: Session, since: int,
+) -> tuple[dict[int, list[int]], dict[int, int]]:
+    """Load the needed poll window, retaining each station's global latest poll."""
     rows = session.execute(
         select(TtPoll.station_id, TtPoll.fetched_at)
-        .where(TtPoll.error.is_(None), TtPoll.http_status == 200)
+        .where(TtPoll.error.is_(None), TtPoll.http_status == 200, TtPoll.fetched_at >= since)
         .order_by(TtPoll.fetched_at)
     ).all()
     out: dict[int, list[int]] = defaultdict(list)
     for station_id, fetched_at in rows:
         if station_id is not None:
             out[station_id].append(fetched_at)
-    return out
+    latest = dict(session.execute(
+        select(TtPoll.station_id, func.max(TtPoll.fetched_at))
+        .where(TtPoll.error.is_(None), TtPoll.http_status == 200, TtPoll.station_id.isnot(None))
+        .group_by(TtPoll.station_id)
+    ).all())
+    return out, latest
 
 
 def _dominant_quality(rows: list[tuple]) -> str | None:
@@ -106,6 +114,7 @@ def run_finalize_tt(
     session: Session,
     *,
     service_date: str | None = None,
+    service_dates: Collection[str] | None = None,
     force: bool = False,
     now: int | None = None,
     progress=lambda msg: None,
@@ -114,8 +123,6 @@ def run_finalize_tt(
     started = time.monotonic()
     now = now or int(time.time())
     result = FinalizeTtResult()
-
-    polls_by_station = _poll_times_by_station(session)
 
     # A run whose only tracked stop is its origin has no tracked arrival, and
     # requiring one excluded 22% of runs from finalization permanently.
@@ -128,6 +135,8 @@ def run_finalize_tt(
         query = query.where(last_event < now - (GRACE_S + SETTLE_S))
     if not force:
         query = query.where(Trip.finalized_at.is_(None))
+    if service_dates is not None:
+        query = query.where(Trip.service_date.in_(service_dates))
 
     trips = session.execute(query).scalars().all()
     result.trips_considered = len(trips)
@@ -168,6 +177,16 @@ def run_finalize_tt(
     pattern = _load_patterns(session, list(dates_by_train), dates_by_train, as_of=now)
 
     recorded = _recorded_sequences(session, trip_ids)
+    starts = [
+        reference + GRACE_S
+        for trip in trips
+        for seq, planned in pattern.get((trip.train_id, trip.service_date), {}).items()
+        if seq not in recorded.get(trip.id, set())
+        if (reference := planned.supposed_dep or planned.supposed_arr) is not None
+    ]
+    polls_by_station, latest_by_station = (
+        _poll_times_by_station(session, min(starts)) if starts else ({}, {})
+    )
     from dbrel.ingest.schedule_reconcile import reconcile_facts
     for trip in trips:
         if recorded.get(trip.id):
@@ -191,7 +210,7 @@ def run_finalize_tt(
             else:
                 quality = QUALITY_PREDICTION_ONLY
                 if reference is not None:
-                    latest = station_polls[-1] if station_polls else None
+                    latest = latest_by_station.get(planned.station_id)
                     poll_gap = (
                         max(0, reference + TT_LINGER_S - latest) if latest else TT_LINGER_S
                     )

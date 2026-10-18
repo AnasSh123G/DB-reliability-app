@@ -10,6 +10,9 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from dbrel.config import DB_PATH
+from dbrel import config
+
+_BULK_LOAD = False
 
 
 class Base(DeclarativeBase):
@@ -34,6 +37,10 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
         "mmap_size=268435456",  # 256 MB
     ):
         cursor.execute(f"PRAGMA {pragma}")
+    if _BULK_LOAD:
+        cursor.execute(f"PRAGMA cache_size={-config.BACKFILL_CACHE_MIB * 1024}")
+        cursor.execute(f"PRAGMA mmap_size={config.BACKFILL_MMAP_MIB * 1024 * 1024}")
+        cursor.execute("PRAGMA wal_autocheckpoint=20000")
     cursor.close()
 
 
@@ -67,6 +74,17 @@ def dispose_engine() -> None:
         _engine.dispose()
     _engine = None
     _Session = None
+
+
+def enable_bulk_load(enabled: bool = True) -> bool:
+    """Select bounded backfill tuning for new connections; return the prior mode."""
+    global _BULK_LOAD
+    if enabled and (config.BACKFILL_CACHE_MIB <= 0 or config.BACKFILL_MMAP_MIB < 0):
+        raise ValueError("backfill cache must be positive and mmap must be non-negative")
+    previous = _BULK_LOAD
+    _BULK_LOAD = enabled
+    dispose_engine()
+    return previous
 
 
 def get_sessionmaker() -> sessionmaker[Session]:

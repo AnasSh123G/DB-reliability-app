@@ -60,7 +60,7 @@ def env(tmp_path: Path, monkeypatch):
 
     replayed: list[date] = []
 
-    def fake_replay_day(session, store, day, *, tracked_evas, dry_run=False, progress=None):
+    def fake_replay_day(session, store, day, *, tracked_evas, dry_run=False, merge_plan_hours=False, plan_writer="per_run", progress=None):
         replayed.append(day)
         result = ReplayResult(days=1, sweeps=1, stops_stored=10, plan_buckets=2)
         result.by_quality = {"NO_DATA": 3}
@@ -174,3 +174,50 @@ def test_an_installation_with_no_tracked_stations_is_told_so(env, monkeypatch):
     result = _run(root)
     assert result.exit_code == 1
     assert "no tracked stations" in result.output
+
+
+def test_custom_done_file_isolated_from_archive_resume(env):
+    root, replayed, _ = env
+    custom = root.parent / 'resume' / 'scratch.json'
+    first = _run(root, '--done-file', str(custom))
+    assert first.exit_code == 0, first.output
+    assert json.loads(custom.read_text()) == ['2026-09-20', '2026-09-21', '2026-09-22']
+    assert not (root / 'replayed.json').exists()
+    replayed.clear()
+    assert _run(root, '--done-file', str(custom)).exit_code == 0
+    assert replayed == []
+
+
+def test_backfill_lock_conflict_writes_nothing(env):
+    from dbrel.collect import exclusive_lock
+    root, replayed, db = env
+    before = db.read_bytes()
+    with exclusive_lock(Path(str(db) + '.writer.lock'), label='other backfill'):
+        result = _run(root)
+    assert result.exit_code == 1
+    assert 'is held by' in result.output
+    assert replayed == []
+    assert db.read_bytes() == before
+    assert not (root / 'replayed.json').exists()
+
+
+def test_default_database_also_honors_collect_lock(env, monkeypatch):
+    from dbrel import config
+    from dbrel.collect import exclusive_lock
+    root, replayed, db = env
+    monkeypatch.setattr(config, 'DATA_DIR', db.parent)
+    monkeypatch.setattr(cli, 'TT_SWEEP_LOCK', db.parent / 'sweep.lock')
+    with exclusive_lock(cli.TT_SWEEP_LOCK):
+        result = _run(root)
+    assert result.exit_code == 1
+    assert 'is held by' in result.output
+    assert replayed == []
+
+
+def test_timing_output_is_opt_in(env):
+    root, _, _ = env
+    result = _run(root, '--timings')
+    assert result.exit_code == 0, result.output
+    assert 'timings 2026-09-20 plan_s=' in result.output
+    assert 'upsert_calls=' in result.output
+    assert 'refs_refreshed=' in result.output

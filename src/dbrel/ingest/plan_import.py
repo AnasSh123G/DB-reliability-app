@@ -22,6 +22,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import date as date_cls
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbrel.ingest.replay import ReplayDayContext
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +52,7 @@ from dbrel.ingest.runs import (
 
 @dataclass(slots=True)
 class PlanImportResult:
+    upsert_calls: int = 0
     buckets_fetched: int = 0
     buckets_skipped: int = 0
     buckets_missing: int = 0
@@ -58,6 +63,7 @@ class PlanImportResult:
     station_stops_written: int = 0
     conflicts: int = 0
     dst_fixups: int = 0
+    batch_epochs: int = 0
     errors: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
 
@@ -97,15 +103,17 @@ def import_plan(
     now: int | None = None,
     progress=lambda msg: None,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
+    day_ctx: ReplayDayContext | None = None,
+    writer: str = "batch",
 ) -> PlanImportResult:
     require_dated_schedule_schema(session)
     started = time.monotonic()
     # None means live; an explicit value pins this import to a replayed instant.
     frozen = now
     result = PlanImportResult()
-    fv_id = tt_feed_version(session)
+    fv_id = day_ctx.fv_id if day_ctx is not None else tt_feed_version(session)
 
-    tracked = (
+    tracked = day_ctx.tracked_stations if day_ctx is not None else (
         session.execute(
             select(Station).where(Station.tracked == 1, Station.eva.isnot(None))
         )
@@ -261,25 +269,44 @@ def import_plan(
         fv_id=fv_id,
         station_id_by_eva=station_id_by_eva,
         station_name_by_eva=station_name_by_eva,
-        train_by_key=dict(
+        train_by_key=day_ctx.train_by_key if day_ctx is not None else dict(
             session.execute(
                 # Only tts: keys can match; the 87k GTFS trains never will.
                 select(Train.identity_key, Train.id).where(Train.source == SOURCE_TT)
             ).all()
         ),
         now=read_clock(frozen),
+        line_cache=day_ctx.line_cache if day_ctx is not None else {},
     )
     counters = RunCounters()
+    from dbrel.ingest.schedule_reconcile import PendingSettle
+    pending = PendingSettle() if day_ctx is not None else None
 
-    for run_key, stops_by_index in by_run.items():
-        upsert_run(session, ctx, counters, run_key, list(stops_by_index.values()),
-                   schedule_observations=observations_by_run[run_key])
+    if writer == "batch":
+        from dbrel.ingest.runs_batch import upsert_runs_batch
+        upsert_runs_batch(
+            session, ctx, counters,
+            [(run_key, list(stops_by_index.values()), observations_by_run[run_key])
+             for run_key, stops_by_index in by_run.items()],
+            pending=pending,
+        )
+    elif writer == "per_run":
+        for run_key, stops_by_index in by_run.items():
+            upsert_run(session, ctx, counters, run_key, list(stops_by_index.values()),
+                       schedule_observations=observations_by_run[run_key], pending=pending)
+    else:
+        raise ValueError(f"unknown plan writer {writer!r}")
 
+    if pending is not None:
+        pending.settle(session)
+
+    result.upsert_calls = counters.upsert_calls
     result.trains_created = counters.trains_created
     result.trips_created = counters.trips_created
     result.station_stops_written = counters.station_stops_written
     result.conflicts = counters.conflicts
     result.dst_fixups = counters.dst_fixups
+    result.batch_epochs = counters.batch_epochs
     line_cache = ctx.line_cache
 
     session.flush()
