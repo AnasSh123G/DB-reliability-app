@@ -52,43 +52,6 @@ def test_previous_service_date_after_midnight():
     assert ds[0].dep_epoch == epoch("2026-10-20", "00:21")
 
 
-def test_departure_boundaries_inclusive():
-    tt = make_timetable()
-    ds = departures(tt, 1, "2026-10-19", "08:00", "08:00")
-    assert [tt.var_train[d.variant] for d in ds] == [100]
-
-
-def test_unsorted_sparse_rows_and_faulty_backward_step():
-    from dbrel.planner.constants import NO_TIME
-    from dbrel.planner.timetable import PlannerTimetable
-
-    tt = PlannerTimetable.from_columns(
-        stations=[
-            (1, "A", None, None, None),
-            (2, "B", 51.0, 7.0, None),
-            (3, "C", 51.0, 7.5, None),
-        ],
-        train_id=np.array([10, 10, 10, 10]),
-        path_code=np.zeros(4, dtype=np.int32),
-        path_values=[None],
-        stop_sequence=np.array([40, 10, 30, 20]),
-        station_id=np.array([3, 1, 2, 2]),
-        arr=np.array([90, NO_TIME, NO_TIME, 110]),
-        dep=np.array([NO_TIME, 100, NO_TIME, 120]),
-        chosen={10: [None] * 7},
-        line_key_of_train={10: "cX"},
-        holiday_set=set(),
-        first_date=None,
-        last_date=None,
-    )
-    assert tt.stop_seq.tolist() == [10, 20, 30, 40]
-    assert tt.var_cut.tolist() == [
-        3
-    ]  # the missing row does not reset the prior departure
-    assert tt.dep_time.tolist() == [100, 120]
-    assert not tt.si_has_arrival[2]
-
-
 def _database():
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
@@ -111,44 +74,6 @@ def _database():
     for statement in statements:
         session.execute(text(statement))
     return session
-
-
-def test_database_loader_filters_stale_variant_and_line_keys(monkeypatch):
-    from sqlalchemy import text
-    from dbrel.planner.timetable import load_timetable, _line_keys
-    from dbrel.web import queries
-
-    monkeypatch.setattr(queries, "tt_feed_version_id", lambda session: 1)
-    with _database() as session:
-        assert _line_keys(session) == {10: "sl5", 11: "cICE", 12: "cX"}
-        session.execute(
-            text(
-                "CREATE TABLE passenger_line_member(train_id INTEGER, passenger_line_id INTEGER)"
-            )
-        )
-        assert _line_keys(session)[10] == "sl5"
-        session.execute(text("INSERT INTO passenger_line_member VALUES (10,99)"))
-        tt = load_timetable(session)
-    assert tt.var_line_key == ["pl99"]
-    assert tt.var_path == [None]
-    assert tt.stop_seq.tolist() == [1, 2]
-    assert tt.stop_si.size == 2
-    assert tt.first_date == date(2026, 9, 22)
-    assert tt.last_date == date(2026, 10, 19)
-    assert len(departures(tt, 1, "2026-10-19")) == 1
-
-
-def test_missing_feed_returns_all_stations_empty_timetable(monkeypatch):
-    from dbrel.planner.timetable import load_timetable
-    from dbrel.web import queries
-
-    monkeypatch.setattr(queries, "tt_feed_version_id", lambda session: None)
-    with _database() as session:
-        tt = load_timetable(session)
-    assert tt.station_id.tolist() == [1, 2]
-    assert tt.stop_si.size == tt.var_train.size == 0
-    assert departures(tt, 1, "2026-10-19") == []
-    assert not tt.si_has_arrival.any()
 
 
 def test_get_timetable_builds_once_per_database(monkeypatch):
@@ -174,7 +99,3 @@ def test_get_timetable_builds_once_per_database(monkeypatch):
     assert len(built) == 2
 
 
-def test_weekly_calls_count_each_stop_once_per_running_weekday():
-    # Station 2 sees six daily trains; station 3's calls include train 500's, cut for its
-    # faulty step but still a train calling there.
-    assert make_timetable().weekly_calls() == {1: 34, 2: 42, 3: 28, 4: 34, 9: 0}

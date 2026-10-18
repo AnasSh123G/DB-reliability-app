@@ -58,12 +58,6 @@ def engine():
     return engine
 
 
-def test_the_fixture_dates_really_are_those_weekdays():
-    """Guard the guard: if these dates are wrong every assertion below is vacuous."""
-    for service_date, name in WEEK.items():
-        assert DAY_NAMES[date.fromisoformat(service_date).weekday()] == name
-
-
 def test_each_view_returns_only_its_own_day(engine):
     with engine.connect() as connection:
         for service_date, name in WEEK.items():

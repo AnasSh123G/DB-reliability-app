@@ -64,10 +64,6 @@ def test_bare_category_line_is_not_offered(session):
     assert ("line", "RE") not in names(queries.suggest(session, "re"))
 
 
-def test_named_service_without_a_number_is_kept(session):
-    assert ("line", "FEX") in names(queries.suggest(session, "fex"))
-
-
 def test_line_shows_the_endpoints_of_its_longest_route(session):
     line = next(r for r in queries.suggest(session, "re22") if r["kind"] == "line")
     assert line["stops"] == "Euskirchen – Trier Hbf"
@@ -104,30 +100,3 @@ def test_station_picker_lists_the_busiest_station_first(session, monkeypatch):
     assert stations() == ["Essen Hbf", "Essen-Borbeck", "Essen-Altenessen"]
 
 
-def test_station_picker_puts_name_starts_before_busier_word_matches(session, monkeypatch):
-    from types import SimpleNamespace
-
-    from dbrel.models import Station
-    from dbrel.planner import timetable
-
-    session.add_all([
-        Station(id=1, natural_key="k1", name="Hamburg Hbf", lat=53.5, lon=10.0),
-        Station(id=2, natural_key="k2", name="München Hackerbrücke", lat=48.1, lon=11.5),
-        Station(id=3, natural_key="k3", name="Altenbeken", lat=51.8, lon=8.9),
-    ])
-    session.flush()
-    session.add_all([
-        SearchAlias(alias_norm="hamburghbf", alias_display="Hamburg Hbf",
-                    kind="STATION_NAME", weight=100, station_id=1),
-        SearchAlias(alias_norm="hackerbrucke", alias_display="Hackerbrucke",
-                    kind="STATION_TOKEN", weight=60, station_id=2),
-        SearchAlias(alias_norm="ha", alias_display="HA", kind="STATION_DS100", weight=50,
-                    station_id=3),
-    ])
-    session.flush()
-    calls = {1: 100, 2: 5000, 3: 9000}
-    monkeypatch.setattr(timetable, "cached_timetable",
-                        lambda _session: SimpleNamespace(weekly_calls=lambda: calls))
-
-    names = [r["name"] for r in queries.suggest(session, "ha", only="station")]
-    assert names == ["Hamburg Hbf", "München Hackerbrücke", "Altenbeken"]

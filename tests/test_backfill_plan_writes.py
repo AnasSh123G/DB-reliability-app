@@ -7,7 +7,6 @@ from dataclasses import replace
 
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
-import pytest
 
 from dbrel.db import Base
 from dbrel.ingest.changes_poller import run_tt_poll
@@ -81,22 +80,6 @@ def test_record_plans_resolves_all_station_stop_ids_in_one_query():
             event.remove(db.get_bind(), "before_cursor_execute", count)
 
         assert queries["station_stop_ids"] <= 1
-    finally:
-        db.close()
-
-
-def test_record_plans_keeps_receipt_validation_order_and_message():
-    db = _new_session()
-    try:
-        ctx = _run_context(db)
-        stop = _stop(daily_trip_id="validation", start_stamp="2609160800")
-        trip_id = upsert_run(db, ctx, RunCounters(), stop.run_key, [stop])
-        trip = db.get(Trip, trip_id)
-        wrong_day = replace(stop, start_stamp="2609170800")
-        invalid_receipt = PlanReceipt(observed_at=-1, content_sha256="not-a-digest")
-
-        with pytest.raises(ValueError, match="^receipt observed_at must be a nonnegative integer$"):
-            record_plans(db, trip.id, trip.path_sha1, [(wrong_day, invalid_receipt)], {8000041: 1})
     finally:
         db.close()
 

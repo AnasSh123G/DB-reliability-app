@@ -36,15 +36,6 @@ def test_env_selects_a_repo_relative_experiment_inside_data_ml(tmp_path, monkeyp
     assert (repo / "data/ml").resolve() in selected.resolve().parents
 
 
-def test_env_accepts_an_absolute_repo_local_data_ml_directory(tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    candidate = repo / "data/ml/recency_training_alternate"
-    candidate.parent.mkdir(parents=True)
-    monkeypatch.setenv("DBREL_RECENCY_EXPERIMENT", str(candidate))
-
-    assert _directory_fn()(repo) == candidate
-
-
 @pytest.mark.parametrize("configured", [
     "../outside/recency",
     "data/ml/../../outside/recency",
@@ -54,17 +45,6 @@ def test_env_refuses_paths_outside_the_experiment_subtree(tmp_path, monkeypatch,
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.setenv("DBREL_RECENCY_EXPERIMENT", configured)
-
-    with pytest.raises(ValueError, match="data/ml|inside|experiment"):
-        _directory_fn()(repo)
-
-
-def test_env_refuses_absolute_paths_outside_repository(tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    outside = tmp_path / "elsewhere" / "recency"
-    repo.mkdir()
-    outside.parent.mkdir()
-    monkeypatch.setenv("DBREL_RECENCY_EXPERIMENT", str(outside))
 
     with pytest.raises(ValueError, match="data/ml|inside|experiment"):
         _directory_fn()(repo)

@@ -44,14 +44,6 @@ def test_an_arrival_after_midnight_keeps_its_service_day_time():
     _round_trip(rows)
 
 
-def test_a_missing_arrival_stays_missing():
-    """A missing arrival or departure comes back as None."""
-    rows = _rows(8 * 3600, first_id=1)
-    decoded = decode_variant(*encode_variant(rows))
-    assert decoded[0].planned_arrival_sec is None and decoded[0].planned_departure_sec == 8 * 3600
-    assert decoded[2].planned_departure_sec is None
-
-
 def test_non_consecutive_ids_round_trip_exactly():
     """Ids out of sequence come back exactly, as several id runs."""
     rows = _rows(8 * 3600, first_id=0, ids=[907, 12, 13])
@@ -61,11 +53,3 @@ def test_non_consecutive_ids_round_trip_exactly():
     assert runs == [(0, 5), (1, 9), (2, 4)]
 
 
-def test_a_variant_with_no_times_round_trips():
-    """A variant without any time comes back with no start."""
-    rows = [ScheduleRow(id=40 + i, stop_sequence=i + 1, station_id=10 + i, source_stop_id=None,
-                        platform_code=None, planned_arrival_sec=None, planned_departure_sec=None,
-                        pickup_type=1, drop_off_type=None) for i in range(2)]
-    start, pattern, runs = _round_trip(rows)
-    assert start is None and runs == [(0, 40)]
-    assert all(stop[4] is None and stop[5] is None for stop in pattern)

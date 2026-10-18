@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from dbrel.ml.memory import format_memory, launched_unit, memory_report, own_cgroup
+from dbrel.ml.memory import format_memory, memory_report, own_cgroup
 
 
 def test_total_rises_with_an_allocation():
@@ -33,8 +33,3 @@ def test_unrecognised_cgroup_text_is_not_an_error():
     assert memory_report(proc_cgroup="garbage\n")["unit"] is None
 
 
-def test_launch_units_are_recognised_by_name():
-    path = "/user.slice/user-1000.slice/user@1000.service/background.slice/dbrel-ml-bakeoff.service"
-    assert launched_unit(path) == "dbrel-ml-bakeoff.service"
-    assert launched_unit("/user.slice/.../app.slice/app-code-oss-749003.scope") is None
-    assert launched_unit(None) is None

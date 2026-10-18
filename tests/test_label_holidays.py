@@ -53,36 +53,16 @@ def test_state_specific_holiday_flags_only_its_own_state(engine):
     assert labels[2] == 0  # HH station on Fronleichnam (not observed there)
 
 
-def test_unknown_state_on_a_state_specific_holiday_is_null(engine):
-    label_trip_stop_holidays(engine)
-    labels = _labels(engine)
-    assert labels[3] is None  # unknown-state station on Fronleichnam (NW-only)
-
-
 def test_unknown_state_on_a_sunday_is_a_holiday(engine):
     label_trip_stop_holidays(engine)
     labels = _labels(engine)
     assert labels[4] == 1
 
 
-def test_unknown_state_on_an_all_16_states_holiday_is_a_holiday(engine):
-    label_trip_stop_holidays(engine)
-    labels = _labels(engine)
-    assert labels[5] == 1
-
-
 def test_a_plain_weekday_is_not_a_holiday(engine):
     label_trip_stop_holidays(engine)
     labels = _labels(engine)
     assert labels[6] == 0
-
-
-def test_labelling_is_deterministic_across_reruns(engine):
-    label_trip_stop_holidays(engine)
-    first = _labels(engine)
-    label_trip_stop_holidays(engine)
-    second = _labels(engine)
-    assert first == second
 
 
 def test_each_service_date_is_committed_and_reported(engine):

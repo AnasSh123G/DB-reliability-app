@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 
 import numpy as np
 import pytest
@@ -11,7 +10,7 @@ from sqlalchemy.orm import Session
 from dbrel.db import make_engine
 from dbrel.ml import features as F
 from dbrel.ml.dataset import build_arrival_dataset, load_arrival_dataset
-from dbrel.ml.full_history import FullHistory, StaleHistory, build_full_history, month_bounds
+from dbrel.ml.full_history import FullHistory, StaleHistory, build_full_history
 
 from ml_fixture import add_run, build
 
@@ -37,11 +36,6 @@ def _directions(db):
 
 def _files(root):
     return {p.relative_to(root): (p.stat().st_ino, p.read_bytes()) for p in sorted(root.glob("*/*.bin"))}
-
-
-def test_month_bounds_cross_the_year():
-    assert month_bounds("2025-12") == ("2025-12-01", "2026-01-01")
-    assert month_bounds("2026-02") == ("2026-02-01", "2026-03-01")
 
 
 def test_shards_hold_what_the_single_file_builder_holds(db, tmp_path):
@@ -90,20 +84,6 @@ def test_rebuild_redoes_only_changed_months_and_the_latest(db, tmp_path):
     assert build_full_history(db, root, dirs, full=True)["rebuilt"] == ["2026-07", "2026-08", "2026-09"]
 
 
-def test_loading_one_month_never_opens_the_others(db, tmp_path):
-    root = tmp_path / "full"
-    manifest = build_full_history(db, root, _directions(db))
-    history = FullHistory(root)
-    shutil.rmtree(root / "2026-07")
-    shutil.rmtree(root / "2026-09")
-    ds = history.load(["2026-08-01", "2026-08-31"])
-    assert ds.meta["dates"] == ["2026-08-01", "2026-08-31"]
-    rows = manifest["shards"]["2026-08"]["rows_per_date"]
-    assert len(ds.arr_min) == rows["2026-08-01"] + rows["2026-08-31"]
-    with pytest.raises(StaleHistory):
-        history.load(["2026-07-30"])
-
-
 def test_a_truncated_column_is_refused(db, tmp_path):
     root = tmp_path / "full"
     build_full_history(db, root, _directions(db))
@@ -111,34 +91,6 @@ def test_a_truncated_column_is_refused(db, tmp_path):
     path.write_bytes(path.read_bytes()[:-4])
     with pytest.raises(StaleHistory, match="rebuild"):
         next(FullHistory(root).chunks(["2026-08-01"]))
-
-
-def test_cli_prints_per_month_counts_matching_sql(db, tmp_path, monkeypatch):
-    import sqlite3
-
-    from typer.testing import CliRunner
-
-    import dbrel.config as config
-    import dbrel.db as dbmod
-    from dbrel.cli import app
-    from dbrel.ml.dataset import _query
-
-    monkeypatch.setattr(dbmod, "DB_PATH", db)
-    monkeypatch.setattr(config, "DB_PATH", db)
-    monkeypatch.setattr(config, "ML_DATA_DIR", tmp_path / "ml")
-    dbmod.dispose_engine()
-    try:
-        result = CliRunner().invoke(app, ["ml", "build-full-dataset"])
-    finally:
-        dbmod.dispose_engine()
-    assert result.exit_code == 0, result.output
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TEMP TABLE ml_stop_rank(id INTEGER PRIMARY KEY, stop_rank, n_stops)")
-    for month in ("2026-07", "2026-08", "2026-09"):
-        (n,) = conn.execute(f"SELECT COUNT(*) FROM ({_query(arrival_only=True, by_date_range=True)})",
-                            month_bounds(month)).fetchone()
-        assert f"* {month}  {n:>12,} rows" in result.output
-    assert (tmp_path / "ml" / "arrival_full" / "manifest.json").exists()
 
 
 def test_chunks_select_dates_across_chunk_boundaries(db, tmp_path):

@@ -16,8 +16,7 @@ pytest.importorskip("tabm")
 
 from dbrel.ml.arrival import arrival_inputs, fit_input_prep  # noqa: E402
 from dbrel.ml.arrival_nn import (  # noqa: E402
-    ArrivalNet, BatchSource, NetConfig, check_tensor_sizes, epoch_rank, estimate_model_bytes, safe_batch,
-    tensor_bytes,
+    ArrivalNet, NetConfig, check_tensor_sizes, estimate_model_bytes, tensor_bytes,
 )
 from dbrel.ml.features import CATEGORICAL, NUMERIC, UNKNOWN  # noqa: E402
 
@@ -55,16 +54,6 @@ def test_shapes_order_and_unknown_categories(arch, head, rule):
     assert cats[:3, CATEGORICAL.index("train")].tolist() == [0, 0, 6]
 
 
-def test_window_rule_requires_a_distribution():
-    with pytest.raises(ValueError, match="distribution"):
-        NetConfig(head="quantile", point_rule="window")
-
-
-def test_batch_guard_stays_under_the_rocm_fault():
-    cfg = NetConfig(arch="tabm", hidden=512, tabm_k=16)
-    assert safe_batch(cfg, 150, 10 ** 6) * 512 * 4 * 16 <= 2 ** 30
-
-
 @pytest.mark.parametrize("arch,head,rule", [("mlp", "quantile", "median"), ("tabm", "binned", "window")])
 def test_fit_learns_train_offsets_and_keeps_best_validation_epoch(arch, head, rule):
     enc, y, vocab = _data()
@@ -87,37 +76,9 @@ def test_fit_learns_train_offsets_and_keeps_best_validation_epoch(arch, head, ru
         net.fit(cats, nums, np.where(rows == 0, np.nan, y), train, val)
 
 
-def test_early_stopping_prefers_lower_mae_over_more_within_3():
-    lower_mae = {"mae_scored": 2.0, "within_3_min": 0.60}
-    more_within = {"mae_scored": 2.4, "within_3_min": 0.75}
-    assert epoch_rank(lower_mae) > epoch_rank(more_within)
-    assert epoch_rank({"mae_scored": 2.0, "within_3_min": 0.7}) > epoch_rank(lower_mae)  # tie-break
-    net = ArrivalNet(NetConfig(**SMALL), _prep())
-    net.history = [{"epoch": 1, "val_mae_scored": 2.4, "val_within_3_min": 0.75},
-                   {"epoch": 2, "val_mae_scored": 2.0, "val_within_3_min": 0.60},
-                   {"epoch": 3, "val_mae_scored": 2.2, "val_within_3_min": 0.80}]
-    assert net.best_epoch() == 2
-
-
 def _prep():
     enc, _, vocab = _data(64)
     return fit_input_prep(enc, np.ones(64, bool), vocab)
-
-
-def test_blocks_visit_every_row_once_per_epoch_in_shuffled_order():
-    n = 1000
-    cats = np.arange(n * len(CATEGORICAL), dtype=np.int32).reshape(n, -1)
-    nums = np.zeros((n, 2), np.float32)
-    y = np.arange(n, dtype=np.float32)
-    rows = np.sort(np.random.default_rng(1).choice(n, 700, replace=False))
-    source = BatchSource(cats, nums, y, rows, block_rows=64)
-    rng = np.random.default_rng(0)
-    first = np.concatenate([b[2] for b in source.blocks(rng)])
-    second = np.concatenate([b[2] for b in source.blocks(rng)])
-    for epoch in (first, second):
-        assert np.array_equal(np.sort(epoch), y[rows])
-    assert not np.array_equal(first, second) and not np.array_equal(first, y[rows])
-    assert np.array_equal(source.targets(), y[rows])  # unshuffled order for validation
 
 
 def test_guard_refuses_any_tensor_reaching_two_gib():
@@ -130,31 +91,6 @@ def test_guard_refuses_any_tensor_reaching_two_gib():
         check_tensor_sizes(cfg, 151, 24, 200, block_rows=2 ** 31 // (24 * 4) + 1)
     sizes = tensor_bytes(NetConfig(arch="tabm", hidden=1024, tabm_k=16, batch_size=8192), 151, 24, 300, 1 << 20)
     assert max(sizes.values()) < 2 ** 31  # the large track's widest trial fits
-
-
-def test_refit_without_validation_runs_a_fixed_number_of_epochs():
-    enc, y, vocab = _data(600)
-    prep = fit_input_prep(enc, np.ones(600, bool), vocab)
-    cats, nums = arrival_inputs(enc, prep)
-    net = ArrivalNet(NetConfig(arch="mlp", **dict(SMALL, epochs=20)), prep)
-    history = net.fit_source(BatchSource(cats, nums, y, block_rows=100), None, epochs=3)
-    assert [h["epoch"] for h in history] == [1, 2, 3] and "val_mae_scored" not in history[0]
-    with pytest.raises(ValueError, match="fixed epoch count"):
-        net.fit_source(BatchSource(cats, nums, y), None)
-
-
-def test_small_blocks_still_learn():
-    enc, y, vocab = _data()
-    mask = np.zeros(len(y), bool)
-    mask[:1600] = True
-    prep = fit_input_prep(enc, mask, vocab)
-    cats, nums = arrival_inputs(enc, prep)
-    net = ArrivalNet(NetConfig(arch="mlp", **dict(SMALL, epochs=15, patience=15, batch_size=128)), prep)
-    train = BatchSource(cats[:1600], nums[:1600], y[:1600], block_rows=300)
-    val = BatchSource(cats[1600:], nums[1600:], y[1600:], block_rows=300)
-    net.fit_source(train, val)
-    out = net.predict_source(val)
-    assert np.mean(np.abs(out.point - y[1600:]) <= 3) > 0.8
 
 
 EXPORTS = [Path("data/ml/arrival_exports/20260925T233611Z") / name

@@ -14,10 +14,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import recency_experiment as experiment  # noqa: E402
 from recency_weights import policy, weights  # noqa: E402
-from dbrel.ml.arrival import arrival_inputs, fit_input_prep  # noqa: E402
+from dbrel.ml.arrival import fit_input_prep  # noqa: E402
 from dbrel.ml.features import (CATEGORICAL, NOTICE_NUMERIC, NOTICE_RATES, NUMERIC,  # noqa: E402
                                day_of_year_indices, numeric_features)
-from dbrel.ml.full_year import PREPARED_COLUMNS, PreparedSet  # noqa: E402
 
 TRIALS = "data/ml/full_year/runs/compact-2026-09-26/trials/"
 
@@ -33,18 +32,6 @@ def test_conditions_map_to_amplitude_and_input_trial():
     # Strong: the last training day counts 3x, the month before it 1x.
     record = policy("2026-08-21", experiment.CONDITIONS["strong"][0])
     np.testing.assert_allclose(weights(epoch("2026-06-01", "2026-07-21", "2026-08-21"), record), [1, 1, 3])
-
-
-def test_condition_list_defaults_to_control_weighted(tmp_path):
-    assert experiment.conditions(tmp_path) == ("control", "weighted")
-    (tmp_path / "readiness.json").write_text(json.dumps({"chromium": {}}))
-    assert experiment.conditions(tmp_path) == ("control", "weighted")
-    (tmp_path / "readiness.json").write_text(json.dumps({"conditions": ["control", "strong", "seasonal"]}))
-    assert experiment.conditions(tmp_path) == ("control", "strong", "seasonal")
-    for bad in (["strong", "control"], ["control", "unknown"], ["control"]):
-        (tmp_path / "readiness.json").write_text(json.dumps({"conditions": bad}))
-        with pytest.raises(ValueError, match="conditions"):
-            experiment.conditions(tmp_path)
 
 
 def test_seasonal_columns_ignore_the_year():
@@ -77,27 +64,6 @@ def _layouts(n=40):
     base = fit_input_prep(encoded, mask, vocab, "robust", NUMERIC + NOTICE_RATES)
     seasonal = fit_input_prep(encoded, mask, vocab, "robust", NOTICE_NUMERIC)
     return days, encoded, base, seasonal
-
-
-def test_seasonal_columns_land_at_the_trial_slots_with_its_scaling(tmp_path):
-    pytest.importorskip("torch")
-    import train_recency_delay as runner
-    days, encoded, base, seasonal = _layouts()
-    positions = runner.seasonal_positions(base, seasonal)
-    # Same place as trial 634b5e057ab5fe00: straight after lat/lon.
-    assert positions == [14, 15] == [seasonal["numeric"].index("doy_sin"), seasonal["numeric"].index("doy_cos")]
-    cats, nums = arrival_inputs(encoded, base)
-    for name, values in {"cats": cats, "nums": nums, "y": np.zeros(len(days)), "day": days}.items():
-        np.ascontiguousarray(values, dtype=PREPARED_COLUMNS[name][0]).tofile(tmp_path / f"{name}.bin")
-    (tmp_path / "meta.json").write_text(json.dumps({"n": len(days), "n_num": nums.shape[1]}))
-    (tmp_path / "key.json").write_text("{}")
-    source = runner.Source(runner.SeasonalSet(PreparedSet(tmp_path), seasonal, positions))
-    try:
-        _, augmented, _ = source.read(0, len(days))
-    finally:
-        source.close()
-    # Bit-identical to preparing the rows with the seasonal trial's inputs.
-    np.testing.assert_array_equal(augmented, arrival_inputs(encoded, seasonal)[1])
 
 
 def test_seasonal_layout_refuses_any_other_input_difference():

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from dbrel.db import Base
 from dbrel.identity import SOURCE_TT
 from dbrel.models import (
-    FeedVersion, Station, StationStop, Train, Trip, TripStop, TripScheduleSnapshot,
+    FeedVersion, Station, StationStop, Train, Trip, TripStop,
 )
 
 TABLE = "trip_schedule_snapshot"

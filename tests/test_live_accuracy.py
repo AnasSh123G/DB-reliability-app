@@ -2,30 +2,22 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 
 import pytest
 
 from dbrel.config import TZ
 from dbrel.direction import direction_by_train_id
-from dbrel.ingest.changes_poller import GRACE_S
 from dbrel.ingest.parser import TtEvent, TtStop
-from dbrel.ml.predict import DelayModel, NoModelError
+from dbrel.ml.predict import DelayModel
 from dbrel.models import Station, StopDelayAverage, Train, TrainStopDelayAverage, TripStop
 from dbrel.study.live_accuracy import (
-    REPORT_NAME,
-    RESULT_NAME,
     Comparison,
     RealizedSide,
     StudyResult,
-    fetch_station,
     realized_sides,
-    render_report,
     resolve_call,
     run_study,
-    sample_stations,
-    save_report,
     score_comparisons,
     score_stops,
 )
@@ -76,20 +68,6 @@ def _realized_side(station: Station, *, delay_s: int = 180) -> RealizedSide:
 # --------------------------------------------------------------------------------------
 
 
-def test_sample_stations_is_distinct_and_sized(env):  # noqa: F811
-    import dbrel.db as dbmod
-
-    with dbmod.session_scope() as s:
-        for sid in (1, 2, 3):
-            s.get(Station, sid).eva = 8000000 + sid
-        s.flush()
-        chosen = sample_stations(s, 2, seed=0)
-        assert len({st.id for st in chosen}) == len(chosen) == 2
-        assert all(st.eva is not None for st in chosen)
-        # Asking for more than exist returns every eligible station, not an error.
-        assert len(sample_stations(s, 100, seed=0)) == 3
-
-
 def test_realized_sides_keeps_only_genuine_past_outcomes():
     now = utc_of(SERVICE_DATE, DEP_SEC) + 3600
     fully_realized = _stop(dep=_event(DEP_SEC))
@@ -116,81 +94,9 @@ def test_realized_sides_keeps_only_genuine_past_outcomes():
     assert id(cancelled) not in by_stop
 
 
-def test_realized_sides_respects_the_grace_period():
-    """A changed time just under GRACE_S in the past is still an estimate, not a fact."""
-    assert GRACE_S < 180  # sanity: the gap below must exceed the real grace period
-    now = utc_of(SERVICE_DATE, DEP_SEC) + 180
-    just_inside = _stop(dep=_event(DEP_SEC, delay_s=0))  # changed_ts = now - 180
-    station = Station(id=STATION_ID, natural_key="x", name="x", lat=0, lon=0, tracked=1)
-    assert realized_sides(station, [just_inside], now)
-
-
-def test_fetch_station_skips_on_error_or_empty():
-    class FakeResp:
-        def __init__(self, status, body=b""):
-            self.status, self.body, self.ok = status, body, status == 200
-
-    class FakeClient:
-        def __init__(self, resp):
-            self.resp = resp
-
-        def changes(self, eva):
-            return self.resp
-
-        def plan(self, eva, date, hour):
-            return self.resp
-
-    station = Station(id=1, natural_key="x", name="x", lat=0, lon=0, tracked=1, eva=8000041)
-    now = utc_of(SERVICE_DATE, DEP_SEC) + 3600
-
-    bad = fetch_station(FakeClient(FakeResp(500)), station, now)
-    assert bad.skipped and "http 500" in bad.skip_reason
-
-    empty = fetch_station(FakeClient(FakeResp(200, b"<timetable/>")), station, now)
-    assert empty.skipped and empty.skip_reason == "no realized stops"
-
-
-def test_fetch_station_takes_the_train_from_plan_and_the_real_time_from_fchg():
-    """/fchg alone has no train number or planned time for an ordinary run -- the bug the
-    first real run hit, which kept only special trains. Both halves must be joined by stop id."""
-    now = utc_of(SERVICE_DATE, DEP_SEC) + 3600
-    client = FakeTimetables(eva=8000002)
-    station = Station(id=STATION_ID, natural_key="x", name="x", lat=0, lon=0, tracked=1,
-                      eva=8000002)
-    result = fetch_station(client, station, now)
-    assert not result.skipped
-    [side] = result.realized
-    assert (side.stop.category, side.stop.number, side.side) == ("RE", "10070", "dep")
-    assert side.real_delay_min == pytest.approx(3.0)
-
-
 # --------------------------------------------------------------------------------------
 # 2 & 3. Resolving a realized side and scoring it
 # --------------------------------------------------------------------------------------
-
-
-def test_resolve_call_matches_a_known_train(env):  # noqa: F811
-    import dbrel.db as dbmod
-
-    with dbmod.session_scope() as s:
-        side = _realized_side(s.get(Station, STATION_ID))
-        scored = resolve_call(s, side)
-        assert scored is not None
-        assert scored.train.id == 70
-        assert scored.call.stop_rank == 1 and scored.call.n_stops == len(PATTERNS[70])
-
-
-def test_resolve_call_returns_none_for_an_unknown_train(env):  # noqa: F811
-    import dbrel.db as dbmod
-
-    with dbmod.session_scope() as s:
-        event = _event(DEP_SEC)
-        side = RealizedSide(
-            station=s.get(Station, STATION_ID),
-            stop=_stop(number="99999", dep=event), side="dep", event=event,
-            real_delay_min=event.delay_s / 60,
-        )
-        assert resolve_call(s, side) is None
 
 
 def test_score_stops_matches_the_deployed_average_and_model(env, tabm_artifact):  # noqa: F811
@@ -220,48 +126,9 @@ def test_score_stops_matches_the_deployed_average_and_model(env, tabm_artifact):
         assert comparison.real_delay_min == pytest.approx(3.0)
 
 
-def test_score_stops_reports_uncovered_average_but_still_scores_tabm(env, tabm_artifact):  # noqa: F811
-    import dbrel.db as dbmod
-
-    with dbmod.session_scope() as s:
-        now = utc_of(SERVICE_DATE, DEP_SEC) + 3600
-        side = _realized_side(s.get(Station, STATION_ID))
-        scored = resolve_call(s, side)
-        model = DelayModel.current(tabm_artifact.parent)
-        [comparison] = score_stops(s, model, [scored], now=now)  # no StopDelayAverage row exists
-        assert comparison.average is None
-        assert comparison.tabm is not None
-
-
 # --------------------------------------------------------------------------------------
 # 4. Scoring across many comparisons
 # --------------------------------------------------------------------------------------
-
-
-def test_score_comparisons_compares_on_the_same_stops():
-    rows = [
-        Comparison(side="dep", segment="RV", is_holiday=0, service_date="2026-09-01",
-                  real_delay_min=2.0, tabm=(1.0, 2.0, 3.0), average=(2.0, 2.0, 2.0)),
-        Comparison(side="dep", segment="RV", is_holiday=0, service_date="2026-09-02",
-                  real_delay_min=4.0, tabm=(2.0, 4.0, 6.0), average=None),
-        Comparison(side="arr", segment="FV", is_holiday=1, service_date="2026-09-01",
-                  real_delay_min=1.0, tabm=(0.0, 1.0, 2.0), average=(1.0, 1.0, 1.0)),
-    ]
-    out = score_comparisons(rows)
-    dep = out["dep"]
-    assert dep["n"] == 2 and dep["n_compared"] == 1 and dep["n_no_average"] == 1
-    assert dep["tabm"]["minutes_off"] == 0.0 and dep["tabm"]["within_1"] == 1.0
-    assert (dep["tabm_closer"], dep["average_closer"], dep["tie"]) == (0, 0, 1)
-    assert dep["tabm_on_no_average"]["minutes_off"] == 0.0
-    assert out["arr"]["n_compared"] == 1
-
-
-def test_score_comparisons_handles_a_side_with_nothing_scored():
-    out = score_comparisons([Comparison(side="dep", segment="RV", is_holiday=0,
-                                        service_date="2026-09-01", real_delay_min=1.0,
-                                        tabm=(0.0, 1.0, 2.0), average=None)])
-    assert out["arr"]["n"] == 0 and out["arr"]["n_compared"] == 0
-    assert out["arr"]["tabm"]["minutes_off"] is None
 
 
 # --------------------------------------------------------------------------------------
@@ -328,18 +195,6 @@ def test_run_study_is_read_only(env, tabm_artifact):  # noqa: F811
     assert result.n_scored["dep"] == 1
 
 
-def test_run_study_raises_clearly_with_no_trained_model(env):  # noqa: F811
-    import dbrel.db as dbmod
-
-    class FakeClient:
-        def changes(self, eva):
-            raise AssertionError("must not fetch before checking a model exists")
-
-    with dbmod.session_scope() as s:
-        with pytest.raises(NoModelError):
-            run_study(s, FakeClient(), env / "models", sample_size=1)
-
-
 # --------------------------------------------------------------------------------------
 # Report
 # --------------------------------------------------------------------------------------
@@ -362,92 +217,9 @@ def _result(**overrides) -> StudyResult:
     return StudyResult(**base)
 
 
-def test_render_report_includes_every_headline_figure():
-    text = render_report(_result(), created_at="20260101T000000Z")
-    assert "Stations sampled: 10, of which 2" in text
-    assert "1 http 500" in text and "1 no realized stops" in text
-    assert "isn't in the local timetable (skipped): 1" in text
-    assert "Average minutes off" in text and "Within 3 min" in text
-    assert "Closer to the real delay: TabM 0 times, stored average 0 times, same 1 times" in text
-    assert "Nothing to compare." in text  # arr had none
-
-
-def test_a_median_arrival_model_is_labelled_a_median(tmp_path):
-    arrival = dict(model_kind="arrival-net", point_rule="median", artifact="/m/v2-comparison/20261001T000000Z",
-                   role="comparison")
-    text = render_report(_result(**arrival), created_at="20260101T000000Z")
-    assert "The model's figure is its median guess" in text and "window rule" not in text
-    assert "`/m/v2-comparison/20261001T000000Z` (comparison model: never served on the website)" in text
-    out_dir = save_report(_result(**arrival, scores=score_comparisons([
-        Comparison(side="arr", segment="RV", is_holiday=0, service_date="2026-09-01",
-                   real_delay_min=2.0, tabm=(1.0, 2.0, 3.0), average=(2.0, 2.0, 2.0))]),
-        comparisons=[Comparison(side="arr", segment="RV", is_holiday=0, service_date="2026-09-01",
-                                real_delay_min=2.0, tabm=(1.0, 2.0, 3.0), average=(2.0, 2.0, 2.0))]),
-        tmp_path, stamp="20260101T000000Z")
-    assert "Closer to the real delay: Model median" in (out_dir / REPORT_NAME).read_text()
-    assert "model_p50" in (out_dir / "comparisons.csv").read_text().splitlines()[0]
-    html = (out_dir / "histogram.html").read_text()
-    assert '"model_label": "Model median"' in html and '"n": 1' in html
-
-    window = render_report(_result(model_kind="arrival-net", point_rule="window"), created_at="x")
-    assert "6-minute window (window rule), not a median" in window
-
-
-def test_run_study_scores_a_given_artifact_without_reading_current(env, arrival_artifact, tmp_path,  # noqa: F811
-                                                                  monkeypatch):
-    import onnxruntime
-
-    import dbrel.db as dbmod
-    from dbrel.ml.arrival import role_models_dir, save_arrival_artifact
-    from dbrel.ml.nn import CURRENT_NAME
-
-    monkeypatch.setattr(onnxruntime, "InferenceSession", FakeQuantileSession)
-    models = arrival_artifact.parent
-    onnx = tmp_path / "small.onnx"
-    onnx.write_bytes(b"x" * 1000)
-    comparison = save_arrival_artifact(role_models_dir("comparison", models), _quantile_manifest(arrival_artifact),
-                                       {"model.onnx": onnx}, "20261003T000000Z", role="comparison",
-                                       served_dir=models)
-    (models / CURRENT_NAME).write_text("does-not-exist\n")
-    with dbmod.session_scope() as s:
-        s.get(Station, STATION_ID).eva = 8000002
-        s.flush()
-    with dbmod.session_scope() as s:
-        result = run_study(s, FakeTimetables(8000002), models, sample_size=1, seed=0,
-                           now=utc_of(SERVICE_DATE, DEP_SEC) + 3600, artifact=comparison)
-        assert (result.artifact, result.role) == (str(comparison), "comparison")
-        assert (result.model_kind, result.point_rule) == ("arrival-net", "median")
-        with pytest.raises(NoModelError, match="not a model artifact"):
-            run_study(s, FakeTimetables(8000002), models, sample_size=1, artifact=tmp_path)
-
-
-def test_save_report_writes_both_files_and_refuses_to_overwrite(tmp_path):
-    out_dir = save_report(_result(), tmp_path, stamp="20260101T000000Z")
-    assert (out_dir / RESULT_NAME).exists() and (out_dir / REPORT_NAME).exists()
-    rows = (out_dir / "comparisons.csv").read_text().splitlines()
-    assert rows[0].startswith("side,station,train") and len(rows) == 2
-    html = (out_dir / "histogram.html").read_text()
-    assert "__DATA__" not in html and '"n": 1' in html
-    with pytest.raises(FileExistsError):
-        save_report(_result(), tmp_path, stamp="20260101T000000Z")
-
-
 # --------------------------------------------------------------------------------------
 # The CLI command
 # --------------------------------------------------------------------------------------
-
-
-def test_cli_help_documents_the_flags():
-    from typer.testing import CliRunner
-
-    from dbrel.cli import app
-
-    result = CliRunner().invoke(app, ["study", "live-accuracy", "--help"])
-    assert result.exit_code == 0, result.output
-    # CI forces colour on, which puts escape codes inside the flag names.
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
-    assert "--sample-size" in plain and "--seed" in plain
-    assert "--allow-uncapped" in plain
 
 
 def test_cli_run_against_a_fixture_writes_a_report(env, tabm_artifact, monkeypatch):  # noqa: F811

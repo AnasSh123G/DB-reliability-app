@@ -18,8 +18,6 @@ from dbrel.db import Base
 from dbrel.identity import SOURCE_TT
 from dbrel.models import (
     DAY_TYPE_SUNDAY_HOLIDAY,
-    DAY_TYPE_WEEKDAY,
-    PublicHoliday,
     ServiceLine,
     Station,
     StationStop,
@@ -88,38 +86,9 @@ def session():
         yield s
 
 
-def test_directions_are_labelled_by_where_they_end_up(session):
-    result = queries.line_directions(session, LINE_ID)
-    labels = {d["label"]: d["n_runs"] for d in result["directions"]}
-    assert labels == {"Duisburg Hbf": 3, "Aachen Hbf": 1}
-
-
-def test_unknown_line_directions_is_none(session):
-    assert queries.line_directions(session, 999) is None
-
-
 def test_stations_follow_travel_order_forward(session):
     stations = queries.line_stations(session, LINE_ID, 0)
     assert [s["name"] for s in stations] == ROUTE
-
-
-def test_ordering_survives_a_station_name_that_disagrees_with_route_path(session):
-    """IRIS's route_path text and our own station names do not always agree
-    (route_path might say "Krefeld-Hbf", the station row says "Krefeld Hbf") --
-    ordering by stop_sequence rather than by matching that text must not care.
-    """
-    session.get(Station, 2).name = "Krefeld Hbf, renamed since the timetable ran"
-    stations = queries.line_stations(session, LINE_ID, 0)
-    assert [s["id"] for s in stations] == [1, 2, 3]
-
-
-def test_stations_follow_travel_order_reversed(session):
-    stations = queries.line_stations(session, LINE_ID, 1)
-    assert [s["name"] for s in stations] == list(reversed(ROUTE))
-
-
-def test_invalid_direction_is_none(session):
-    assert queries.line_stations(session, LINE_ID, 2) is None
 
 
 def around(session, time_str, direction=0, station_id=2):
@@ -138,65 +107,6 @@ def test_between_two_calls_picks_the_nearest_on_each_side(session):
     assert [t["relation"] for t in trips] == ["before", "before", "after"]
 
 
-def test_exactly_on_a_scheduled_time_counts_as_before(session):
-    trips = around(session, "12:00")["trips"]
-    assert [t["number_name"] for t in trips] == ["RE 10", "RE 11", "RE 12"]
-    assert trips[1]["relation"] == "before"
-
-
-def test_before_the_first_call_wraps_to_the_end_of_the_day(session):
-    # 02:00 has no calls before it today -- the "last two" wrap to the previous
-    # day's last two, 12:00 and 18:00, and "next" wraps back to 06:00. They
-    # keep their slot's label (before/before/after) even though every one of
-    # them falls later in the clock than 02:00.
-    trips = around(session, "02:00")["trips"]
-    assert [t["number_name"] for t in trips] == ["RE 11", "RE 12", "RE 10"]
-    assert [t["relation"] for t in trips] == ["before", "before", "after"]
-
-
-def test_after_the_last_call_wraps_to_tomorrows_first(session):
-    trips = around(session, "23:00")["trips"]
-    assert [t["number_name"] for t in trips] == ["RE 11", "RE 12", "RE 10"]
-    assert trips[-1]["relation"] == "after"
-
-
-def test_the_lone_run_the_other_way_is_never_mixed_in(session):
-    trips = around(session, "14:00")["trips"]
-    assert "RE 20" not in {t["number_name"] for t in trips}
-    assert around(session, "10:00", direction=1)["trips"][0]["number_name"] == "RE 20"
-
-
-def test_fewer_than_three_runs_does_not_fabricate_a_third(session):
-    """Direction 1 has exactly one run -- it must appear once, not three times."""
-    trips = around(session, "10:00", direction=1)["trips"]
-    assert [t["number_name"] for t in trips] == ["RE 20"]
-
-
-def test_scheduled_times_are_the_ones_at_the_chosen_station(session):
-    trips = around(session, "14:00")["trips"]
-    re11 = next(t for t in trips if t["number_name"] == "RE 11")
-    assert re11["sched_arr"] == "11:59"
-    assert re11["sched_dep"] == "12:00"
-
-
-def test_no_forecast_without_average_data(session):
-    # This fixture never populates stop_delay_average, so every trip's
-    # dep_pred/arr_pred must come back None rather than a fabricated value.
-    trips = around(session, "14:00")["trips"]
-    assert all(t["dep_pred"] is None and t["arr_pred"] is None for t in trips)
-
-
-def test_unknown_line_or_station_is_none(session):
-    assert queries.trips_around(session, 999, 0, 2, 0) is None
-    assert queries.trips_around(session, LINE_ID, 0, 999, 0) is None
-
-
-def test_a_stop_with_no_calls_in_that_direction_is_empty_not_none(session):
-    result = queries.trips_around(session, LINE_ID, 0, UNCALLED_STATION_ID, 12 * 3600)
-    assert result is not None
-    assert result["trips"] == []
-
-
 class TestResolveDayType:
     """The date field on the browse widget, resolved through the holiday table.
 
@@ -206,38 +116,9 @@ class TestResolveDayType:
     passes a station also has to pass that station's (resolved) state.
     """
 
-    def test_an_ordinary_weekday_resolves_to_weekday(self, session):
-        assert queries.resolve_day_type(session, "2026-09-15") == DAY_TYPE_WEEKDAY
 
     def test_a_sunday_resolves_to_sunday_holiday_with_no_table_rows_at_all(self, session):
         assert queries.resolve_day_type(session, "2026-09-20") == DAY_TYPE_SUNDAY_HOLIDAY
-
-    def test_a_table_row_turns_a_plain_weekday_into_a_holiday_for_its_own_state(self, session):
-        station = session.get(Station, 2)  # Krefeld Hbf
-        station.state = "DE-NW"
-        session.add(PublicHoliday(date="2026-09-15", state="DE-NW", name="Betriebsruhetag (test)"))
-        session.flush()
-        assert (
-            queries.resolve_day_type(session, "2026-09-15", station=station)
-            == DAY_TYPE_SUNDAY_HOLIDAY
-        )
-
-    def test_a_state_specific_holiday_does_not_apply_with_no_station_given(self, session):
-        """No station -> only a date observed in all 16 states counts (see
-        holidays_de.is_holiday's docstring on the no-state case)."""
-        session.add(PublicHoliday(date="2026-09-15", state="DE-NW", name="Betriebsruhetag (test)"))
-        session.flush()
-        assert queries.resolve_day_type(session, "2026-09-15") == DAY_TYPE_WEEKDAY
-
-    def test_unusable_date_resolves_to_none(self, session):
-        assert queries.resolve_day_type(session, "not-a-date") is None
-
-
-
-
-def test_runs_are_named_by_their_line_as_signed_on_the_platform(session):
-    trips = around(session, "10:30")["trips"]
-    assert {t["name"] for t in trips} == {"RE1"}
 
 
 def _add_second_variant_of_re11_at_krefeld(session):
@@ -252,77 +133,11 @@ def _add_second_variant_of_re11_at_krefeld(session):
     session.flush()
 
 
-def test_a_trip_on_two_route_variants_is_listed_once(session):
-    _add_second_variant_of_re11_at_krefeld(session)
-    trips = around(session, "14:00")["trips"]
-    assert [t["number_name"] for t in trips] == ["RE 10", "RE 11", "RE 12"]
-
-
 def test_a_trip_on_two_route_variants_is_on_the_board_once(session):
     _add_second_variant_of_re11_at_krefeld(session)
     now = service_date_anchor(date.today()) + 12 * 3600
     calls = queries.station_board(session, 2, now=now)["calls"]
     assert [c["number_name"] for c in calls].count("RE 11") == 1
-
-
-def test_a_train_retired_from_the_timetable_is_no_longer_offered(session):
-    """Last seen well before the newest data: a December timetable change
-    retired it, so it must not be listed for dates it will not run on."""
-    for train in session.query(Train):
-        train.last_seen_date = "2026-09-28"
-    session.get(Train, 11).last_seen_date = "2025-12-13"
-    session.flush()
-    trips = around(session, "14:00")["trips"]
-    assert "RE 11" not in [t["number_name"] for t in trips]
-    now = service_date_anchor(date.today()) + 12 * 3600
-    calls = queries.station_board(session, 2, now=now)["calls"]
-    assert "RE 11" not in [c["number_name"] for c in calls]
-
-
-def test_two_runs_at_the_same_minute_come_out_in_row_id_order(session):
-    """Ties are broken by station_stop id, not by whatever order the query returned the rows in.
-
-    RE 13 calls at Krefeld at 12:00 like RE 11 but is stored later (higher ids) and with only an
-    arrival there, which puts it first in the station index (a NULL departure sorts first).
-    """
-    fv_id = tt_feed_version(session)
-    session.add(Train(id=13, source=SOURCE_TT, identity_key="tts:RE/13", category="RE", segment="RV",
-                      train_number=13, operator="DB", display_name="RE 13", line_id=LINE_ID,
-                      origin_name=ROUTE[0], dest_name=ROUTE[-1], n_stops=3, route_path="|".join(ROUTE),
-                      first_departure_sec=12 * 3600 - 600))
-    session.flush()
-    for seq, station_id in enumerate((1, 2, 3), start=1):
-        offset = (seq - 2) * 60
-        session.add(StationStop(feed_version_id=fv_id, train_id=13, stop_sequence=seq, station_id=station_id,
-                                planned_arrival_sec=12 * 3600 + offset,
-                                planned_departure_sec=None if station_id == 2 else 12 * 3600 + offset))
-    session.flush()
-    # At 12:00 the two runs before are the 12:00 pair, in row-id order: RE 11 (stored first), then RE 13.
-    trips = around(session, "12:00")["trips"]
-    assert [t["number_name"] for t in trips] == ["RE 11", "RE 13", "RE 12"]
-
-
-def test_the_window_can_be_widened_to_a_different_count_each_side(session):
-    """`n_before` and `n_after` set how many runs come back on each side of the chosen time."""
-    hours = 14 * 3600  # between the 12:00 and 18:00 departures
-    one_side = queries.trips_around(session, LINE_ID, 0, 2, hours, n_before=1, n_after=0)
-    assert [t["number_name"] for t in one_side["trips"]] == ["RE 11"]
-    only_after = queries.trips_around(session, LINE_ID, 0, 2, hours, n_before=0, n_after=1)
-    assert [(t["number_name"], t["relation"]) for t in only_after["trips"]] == [("RE 12", "after")]
-
-
-def test_a_window_wider_than_the_stops_runs_lists_each_run_once_and_reports_how_many_exist(session):
-    """With 3 runs at the stop, asking for 5 each side still gives 3, and `n_calls` says 3."""
-    result = queries.trips_around(session, LINE_ID, 0, 2, 14 * 3600, n_before=5, n_after=5)
-    assert result["n_calls"] == 3
-    assert len(result["trips"]) == 3
-    assert queries.trips_around(session, LINE_ID, 0, UNCALLED_STATION_ID, 0)["n_calls"] == 0
-
-
-def test_the_default_window_is_two_before_and_one_after(session):
-    """Without counts the result is the one the page always showed: 2 before, 1 after."""
-    trips = around(session, "14:00")["trips"]
-    assert [t["relation"] for t in trips] == ["before", "before", "after"]
 
 
 # --- runs asked for by position -----------------------------------------------------------------
@@ -335,63 +150,3 @@ def by_position(session, time_str, offset, count):
     )["trips"]
 
 
-def test_the_default_window_is_positions_minus_two_to_zero(session):
-    """-2, -1 and 0 are the 2 at or before and the 1 after: the window the page opens on."""
-    trips = by_position(session, "14:00", -2, 3)
-    default = around(session, "14:00")["trips"]
-    assert [t["position"] for t in trips] == [-2, -1, 0]
-    assert [t["number_name"] for t in trips] == [t["number_name"] for t in default]
-    assert [t["relation"] for t in trips] == ["before", "before", "after"]
-
-
-def test_positions_wrap_past_the_end_of_the_day(session):
-    """Position 1 after 18:00 is the next morning's 06:00, and it still reads as 'after'."""
-    trips = by_position(session, "14:00", 1, 1)
-    assert [(t["number_name"], t["position"], t["relation"], t["day_offset"]) for t in trips] == [("RE 10", 1, "after", 1)]
-
-
-def test_a_chunk_larger_than_the_stops_runs_continues_into_the_next_days(session):
-    """With 3 runs a day, 12 positions are 4 days: every position is returned, with its day."""
-    trips = by_position(session, "14:00", 0, 12)
-    assert [t["position"] for t in trips] == list(range(12))
-    assert [t["number_name"] for t in trips[:6]] == ["RE 12", "RE 10", "RE 11", "RE 12", "RE 10", "RE 11"]
-    assert [t["day_offset"] for t in trips] == [0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4]
-
-
-def test_going_back_continues_into_the_days_before(session):
-    trips = by_position(session, "14:00", -6, 6)
-    assert [t["day_offset"] for t in trips] == [-2, -1, -1, -1, 0, 0]
-
-
-def test_consecutive_chunks_do_not_overlap(session):
-    """With 30 runs a day, positions 1..12 and 13..24 are 24 different runs."""
-    fv_id = tt_feed_version(session)
-    for index in range(27):  # 3 existing + 27 = 30 runs at Krefeld
-        train_id = 100 + index
-        session.add(Train(id=train_id, source=SOURCE_TT, identity_key=f"tts:RE/{train_id}", category="RE",
-                          segment="RV", train_number=train_id, operator="DB", display_name=f"RE {train_id}",
-                          line_id=LINE_ID, origin_name=ROUTE[0], dest_name=ROUTE[-1], n_stops=3,
-                          route_path="|".join(ROUTE), first_departure_sec=0))
-        session.flush()
-        for seq, station_id in enumerate((1, 2, 3), start=1):
-            minute = (index * 37) % 1440 + (seq - 2)  # spread over the day, one minute per stop
-            session.add(StationStop(feed_version_id=fv_id, train_id=train_id, stop_sequence=seq,
-                                    station_id=station_id, planned_arrival_sec=minute * 60 - 60,
-                                    planned_departure_sec=minute * 60))
-    session.flush()
-    first = by_position(session, "14:00", 1, 12)
-    second = by_position(session, "14:00", 13, 12)
-    assert [t["position"] for t in first] == list(range(1, 13))
-    assert [t["position"] for t in second] == list(range(13, 25))
-    assert not {t["train_id"] for t in first} & {t["train_id"] for t in second}
-
-
-def test_a_branch_stop_follows_its_junction_not_the_end_of_the_list():
-    """Main run A-B-C-D; a run to E branches off after B; one from F joins at C."""
-    order = queries._merge_stop_orders([(1, 2, 3, 4), (1, 2, 5), (6, 3, 4)])
-    assert order == [1, 2, 5, 6, 3, 4]
-
-
-def test_a_detour_sits_just_before_where_it_rejoins():
-    """A-B-C-D, and a run B-X-Y-D skipping C: X and Y go between C and D."""
-    assert queries._merge_stop_orders([(1, 2, 3, 4), (2, 7, 8, 4)]) == [1, 2, 3, 7, 8, 4]

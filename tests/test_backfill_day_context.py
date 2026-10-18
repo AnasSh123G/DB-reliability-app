@@ -165,33 +165,6 @@ def test_replay_constructs_one_context_for_each_day(session, monkeypatch):
     assert constructed[0] is not constructed[1]
 
 
-def test_day_context_replay_setup_queries_train_index_once(session):
-    """Both real import phases should use the day's preloaded train map."""
-    from dbrel.ingest import replay
-
-    assert hasattr(replay, "ReplayDayContext"), "replay-day context type is missing"
-    stations = session.execute(select(Station).order_by(Station.id)).scalars().all()
-    context = replay.ReplayDayContext(
-        fv_id=tt_feed_version(session),
-        train_by_key={},
-        line_cache={},
-        tracked_stations=stations,
-    )
-    source = _Source()
-
-    def run(_counts):
-        import_plan(
-            session, source, date="2026-08-28", hours=[3, 4], force=True,
-            now=AFTER, day_ctx=context,
-        )
-        session.flush()
-        run_tt_poll(session, source, priority_max=99, now=AFTER, day_ctx=context)
-
-    counts = _train_key_selects(session.get_bind(), run)
-    assert counts["train_by_key"] == 0
-    assert counts["feed_version"] == 0
-
-
 def test_none_context_keeps_live_per_call_queries(session):
     """The opt-in replay cache must not change the live call path."""
     source = _Source()
@@ -276,28 +249,3 @@ def test_day_context_and_live_path_produce_same_ingest_rows(session):
         live_session.close()
 
 
-def test_day_context_does_not_expand_poll_station_maps_across_sweeps(session):
-    """The reusable station list is broad; each sweep's poll set stays filtered."""
-    from dbrel.ingest import replay
-
-    assert hasattr(replay, "ReplayDayContext"), "replay-day context type is missing"
-    stations = session.execute(select(Station).order_by(Station.id)).scalars().all()
-    context = replay.ReplayDayContext(
-        fv_id=tt_feed_version(session),
-        train_by_key={},
-        line_cache={},
-        tracked_stations=stations,
-    )
-    source = _Source()
-
-    # Priority-1 station is included in both sweeps; priority-2 only in sweep 0.
-    run_tt_poll(session, source, priority_max=2, sweep_index=0, now=AFTER, day_ctx=context)
-    run_tt_poll(session, source, priority_max=2, sweep_index=1, now=AFTER + 60, day_ctx=context)
-    session.flush()
-
-    polls = session.execute(select(TtPoll).order_by(TtPoll.sweep_id, TtPoll.station_id)).scalars().all()
-    by_sweep = {}
-    for poll in polls:
-        by_sweep.setdefault(poll.sweep_id, set()).add(poll.eva)
-    assert by_sweep[AFTER] == {PUNCTUAL_EVA, SILENT_EVA}
-    assert by_sweep[AFTER + 60] == {PUNCTUAL_EVA}

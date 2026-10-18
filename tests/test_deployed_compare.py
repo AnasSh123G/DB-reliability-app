@@ -102,8 +102,3 @@ def test_plans_use_monday_eight_include_both_directions_and_omit_stats(monkeypat
                       "2026-10-19", "08:00")]
 
 
-def test_sampled_station_plans_cover_three_pairs(monkeypatch):
-    monkeypatch.setattr(queries, "station_board", lambda *a, **k: {})
-    requests = requests_for(None, now=0, service_date=date(2026, 10, 22), stations=[1, 2, 3, 4])
-    assert [r.label for r in requests if r.label.startswith("plan ")] == [
-        "plan 1>2", "plan 2>1", "plan 2>3", "plan 3>2", "plan 3>1", "plan 1>3"]

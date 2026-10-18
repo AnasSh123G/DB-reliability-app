@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session
@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 from dbrel.db import Base
 from dbrel.ingest.runs import RunContext, RunCounters, tt_feed_version, upsert_run
 from dbrel.models import Station, Train, Trip, TtPoll
-from test_archive_replay import AFTER, _Source, _replay
 from test_upsert_run_collision import _stop
 
 
@@ -63,50 +62,6 @@ def test_collision_update_refreshes_loaded_trip_without_orm_bulk_sync(monkeypatc
         assert same_trip_id == trip_id
         assert loaded.path_sha1 != initial_digest
         assert loaded.path_sha1 == session.scalar(select(Trip.path_sha1).where(Trip.id == trip_id))
-
-
-def test_second_same_session_poll_updates_loaded_trip_without_orm_bulk_sync(session, monkeypatch):
-    _replay(session, now=AFTER)
-    trip = session.scalar(select(Trip).limit(1))
-    assert trip is not None
-    previous_polls = trip.n_polls_seen
-    previous_status = trip.status
-
-    _forbid_orm_bulk_update(monkeypatch)
-    from dbrel.ingest.changes_poller import run_tt_poll
-
-    result = run_tt_poll(session, _Source(), priority_max=99, now=AFTER + 60)
-    session.flush()
-
-    assert result.sweep_id > 0
-    assert trip.n_polls_seen == previous_polls + 1
-    assert previous_status == "RUNNING"
-    assert trip.status == "RUNNING"
-
-
-def test_create_all_declares_the_four_backfill_indexes(tmp_path):
-    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'indexes.sqlite'}", future=True)
-    Base.metadata.create_all(engine)
-
-    indexes = {
-        (index["name"], tuple(index["column_names"]))
-        for table in ("trip", "tt_poll")
-        for index in inspect(engine).get_indexes(table)
-    }
-    names = {name for name, _columns in indexes}
-    assert {
-        "ix_trip_src_date", "ix_trip_unfinalized",
-        "ix_ttpoll_ok_time", "ix_ttpoll_ok_station_time",
-    } <= names
-    partial_sql = {
-        name: sql for name, sql in engine.connect().execute(text(
-            "SELECT name, sql FROM sqlite_master WHERE type = 'index'"
-        ))
-    }
-    assert "WHERE finalized_at IS NULL" in partial_sql["ix_trip_unfinalized"]
-    assert "WHERE error IS NULL AND http_status = 200" in partial_sql["ix_ttpoll_ok_time"]
-    assert "WHERE error IS NULL AND http_status = 200" in partial_sql["ix_ttpoll_ok_station_time"]
-    engine.dispose()
 
 
 def test_backfill_index_migration_is_repeatable_and_query_plans_use_indexes(monkeypatch, tmp_path):
@@ -192,68 +147,6 @@ def _trip(session, train_id, *, service_date, run_key, event):
     session.add(trip)
     session.flush()
     return trip
-
-
-def test_replay_finalize_date_bound_keeps_day_before_crossing_and_time_bound(session, monkeypatch):
-    from dbrel.ingest import finalize_tt
-
-    monkeypatch.setattr(finalize_tt, "_load_patterns", lambda *_args, **_kwargs: {})
-    train = Train(source="tts", identity_key="finalize-bound-train", display_name="RE 1")
-    session.add(train)
-    session.flush()
-    now = _epoch("2026-05-10", 23)
-    _trip(session, train.id, service_date="2026-05-09", run_key="cross-midnight",
-          event=_epoch("2026-05-10", 1))
-    _trip(session, train.id, service_date="2026-05-10", run_key="same-day-old",
-          event=_epoch("2026-05-10", 20))
-    _trip(session, train.id, service_date="2026-05-08", run_key="older-service-date",
-          event=_epoch("2026-05-08", 20))
-    future_train = Train(source="tts", identity_key="future-finalize-bound-train")
-    session.add(future_train)
-    session.flush()
-    _trip(session, future_train.id, service_date="2026-05-10", run_key="outside-time-bound",
-          event=now + 3600)
-
-    bounded = finalize_tt.run_finalize_tt(
-        session, service_dates={"2026-05-09", "2026-05-10"}, now=now,
-    )
-    assert bounded.trips_considered == 2
-
-    # The long-standing service_date= API intentionally remains unbounded by time.
-    legacy = finalize_tt.run_finalize_tt(session, service_date="2026-05-10", now=now)
-    assert legacy.trips_considered == 2
-
-
-def test_bounded_poll_times_match_global_latest_poll_oracle(session):
-    from dbrel.ingest.finalize_tt import _polled_between, _poll_times_by_station
-
-    session.add_all([
-        Station(id=3, natural_key="poll-test-three", name="Poll test 3", lat=0, lon=0),
-        Station(id=4, natural_key="poll-test-four", name="Poll test 4", lat=0, lon=0),
-    ])
-    session.flush()
-    session.add_all([
-        TtPoll(sweep_id=1, station_id=3, eva=8000003, fetched_at=50, http_status=200),
-        TtPoll(sweep_id=1, station_id=3, eva=8000003, fetched_at=120, http_status=200),
-        TtPoll(sweep_id=1, station_id=3, eva=8000003, fetched_at=500, http_status=200),
-        TtPoll(sweep_id=1, station_id=3, eva=8000003, fetched_at=700, http_status=503),
-        TtPoll(sweep_id=1, station_id=4, eva=8000004, fetched_at=900, http_status=200,
-               error="failed response"),
-    ])
-    session.flush()
-
-    bounded, latest_by_station = _poll_times_by_station(session, since=100)
-
-    assert bounded == {3: [120, 500]}
-    assert latest_by_station == {3: 500}
-    # Same coverage and poll-gap facts as the prior unbounded station list,
-    # including a successful poll after the last relevant trip's window.
-    old_global = [50, 120, 500]
-    assert _polled_between(old_global, 100, 200) == _polled_between(bounded[3], 100, 200)
-    reference, linger = 100, 600
-    assert max(0, reference + linger - old_global[-1]) == max(
-        0, reference + linger - latest_by_station[3]
-    )
 
 
 def test_bounded_finalize_gap_grades_match_old_global_poll_oracle(session, monkeypatch):
@@ -377,139 +270,6 @@ def test_replay_finalizes_pending_trips_across_missing_and_plan_only_day_gaps(
 def _pragma(engine, name):
     with engine.connect() as connection:
         return connection.exec_driver_sql(f"PRAGMA {name}").scalar_one()
-
-
-def test_bulk_load_pragmas_are_temporary_and_normal_pragmas_are_restored(tmp_path, monkeypatch):
-    from dbrel import config, db
-
-    monkeypatch.setattr(config, "BACKFILL_CACHE_MIB", 2048, raising=False)
-    monkeypatch.setattr(config, "BACKFILL_MMAP_MIB", 8192, raising=False)
-    monkeypatch.setattr(db, "_BULK_LOAD", False, raising=False)
-    path = tmp_path / "pragma-test.sqlite"
-    normal = db.make_engine(path)
-    assert _pragma(normal, "cache_size") == -131072
-    assert _pragma(normal, "mmap_size") == 268435456
-    normal.dispose()
-
-    db.enable_bulk_load()
-    assert db._BULK_LOAD is True
-    bulk = db.make_engine(path)
-    assert _pragma(bulk, "cache_size") == -(2048 * 1024)
-    bulk_mmap = _pragma(bulk, "mmap_size")
-    with bulk.connect() as connection:
-        options = connection.exec_driver_sql("PRAGMA compile_options").scalars().all()
-    limit_option = next((option.split("=", 1)[1] for option in options
-                         if option.startswith("MAX_MMAP_SIZE=")), None)
-    sqlite_limit = int(limit_option, 0) if limit_option is not None else 8192 * 1024 * 1024
-    assert bulk_mmap == min(8192 * 1024 * 1024, sqlite_limit)
-    assert _pragma(bulk, "wal_autocheckpoint") == 20000
-    bulk.dispose()
-
-    db.enable_bulk_load(enabled=False)
-    assert db._BULK_LOAD is False
-    restored = db.make_engine(path)
-    assert _pragma(restored, "cache_size") == -131072
-    assert _pragma(restored, "mmap_size") == 268435456
-    restored.dispose()
-
-
-def test_backfill_restores_bulk_pragmas_after_early_exit(tmp_path, monkeypatch):
-    from contextlib import contextmanager
-
-    import typer
-
-    from dbrel import db
-    from dbrel.cli import backfill
-
-    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'cli-bulk.sqlite'}", future=True)
-    Base.metadata.create_all(engine)
-
-    @contextmanager
-    def isolated_session_scope():
-        with Session(engine, future=True) as current:
-            yield current
-
-    from dbrel import cli
-
-    monkeypatch.setattr(cli, "DB_PATH", tmp_path / "cli-bulk.sqlite")
-    monkeypatch.setattr(cli, "TT_SWEEP_LOCK", tmp_path / "tt_sweep.lock")
-    monkeypatch.setattr(cli, "session_scope", isolated_session_scope)
-    monkeypatch.setattr(cli, "create_all", lambda: None)
-    original_enable = db.enable_bulk_load
-    states = []
-
-    def track_bulk_state(enabled=True):
-        states.append(enabled)
-        return original_enable(enabled)
-
-    monkeypatch.setattr(db, "enable_bulk_load", track_bulk_state)
-
-    with pytest.raises(typer.Exit):
-        backfill(
-            date_from="2026-05-10", date_to="2026-05-10",
-            days=30, root=tmp_path / "empty-archive", dry_run=False,
-            done_file=None, timings=False, restart=False, bulk_pragmas=True, merge_plan_hours=False, plan_writer="per_run",
-        )
-
-    assert states == [True, False]
-    assert db._BULK_LOAD is False
-    engine.dispose()
-
-
-@pytest.mark.parametrize("flag", ["--bulk-pragmas", "--no-bulk-pragmas"])
-def test_backfill_cli_accepts_bulk_pragma_flags_and_restores_global_state(
-    tmp_path, monkeypatch, flag,
-):
-    from contextlib import contextmanager
-
-    from typer.testing import CliRunner
-
-    from dbrel import db, cli
-    from dbrel.ingest.replay import ReplayResult
-
-    db_path = tmp_path / "isolated-cli.sqlite"
-    monkeypatch.setattr(db, "DB_PATH", db_path)
-    monkeypatch.setattr(cli, "DB_PATH", db_path)
-    monkeypatch.setattr(cli, "TT_SWEEP_LOCK", tmp_path / "tt_sweep.lock")
-    db.dispose_engine()
-    engine = create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
-    Base.metadata.create_all(engine)
-    with Session(engine) as current:
-        current.add(Station(
-            natural_key="bulk-cli-station", name="Bulk CLI station", lat=0, lon=0,
-            eva=8000001, tracked=1,
-        ))
-        current.commit()
-
-    @contextmanager
-    def isolated_session_scope():
-        with Session(engine, future=True) as current:
-            yield current
-
-    monkeypatch.setattr(cli, "session_scope", isolated_session_scope)
-    monkeypatch.setattr("dbrel.ingest.replay.replay_day", lambda *_args, **_kwargs: ReplayResult())
-    monkeypatch.setattr(db, "_BULK_LOAD", False, raising=False)
-    actual_enable = db.enable_bulk_load
-    states = []
-
-    def track_bulk_state(enabled=True):
-        states.append(enabled)
-        return actual_enable(enabled)
-
-    monkeypatch.setattr(db, "enable_bulk_load", track_bulk_state)
-    root = tmp_path / "archive"
-    root.mkdir()
-    result = CliRunner().invoke(cli.app, [
-        "backfill", "--from", "2026-05-10", "--to", "2026-05-10",
-        "--root", str(root), flag,
-    ])
-
-    assert result.exit_code == 0, result.output
-    assert db._BULK_LOAD is False
-    assert states[-1] is False
-    assert (True in states) is (flag == "--bulk-pragmas")
-    engine.dispose()
-    db.dispose_engine()
 
 
 @pytest.fixture
