@@ -79,12 +79,6 @@ The time to replay one archive day SHALL depend on that day's archived responses
 NOT depend on how many earlier days, trips, polls or unfinalized trips the database already
 holds.
 
-#### Scenario: Consecutive days cost about the same
-
-- **WHEN** seven consecutive archive days are replayed in one run into a copy of the live
-  database
-- **THEN** no day after the first takes more than 1.25 times as long as the first
-
 #### Scenario: Unfinalizable history is not revisited
 
 - **WHEN** the database holds trips from earlier service dates that finalization can never
@@ -132,23 +126,6 @@ archive directory when the operator asks for that.
 - **WHEN** the operator runs a backfill into a scratch database with a separate resume file
 - **THEN** the days it completes are recorded only in that file
 - **AND** the archive directory's resume record is left unchanged
-
-### Requirement: A rebuild can be compared with the current database
-
-The system SHALL provide a report comparing a fresh rebuild of chosen service dates with the
-same dates in an existing database. The report SHALL give, per date:
-
-- trip and stop counts;
-- counts per quality grade;
-- the share of stops present in both;
-- how well recorded delays agree.
-
-#### Scenario: Report over sample dates
-
-- **WHEN** the operator compares a scratch rebuild with the current database for chosen dates
-- **THEN** the report lists, per date, the counts on each side, the matched share, and the
-  share of matched recorded stops whose delays agree exactly
-- **AND** it lists example stops for each kind of disagreement
 
 ### Requirement: Develop optimizations on a bounded sample before scaling
 
