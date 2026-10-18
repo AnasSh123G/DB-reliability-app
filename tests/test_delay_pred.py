@@ -118,8 +118,10 @@ def test_arr_pred_populates_once_the_row_has_arrival_samples(session):
 
 
 def test_station_board_and_trips_around_agree_with_train_route(session):
-    today = date.today()
-    now_epoch = service_date_anchor(today) + THROUGH_DEP_SEC
+    # Fixed weekday: the fixture's average is is_holiday=0, so a Sunday/holiday
+    # "today" would look up a different row and return None.
+    weekday = date(2026, 10, 14)
+    now_epoch = service_date_anchor(weekday) + THROUGH_DEP_SEC
     board_calls = queries.station_board(session, 3, now=now_epoch)["calls"]
     call = next(c for c in board_calls if c["train_id"] == TRAIN_ID)
     assert call["dep_pred"] == {"p50_min": 3, "lo_min": 3, "hi_min": 3}
