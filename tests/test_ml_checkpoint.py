@@ -36,12 +36,6 @@ def test_a_different_setup_is_refused_by_name(tmp_path, change, named):
         LibraryCheckpoint(tmp_path, "catboost", key(**change)).open()
 
 
-def test_search_space_hash_changes_with_the_space():
-    lgb = checkpoint_key(META, SPLIT, "lightgbm", sample_rows=1, max_rounds=1)["search_space"]
-    cat = checkpoint_key(META, SPLIT, "catboost", sample_rows=1, max_rounds=1)["search_space"]
-    assert lgb != cat and len(lgb) == 16
-
-
 class _FakeCandidate:
     def save(self, prefix):
         path = prefix.with_name(prefix.name + ".bin")

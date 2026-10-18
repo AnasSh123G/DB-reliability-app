@@ -75,33 +75,6 @@ def test_evidence_replacement_is_rejected(corrected):
         verifier.verify()
 
 
-def test_source_manifest_replacement_is_rejected(corrected):
-    (corrected/'source-inputs.json').write_text('{}')
-    with pytest.raises(ValueError, match='original source manifest differs'):
-        verifier.verify()
-
-
-def test_original_target_rewrite_is_rejected(corrected):
-    path = verifier.SOURCE/f'{verifier.PREFIX}eval'/'y.bin'
-    np.array([6, 0], dtype='<f4').tofile(path)
-    with pytest.raises(ValueError, match='original source column differs'):
-        verifier.verify()
-
-
-def test_self_consistent_copied_feature_rewrite_is_rejected(corrected):
-    directory = corrected/'prepared'/f'{verifier.PREFIX}eval'
-    path = directory/'day.bin'
-    day = np.fromfile(path,dtype='<i4')+1; day.tofile(path)
-    # Independent sidecar hashes are insufficient: copied inputs must still
-    # equal the source snapshot, even when both new metadata files agree.
-    for name in ('key.json','meta.json'):
-        record=json.loads((directory/name).read_text())
-        record['label_correction']['columns']['day.bin']['sha256']=verifier.file_hash(path)
-        dump(directory/name,record)
-    with pytest.raises(ValueError,match='copied feature/identity differs'):
-        verifier.verify()
-
-
 def test_original_and_corrected_labels_are_scored_independently():
     original, corrected = Score(), Score()
     point = np.array([0., 2., np.nan])

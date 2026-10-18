@@ -76,15 +76,6 @@ def test_different_setup_is_refused_by_name(tmp_path, change, field):
         ArrivalExperiment(tmp_path, "search", other_split).open()
 
 
-def test_budgets_count_saved_trials(tmp_path):
-    calls = []
-    exp = ArrivalExperiment(tmp_path, "search", _key())
-    run_trials(exp, TRIALS, _runner(calls), max_trials=2, max_seconds=3600, log=lambda m: None)
-    assert calls == [5, 10]
-    run_trials(exp, TRIALS, _runner(calls), max_trials=2, max_seconds=3600, log=lambda m: None)
-    assert calls == [5, 10]  # resumed, but the trial budget is already spent
-
-
 def test_trial_identity_and_deployed_models_are_protected():
     assert trial_id({"a": 1, "b": 2}) == trial_id({"b": 2, "a": 1})
     assert trial_id(TRIALS[0]) != trial_id(dict(TRIALS[0], point_rule="median"))

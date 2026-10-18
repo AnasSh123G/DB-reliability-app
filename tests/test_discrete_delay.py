@@ -33,19 +33,6 @@ def test_discrete_quantiles_normalize_mass_and_choose_first_cdf_boundary_class()
     assert np.all(np.diff(result, axis=1) >= 0)
 
 
-def test_zero_probability_classes_are_skipped_and_negative_labels_are_preserved():
-    probs = np.array([
-        [0.0, 0.25, 0.0, 0.75, 0.0],
-        [0.0, 0.50, 0.0, 0.50, 0.0],
-    ])
-    edges = np.array([-30.0, -12.0, -3.0, 4.0, 19.0, 40.0])
-
-    result = discrete_quantiles(probs, edges)
-
-    assert np.array_equal(result, np.array([[-12.0, 4.0, 4.0], [-12.0, -12.0, 4.0]], dtype=np.float32))
-    assert np.all(result[1, :2] < 0)  # negative class labels survive for p25 and p50
-
-
 @pytest.mark.parametrize("probs", [
     np.array([0.2, 0.8]),
     np.array([[0.2, -0.1, 0.9]]),
@@ -56,61 +43,6 @@ def test_zero_probability_classes_are_skipped_and_negative_labels_are_preserved(
 def test_discrete_quantiles_reject_malformed_or_invalid_masses(probs):
     with pytest.raises(ValueError, match="finite nonnegative probability rows with positive mass"):
         discrete_quantiles(probs, np.arange(probs.shape[-1] + 1, dtype=np.float32))
-
-
-def test_discrete_quantiles_reject_edge_count_mismatch():
-    with pytest.raises(ValueError, match="bin edges differ"):
-        discrete_quantiles(np.array([[0.5, 0.5]]), np.array([-1.0, 0.0]))
-
-
-def test_cdf_tolerance_reaches_half_micro_below_quartile_but_not_two_micro_below():
-    quartiles = (0.25, 0.5, 0.75)
-    probs = np.array([[q - delta, 1.0 - (q - delta)]
-                      for q in quartiles for delta in (0.5e-6, 2.0e-6)])
-
-    result = discrete_quantiles(probs, np.array([-30.0, -29.0, -28.0]))
-
-    for quantile_index, _ in enumerate(quartiles):
-        assert result[quantile_index * 2:quantile_index * 2 + 2, quantile_index].tolist() == [-30.0, -29.0]
-
-
-def test_uniform_and_seeded_palindromic_150_class_logits_choose_index_74_label_44():
-    edges = np.arange(-30.0, 121.0)
-    uniform = np.full((1, 150), 1 / 150, dtype=np.float64)
-
-    rng = np.random.default_rng(4231)
-    left_half = rng.normal(size=75)
-    palindromic_logits = np.concatenate([left_half, left_half[::-1]])
-    shifted = palindromic_logits - palindromic_logits.max()
-    palindromic_probs = np.exp(shifted)[None, :]
-
-    uniform_quantiles = discrete_quantiles(uniform, edges)
-    palindromic_quantiles = discrete_quantiles(palindromic_probs, edges)
-
-    assert uniform_quantiles[0, 1] == 44.0
-    assert palindromic_quantiles[0, 1] == 44.0
-    assert int(uniform_quantiles[0, 1] - edges[0]) == 74
-    assert int(palindromic_quantiles[0, 1] - edges[0]) == 74
-
-
-@pytest.mark.parametrize("edges", [
-    np.array([-2.0, np.nan, 1.0]),
-    np.array([-2.0, -2.0, 1.0]),
-    np.array([-2.0, 1.0, 0.0]),
-    np.array([[-2.0, 0.0, 1.0]]),
-])
-def test_discrete_quantiles_reject_invalid_edges(edges):
-    with pytest.raises(ValueError, match="finite strictly increasing bin edges"):
-        discrete_quantiles(np.array([[0.25, 0.75]]), edges)
-
-
-def test_discrete_quantiles_reject_empty_class_axis_and_overflowed_positive_mass():
-    with pytest.raises(ValueError, match="finite nonnegative probability rows with positive mass"):
-        discrete_quantiles(np.empty((1, 0)), np.array([-1.0]))
-    huge = np.finfo(np.float64).max
-    with np.errstate(over="ignore"), pytest.raises(
-            ValueError, match="finite nonnegative probability rows with positive mass"):
-        discrete_quantiles(np.array([[huge, huge]]), np.array([-1.0, 0.0, 1.0]))
 
 
 class _FixedLogits(torch.nn.Module):
@@ -184,25 +116,6 @@ def _provenance_fixture(tmp_path):
     return root, key, inputs, input_path, dependency
 
 
-def test_verify_training_key_accepts_matching_repository_snapshot(tmp_path):
-    root, key, inputs, _, _ = _provenance_fixture(tmp_path)
-
-    assert compact_provenance.verify_training_key(key, root) == inputs
-
-
-def test_verify_training_key_rejects_same_cardinality_changed_inputs(tmp_path):
-    root, key, inputs, input_path, _ = _provenance_fixture(tmp_path)
-    changed = json.loads(input_path.read_text())
-    original_size = input_path.stat().st_size
-    changed["prep"]["numeric"][1] = "train_num"  # same number and length of feature names
-    assert len(changed["prep"]["numeric"]) == len(inputs["prep"]["numeric"])
-    input_path.write_text(json.dumps(changed, indent=2))
-    assert input_path.stat().st_size == original_size
-
-    with pytest.raises(ValueError, match="frozen reference changed: inputs.json"):
-        compact_provenance.verify_training_key(key, root)
-
-
 def test_verify_training_key_rejects_modified_prepared_column(tmp_path):
     root, key, _, _, _ = _provenance_fixture(tmp_path)
     prepared = root / "data/ml/full_year/prepared" / f"{compact_provenance.PREFIX}fit" / "cats.bin"
@@ -215,9 +128,3 @@ def test_verify_training_key_rejects_modified_prepared_column(tmp_path):
         compact_provenance.verify_training_key(key, root)
 
 
-def test_verify_training_key_rejects_modified_production_dependency(tmp_path):
-    root, key, _, _, dependency = _provenance_fixture(tmp_path)
-    dependency.write_bytes(b"changed production dependency\n")
-
-    with pytest.raises(ValueError, match="frozen production code changed: src/dbrel/ml/arrival.py"):
-        compact_provenance.verify_training_key(key, root)

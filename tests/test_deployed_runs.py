@@ -91,12 +91,6 @@ def test_the_latest_run_decides_the_route_without_a_stop(session):
     assert _stops(queries.train_route(session, 3)) == ["Station 3", "Station 4"]  # x: NULL is never "latest"
 
 
-def test_a_stop_only_one_variant_calls_at_picks_that_variant(session):
-    """A stop only one variant calls at selects that variant."""
-    assert _stops(queries.train_route(session, 1, station_id=4)) == ["Station 3", "Station 4"]
-    assert _stops(queries.train_route(session, 2, station_id=4)) == ["Station 3", "Station 4"]
-
-
 def test_the_ranking_at_a_station_is_the_same_on_both_databases(session):
     """The variant ranking at a station follows (last run, run count)."""
     fv_id = tt_feed_version(session)

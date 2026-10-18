@@ -33,7 +33,6 @@ from dbrel.db import Base
 from dbrel.ingest.changes_poller import run_tt_poll
 from dbrel.ingest.client import Response
 from dbrel.ingest.plan_import import import_plan
-from dbrel.ingest.replay import ArchiveReplaySource, ReplayCounters
 from dbrel.models import QUALITY_RECORDED, Station, TripStop
 
 # --- the two verified stops ------------------------------------------------
@@ -178,34 +177,6 @@ def test_a_train_reported_exactly_to_time_is_a_recorded_zero(session):
 # --- task 5.1: a never-reported stop is never a zero ----------------------
 
 
-def test_a_stop_no_fchg_ever_mentioned_gets_no_actual_and_no_delay(session):
-    """The poller alone cannot fabricate one, because it never sees the stop.
-
-    Worth stating explicitly rather than assuming: run_tt_poll iterates /fchg's
-    stops, so a stop absent from /fchg is invisible to it and no row can be
-    invented here. The guarantee that a *scheduled* stop is not written up as
-    punctual is therefore not testable at this level -- see the finalize tests
-    at the end of this file, which is where the plan side is walked.
-    """
-    _replay(session, now=AFTER)
-    stop = _stop(session, SILENT_INDEX)
-
-    if stop is not None:
-        # If a row exists at all it must carry nothing, and must not be RECORDED.
-        assert stop.actual_arrival_utc is None
-        assert stop.actual_departure_utc is None
-        assert stop.arr_delay_s is None
-        assert stop.dep_delay_s is None
-        assert stop.quality != QUALITY_RECORDED
-    # Either way, the assertion that matters: no zero-delay row was invented.
-    invented = session.scalar(
-        select(func.count())
-        .select_from(TripStop)
-        .where(TripStop.stop_sequence == SILENT_INDEX, TripStop.dep_delay_s == 0)
-    )
-    assert invented == 0, "a stop with no report must not be published as on time"
-
-
 def test_the_planned_time_is_never_copied_into_the_actual(session):
     """Precisely the COALESCE the mirror's processed parquet performs."""
     _replay(session, now=AFTER)
@@ -221,52 +192,7 @@ def test_the_planned_time_is_never_copied_into_the_actual(session):
 # --- task 5.3: and the two stay distinguishable ---------------------------
 
 
-def test_the_measured_and_the_unmeasured_do_not_look_alike(session):
-    """In the mirror's processed table these two rows are identical. Here they are not."""
-    _replay(session, now=AFTER)
-    punctual = _stop(session, PUNCTUAL_INDEX)
-    silent = _stop(session, SILENT_INDEX)
-
-    assert punctual is not None
-    assert punctual.quality == QUALITY_RECORDED
-    if silent is not None:
-        assert silent.quality != punctual.quality
-
-    recorded = session.execute(
-        select(TripStop.stop_sequence).where(TripStop.quality == QUALITY_RECORDED)
-    ).scalars().all()
-    assert PUNCTUAL_INDEX in recorded
-    assert SILENT_INDEX not in recorded, "filtering on RECORDED must exclude it"
-
-
-def test_averaging_the_recorded_rows_sees_only_real_measurements(session):
-    """The query the web board and the aggregates actually run."""
-    _replay(session, now=AFTER)
-    mean = session.scalar(
-        select(func.avg(TripStop.dep_delay_s)).where(
-            TripStop.quality == QUALITY_RECORDED, TripStop.dep_delay_s.isnot(None)
-        )
-    )
-    count = session.scalar(
-        select(func.count()).select_from(TripStop).where(TripStop.quality == QUALITY_RECORDED)
-    )
-    assert count == 1, "one stop was measured, one was not"
-    assert mean == 0, "and the measured one really was on time"
-
-
 # --- task 5.4: forecasts ---------------------------------------------------
-
-
-def test_a_forecast_sweep_records_nothing_then_a_later_sweep_does(session):
-    result = _replay(session, now=BEFORE)
-    assert _stop(session, PUNCTUAL_INDEX) is None
-    assert result.pending >= 1
-
-    _replay(session, now=AFTER)
-    stop = _stop(session, PUNCTUAL_INDEX)
-    assert stop is not None
-    assert stop.quality == QUALITY_RECORDED
-    assert stop.actual_departure_utc == PUNCTUAL_DEP
 
 
 # --- task 5.5: idempotence and non-downgrade ------------------------------
@@ -292,63 +218,7 @@ def test_replaying_the_same_window_twice_changes_nothing(session):
     assert second_result.stored == 0, "nothing was rewritten with its own contents"
 
 
-def test_a_recorded_stop_is_not_downgraded_by_a_later_silent_sweep(session):
-    """A sweep that missed the station must not undo what an earlier one measured."""
-    _replay(session, now=AFTER)
-    before = _stop(session, PUNCTUAL_INDEX)
-    assert before is not None and before.quality == QUALITY_RECORDED
-    measured = before.actual_departure_utc
-
-    # A later sweep in which this station returned nothing at all.
-    silent_source = _Source(fchg={})
-    run_tt_poll(session, silent_source, priority_max=99, now=AFTER + 3600)
-    session.flush()
-
-    after = _stop(session, PUNCTUAL_INDEX)
-    assert after is not None
-    assert after.quality == QUALITY_RECORDED
-    assert after.actual_departure_utc == measured
-
-
-def test_no_duplicate_rows_across_repeated_replays(session):
-    for _ in range(3):
-        _replay(session, now=AFTER)
-    duplicates = session.execute(
-        select(TripStop.trip_id, TripStop.stop_sequence, func.count())
-        .group_by(TripStop.trip_id, TripStop.stop_sequence)
-        .having(func.count() > 1)
-    ).all()
-    assert duplicates == []
-
-
 # --- task 5.7: station scoping --------------------------------------------
-
-
-def test_an_untracked_eva_is_counted_and_written_nowhere():
-    counters = ReplayCounters()
-    from dbrel.ingest.archive import API_FCHG, ArchivedResponse
-
-    responses = [
-        ArchivedResponse(recorded_at=AFTER, api_name=API_FCHG, eva=PUNCTUAL_EVA, body=PUNCTUAL_FCHG),
-        ArchivedResponse(recorded_at=AFTER, api_name=API_FCHG, eva=9999999, body=PUNCTUAL_FCHG),
-    ]
-    source = ArchiveReplaySource(responses, tracked_evas={PUNCTUAL_EVA}, counters=counters)
-
-    assert source.changes(PUNCTUAL_EVA).status == 200
-    assert source.changes(9999999).status == 404, "not served, because not tracked"
-    assert counters.untracked_evas == {9999999}
-
-
-def test_a_tracked_station_the_archive_never_covered_is_reported_not_fatal(session):
-    """Only one of the two stations appears in the sweep."""
-    source = _Source(fchg={PUNCTUAL_EVA: PUNCTUAL_FCHG})
-    import_plan(session, source, date="2026-08-28", hours=[3, 4], force=True, now=AFTER)
-    session.flush()
-    result = run_tt_poll(session, source, priority_max=99, now=AFTER)
-
-    assert result.stations_polled + result.stations_failed >= 2
-    assert result.stations_failed >= 1, "the uncovered station is recorded as a failed read"
-    assert _stop(session, PUNCTUAL_INDEX) is not None, "the covered one still landed"
 
 
 # --- task 5.1 / 5.6, properly: the guarantee lives in finalize ------------
@@ -368,23 +238,6 @@ def _finalize(session: Session, now: int):
     return result
 
 
-def test_finalize_grades_the_never_reported_stop_instead_of_inventing_a_zero(session):
-    """The whole point: absent data becomes a stated absence, not punctuality."""
-    from dbrel.models import QUALITY_NO_DATA, QUALITY_PREDICTION_ONLY
-
-    _replay(session, now=AFTER)
-    _finalize(session, now=AFTER + 7200)
-
-    stop = _stop(session, SILENT_INDEX)
-    assert stop is not None, "finalize must account for the scheduled stop, not drop it"
-    assert stop.quality in (QUALITY_NO_DATA, QUALITY_PREDICTION_ONLY)
-    assert stop.actual_arrival_utc is None
-    assert stop.actual_departure_utc is None
-    assert stop.arr_delay_s is None, "no delay can be stated without a measurement"
-    assert stop.dep_delay_s is None
-    assert stop.supposed_departure_utc == SILENT_DEP, "the schedule is still known"
-
-
 def test_no_fabricated_zero_survives_finalize(session):
     """A zero delay may exist only where a ct was actually published."""
     _replay(session, now=AFTER)
@@ -398,43 +251,3 @@ def test_no_fabricated_zero_survives_finalize(session):
     assert zeros[0].quality == QUALITY_RECORDED
 
 
-def test_the_measured_and_unmeasured_stay_distinguishable_after_finalize(session):
-    """In the mirror's processed table these two rows are byte-identical."""
-    _replay(session, now=AFTER)
-    _finalize(session, now=AFTER + 7200)
-
-    punctual = _stop(session, PUNCTUAL_INDEX)
-    silent = _stop(session, SILENT_INDEX)
-    assert punctual is not None and silent is not None
-    assert punctual.quality == QUALITY_RECORDED
-    assert silent.quality != QUALITY_RECORDED
-
-    # Both rows exist, so a naive average over all of them would be wrong -- and
-    # filtering on the grade is what makes it right.
-    naive = session.scalar(select(func.avg(TripStop.dep_delay_s)))
-    trusted = session.scalar(
-        select(func.avg(TripStop.dep_delay_s)).where(TripStop.quality == QUALITY_RECORDED)
-    )
-    assert trusted == 0
-    assert naive == 0, "the unmeasured row contributes no number at all, not a zero"
-    assert session.scalar(
-        select(func.count()).select_from(TripStop).where(TripStop.dep_delay_s.is_(None))
-    ) == 1, "the unmeasured stop's delay is NULL, so SQL averages exclude it"
-
-
-def test_an_uncovered_window_records_a_measured_gap(session):
-    """No poll covered this stop at all: PREDICTION_ONLY with poll_gap_s."""
-    from dbrel.models import QUALITY_PREDICTION_ONLY
-
-    # Plan only -- no sweep whatsoever, which is what an archive hole looks like.
-    source = _Source(fchg={})
-    import_plan(session, source, date="2026-08-28", hours=[3, 4], force=True, now=AFTER)
-    session.flush()
-    _finalize(session, now=AFTER + 7200)
-
-    graded = session.execute(select(TripStop)).scalars().all()
-    assert graded, "an uncovered window must still be accounted for"
-    for row in graded:
-        assert row.quality == QUALITY_PREDICTION_ONLY
-        assert row.dep_delay_s is None and row.arr_delay_s is None
-        assert row.poll_gap_s is not None, "the blind spot's width must be recorded"

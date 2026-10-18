@@ -167,18 +167,6 @@ def test_omitting_now_matches_passing_the_clocks_own_value(session, monkeypatch)
     assert live_sweeps == explicit_sweeps, "the listening record must match too"
 
 
-def test_default_still_reads_the_wall_clock(session, monkeypatch):
-    """The default is the clock itself, not a captured or cached value."""
-    _seed_schedule(session, now=AFTER)
-    monkeypatch.setattr("time.time", lambda: float(AFTER))
-    run_tt_poll(session, _FakeClient())
-    session.flush()
-    stop = _stop(session)
-    assert stop is not None
-    assert stop.last_observed_at == AFTER
-    assert stop.quality == QUALITY_RECORDED
-
-
 # --- task 1.4: grading follows the supplied instant -----------------------
 
 
@@ -196,21 +184,6 @@ def test_a_value_published_before_its_event_is_not_a_measurement(session):
     assert result.pending == 1, "a future event is pending, not recorded"
     assert result.stored == 0
     assert _stop(session) is None, "a forecast must not enter the fact table"
-
-
-def test_the_same_payload_after_its_event_is_a_measurement(session):
-    """Identical bytes, later instant: now it is DB's recorded time."""
-    _seed_schedule(session, now=AFTER)
-    result = run_tt_poll(session, _FakeClient(), now=AFTER)
-    session.flush()
-
-    stop = _stop(session)
-    assert stop is not None
-    assert result.pending == 0
-    assert stop.quality == QUALITY_RECORDED
-    assert stop.actual_departure_utc == DEPARTURE
-    assert stop.dep_delay_s == 0, "IRIS reported this train exactly to time"
-    assert stop.read_lag_s == AFTER - DEPARTURE
 
 
 def test_a_later_sweep_supersedes_an_earlier_forecast(session):

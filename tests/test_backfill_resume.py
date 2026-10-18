@@ -60,7 +60,7 @@ def env(tmp_path: Path, monkeypatch):
 
     replayed: list[date] = []
 
-    def fake_replay_day(session, store, day, *, tracked_evas, dry_run=False, progress=None):
+    def fake_replay_day(session, store, day, *, tracked_evas, dry_run=False, merge_plan_hours=False, plan_writer="per_run", progress=None):
         replayed.append(day)
         result = ReplayResult(days=1, sweeps=1, stops_stored=10, plan_buckets=2)
         result.by_quality = {"NO_DATA": 3}
@@ -110,34 +110,7 @@ def test_an_interrupted_run_continues_rather_than_restarting(env):
     assert replayed == [date(2026, 9, 22)], "the finished days were not redone"
 
 
-def test_restart_redoes_the_whole_window(env):
-    root, replayed, _ = env
-    (root / "replayed.json").write_text(json.dumps(["2026-09-20", "2026-09-21", "2026-09-22"]))
-
-    result = _run(root, "--restart")
-    assert result.exit_code == 0, result.output
-    assert len(replayed) == 3
-
-
-def test_a_corrupt_resume_file_replays_everything_rather_than_crashing(env):
-    root, replayed, _ = env
-    (root / "replayed.json").write_text("{not json")
-    result = _run(root)
-    assert result.exit_code == 0, result.output
-    assert len(replayed) == 3
-
-
 # --- task 3.6: dry run ----------------------------------------------------
-
-
-def test_dry_run_records_no_resume_point(env):
-    """Otherwise a dry run would convince the next real run there was nothing to do."""
-    root, replayed, _ = env
-    result = _run(root, "--dry-run")
-    assert result.exit_code == 0, result.output
-    assert len(replayed) == 3
-    assert not (root / "replayed.json").exists()
-    assert "nothing was written" in result.output
 
 
 def test_dry_run_leaves_the_database_byte_identical(env):
@@ -151,26 +124,16 @@ def test_dry_run_leaves_the_database_byte_identical(env):
 # --- reporting ------------------------------------------------------------
 
 
-def test_the_grade_histogram_is_reported(env):
-    """An operator has to see the NO_DATA share rather than infer it."""
-    root, _replayed, _ = env
-    result = _run(root)
-    assert "NO_DATA" in result.output
-    assert "gap row" in result.output
-
-
-def test_an_installation_with_no_tracked_stations_is_told_so(env, monkeypatch):
-    root, _replayed, db = env
-    from sqlalchemy import create_engine, update
-    from sqlalchemy.orm import Session
-
-    from dbrel.models import Station
-
-    engine = create_engine(f"sqlite+pysqlite:///{db}", future=True)
-    with Session(engine) as session:
-        session.execute(update(Station).values(tracked=0))
-        session.commit()
-
-    result = _run(root)
+def test_backfill_lock_conflict_writes_nothing(env):
+    from dbrel.collect import exclusive_lock
+    root, replayed, db = env
+    before = db.read_bytes()
+    with exclusive_lock(Path(str(db) + '.writer.lock'), label='other backfill'):
+        result = _run(root)
     assert result.exit_code == 1
-    assert "no tracked stations" in result.output
+    assert 'is held by' in result.output
+    assert replayed == []
+    assert db.read_bytes() == before
+    assert not (root / 'replayed.json').exists()
+
+

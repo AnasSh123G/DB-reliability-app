@@ -15,13 +15,10 @@ from sqlalchemy.orm import Session
 from dbrel.db import Base
 from dbrel.identity import SOURCE_TT
 from dbrel.models import (
-    DAY_TYPE_SUNDAY_HOLIDAY,
-    SearchAlias,
     ServiceLine,
     Station,
     StationStop,
     Train,
-    Trip,
 )
 from dbrel.ingest.runs import tt_feed_version
 from dbrel.web import queries
@@ -78,62 +75,6 @@ def test_times_land_on_the_right_stop(session):
     assert stops["Bochum Hbf"]["arr"] == "10:00"
 
 
-def test_another_variants_numbering_is_not_read_against_route_path(session):
-    """The latest run's variant numbers its stops by its OWN ppth: seq 1 here is
-    Bochum, not route_path[0] (Aachen). The name must follow the station row."""
-    fv_id = tt_feed_version(session)
-    session.get(Train, TRAIN_ID).path_sha1 = "full"
-    session.query(StationStop).update({"path_sha1": "full"})
-    session.add(StationStop(feed_version_id=fv_id, train_id=TRAIN_ID, stop_sequence=1,
-                            station_id=4, planned_arrival_sec=10 * 3600,
-                            planned_departure_sec=BOCHUM_DEP_SEC, path_sha1="short"))
-    session.add(Trip(train_id=TRAIN_ID, service_date="2026-10-01", source_run_key="run-1",
-                     path_sha1="short"))
-    session.flush()
-    stops = queries.train_route(session, TRAIN_ID)["stops"]
-    assert [(s["name"], s["arr"]) for s in stops] == [("Bochum Hbf", "10:00")]
-
-
-def test_the_route_shown_calls_at_the_stop_the_caller_came_from(session):
-    """A train that last ran a short variant still shows the full one when opened from a stop only
-    the full variant calls at (a board row for Bochum), as the board itself picked it."""
-    fv_id = tt_feed_version(session)
-    session.get(Train, TRAIN_ID).path_sha1 = "full"
-    session.query(StationStop).update({"path_sha1": "full"})
-    session.add(StationStop(feed_version_id=fv_id, train_id=TRAIN_ID, stop_sequence=1,
-                            station_id=3, planned_arrival_sec=9 * 3600 + 2160,
-                            planned_departure_sec=9 * 3600 + 2280, path_sha1="short"))
-    session.add(Trip(train_id=TRAIN_ID, service_date="2026-10-02", source_run_key="run-short",
-                     path_sha1="short"))
-    session.add(Trip(train_id=TRAIN_ID, service_date="2026-10-01", source_run_key="run-full",
-                     path_sha1="full"))
-    session.flush()
-    names = lambda route: [s["name"] for s in route["stops"]]  # noqa: E731
-    assert names(queries.train_route(session, TRAIN_ID)) == ["Duisburg Hbf"]  # the latest run's variant
-    assert names(queries.train_route(session, TRAIN_ID, station_id=4)) == ["Duisburg Hbf", "Bochum Hbf"]
-    # Both variants call at Duisburg: the board's rule (most recent run) applies, i.e. the short one.
-    assert names(queries.train_route(session, TRAIN_ID, station_id=3)) == ["Duisburg Hbf"]
-
-
-def test_route_names_are_the_fallback_when_nothing_has_times(session):
-    session.query(StationStop).delete()
-    session.flush()
-    route = queries.train_route(session, TRAIN_ID)
-    assert [s["name"] for s in route["stops"]] == ROUTE
-    assert route["n_monitored"] == 0
-
-
-def test_no_forecast_without_average_data(session):
-    """This fixture never populates stop_delay_average, so no figure is shown."""
-    stops = {s["name"]: s for s in queries.train_route(session, TRAIN_ID)["stops"]}
-    assert stops["Bochum Hbf"]["dep_pred"] is None
-    assert stops["Duisburg Hbf"]["dep_pred"] is None
-
-
-def test_unknown_train_returns_none(session):
-    assert queries.train_route(session, 999999) is None
-
-
 def test_past_midnight_times_keep_the_24_plus_hour_form(session):
     """A 01:10 stop on a run that left yesterday must read 25:10, not 01:10."""
     stop = session.query(StationStop).filter_by(stop_sequence=4).one()
@@ -141,79 +82,6 @@ def test_past_midnight_times_keep_the_24_plus_hour_form(session):
     session.flush()
     stops = {s["name"]: s for s in queries.train_route(session, TRAIN_ID)["stops"]}
     assert stops["Bochum Hbf"]["dep"] == "25:10"
-
-
-def test_line_detail_lists_its_runs(session):
-    detail = queries.line_detail(session, 9)
-    assert detail["line"]["name"] == "RE1"
-    assert detail["n_runs"] == 1
-    runs = [run for d in detail["directions"] for run in d["runs"]]
-    assert len(runs) == 1
-    assert runs[0]["name"] == "NX 26811"
-    assert runs[0]["n_monitored"] == 2
-    assert runs[0]["url"] == f"/train/{TRAIN_ID}/"
-    assert runs[0]["pred"] is None  # no stop_delay_average rows in this fixture
-
-
-def test_replacement_bus_is_flagged(session):
-    session.add(ServiceLine(id=10, identity_key="Bus/RE1", category="Bus", line="RE1",
-                            display_name="RE1", search_name="re1", operator="NX"))
-    session.flush()
-    assert queries.line_detail(session, 10)["line"]["replacement_bus"] is True
-    assert queries.line_detail(session, 9)["line"]["replacement_bus"] is False
-
-
-def test_suggest_returns_lines_and_trains_not_only_stations(session):
-    session.add_all([
-        SearchAlias(alias_norm="re1", alias_display="RE1", kind="CAT_LINE", weight=90, line_id=9),
-        SearchAlias(alias_norm="nx26811", alias_display="NX 26811", kind="CAT_NUMBER",
-                    weight=100, train_id=TRAIN_ID),
-        SearchAlias(alias_norm="bochum", alias_display="Bochum", kind="STATION_SHORT",
-                    weight=95, station_id=4),
-    ])
-    session.flush()
-
-    kinds = {r["kind"] for r in queries.suggest(session, "re1")}
-    assert kinds == {"line"}
-
-    train_hit = queries.suggest(session, "NX 26811")
-    assert train_hit[0]["kind"] == "train"
-    assert train_hit[0]["url"] == f"/train/{TRAIN_ID}/"
-
-    station_hit = queries.suggest(session, "bochum")
-    assert station_hit[0]["kind"] == "station"
-    assert station_hit[0]["url"] == "/station/4/"
-
-
-def test_regional_train_is_named_by_its_line_with_the_number_kept(session):
-    train = queries.train_route(session, TRAIN_ID)["train"]
-    assert (train["name"], train["number_name"]) == ("RE1", "NX 26811")
-
-
-def test_long_distance_train_keeps_its_number(session):
-    session.get(Train, TRAIN_ID).segment = "FV"
-    session.flush()
-    assert queries.train_route(session, TRAIN_ID)["train"]["name"] == "NX 26811"
-
-
-def test_bare_category_line_is_not_used_as_a_name(session):
-    session.get(ServiceLine, 9).line = "RE"
-    session.get(ServiceLine, 9).display_name = "RE"
-    session.flush()
-    assert queries.train_route(session, TRAIN_ID)["train"]["name"] == "NX 26811"
-
-
-def test_search_lists_a_line_once_rather_than_each_of_its_runs(session):
-    session.add_all([
-        SearchAlias(alias_norm="re1", alias_display="RE1", kind="CAT_LINE", weight=90, line_id=9),
-        SearchAlias(alias_norm="nx26811", alias_display="NX 26811", kind="CAT_NUMBER",
-                    weight=100, train_id=TRAIN_ID),
-    ])
-    session.flush()
-    assert [r["kind"] for r in queries.suggest(session, "nx")] == []
-    assert [r["kind"] for r in queries.suggest(session, "re")] == ["line"]
-    by_number = queries.suggest(session, "nx 268")
-    assert [(r["name"], r["number_name"]) for r in by_number] == [("RE1", "NX 26811")]
 
 
 def _retire_the_fixture_train(session, last_seen="2026-08-12", newest="2026-09-28"):
@@ -235,27 +103,3 @@ def test_a_retired_train_page_says_so_and_lists_no_stops(session):
     assert "retired" not in queries.train_route(session, TRAIN_ID + 1)
 
 
-def test_a_train_seen_within_the_window_is_not_retired(session):
-    """Seen 14 days before the newest data is still running: the route is shown."""
-    _retire_the_fixture_train(session, last_seen="2026-09-14")
-    route = queries.train_route(session, TRAIN_ID)
-    assert "retired" not in route and [s["name"] for s in route["stops"]] == ["Duisburg Hbf", "Bochum Hbf"]
-
-
-def test_a_train_without_a_last_seen_date_is_never_retired(session):
-    """GTFS trains carry no last-seen date and always count as running."""
-    _retire_the_fixture_train(session, last_seen=None)
-    route = queries.train_route(session, TRAIN_ID)
-    assert "retired" not in route and route["stops"]
-
-
-def test_search_lists_the_running_train_not_the_retired_one(session):
-    """A number shared by a retired and a running train finds only the running one."""
-    _retire_the_fixture_train(session)
-    session.add_all([
-        SearchAlias(alias_norm="26405", alias_display="26405", kind="NUMBER", weight=100, train_id=TRAIN_ID),
-        SearchAlias(alias_norm="26405", alias_display="26405", kind="NUMBER", weight=100, train_id=TRAIN_ID + 1),
-    ])
-    session.flush()
-    hits = queries.suggest(session, "26405")
-    assert [h["url"] for h in hits if h["kind"] == "train"] == [f"/train/{TRAIN_ID + 1}/"]

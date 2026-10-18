@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -350,6 +351,9 @@ class Trip(Base):
         UniqueConstraint("train_id", "service_date", name="uq_trip_train_date"),
         UniqueConstraint("source", "source_run_key", "service_date", name="uq_trip_src_run_date"),
         Index("ix_trip_srcid_date", "source_run_key", "service_date"),
+        Index("ix_trip_src_date", "source", "service_date"),
+        Index("ix_trip_unfinalized", "source", "service_date",
+              sqlite_where=text("finalized_at IS NULL")),
         Index("ix_trip_date_status", "service_date", "status"),
         Index("ix_trip_date_delay", "service_date", "final_delay_s"),
     )
@@ -691,7 +695,13 @@ class TtPoll(Base):
     store_ms: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
 
-    __table_args__ = (Index("ix_ttpoll_station_time", "station_id", "fetched_at"),)
+    __table_args__ = (
+        Index("ix_ttpoll_station_time", "station_id", "fetched_at"),
+        Index("ix_ttpoll_ok_time", "fetched_at",
+              sqlite_where=text("error IS NULL AND http_status = 200")),
+        Index("ix_ttpoll_ok_station_time", "station_id", "fetched_at",
+              sqlite_where=text("error IS NULL AND http_status = 200")),
+    )
 
     def __repr__(self) -> str:
         return f"<TtPoll {self.id} eva={self.eva} {self.http_status}>"

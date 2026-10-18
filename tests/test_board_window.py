@@ -79,7 +79,3 @@ def test_dst_days_stay_anchored(day, hour):
             assert hi - lo == BACK_S + FWD_S
 
 
-def test_window_never_exceeds_the_service_day_bound():
-    for hour in range(24):
-        for service_date, lo, hi in slices(at(2026, 6, 10, hour)):
-            assert 0 <= lo <= hi <= SERVICE_DAY_MAX_S

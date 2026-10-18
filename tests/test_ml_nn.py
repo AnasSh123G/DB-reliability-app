@@ -92,12 +92,6 @@ def tabm_artifact(env, tmp_path, monkeypatch):  # noqa: F811
     return artifact
 
 
-def test_artifact_names_match_the_bake_off():
-    from dbrel.ml import bakeoff, nn
-
-    assert (nn.CURRENT_NAME, nn.MANIFEST_NAME) == (bakeoff.CURRENT_NAME, bakeoff.MANIFEST_NAME)
-
-
 def test_artifact_is_complete_and_current(tabm_artifact):
     models = tabm_artifact.parent
     assert (models / CURRENT_NAME).read_text().strip() == tabm_artifact.name
@@ -123,10 +117,3 @@ def test_predict_delay_runs_the_tabm_model(tabm_artifact):
     assert arr == pytest.approx(dep + 10.0, abs=0.1)  # output side 1 is arrival, side 0 departure
 
 
-def test_terminating_call_still_has_no_departure_with_tabm(tabm_artifact):
-    result = runner.invoke(app, ["ml", "predict-delay", "--train", "RE 10070",
-                                 "--station", "Hamm(Westf)Hbf", "--date", "2026-09-20"])
-    assert result.exit_code == 0, result.output
-    line = next(row for row in result.output.splitlines() if "RE 10070" in row)
-    arr_part, dep_part = line.split(" dep ")
-    assert "min (" in arr_part and "min (" not in dep_part

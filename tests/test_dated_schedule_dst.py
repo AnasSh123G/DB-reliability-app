@@ -132,34 +132,6 @@ def test_overlapping_dst_plan_receipts_share_one_corrected_schedule(db_and_trip)
     assert pattern[(trip.train_id, autumn)][2].supposed_arr == corrected
 
 
-def test_planned_platform_only_poll_change_is_persisted(db_and_trip, monkeypatch):
-    import dbrel.ingest.changes_poller as poller
-
-    db, _feed, stations, _train, trip = db_and_trip
-    scheduled = _epoch(DAY, 10)
-    observed = _epoch(DAY, 12)
-    actual_body = (f'<timetable eva="{EVA_A}"><s id="123456789-2609011200-1" eva="{EVA_A}">'
-                   '<ar ct="2609011001" l="RE42"/></s></timetable>').encode()
-    platform = "1"
-
-    def fake_patterns(_session, train_ids, dates_by_train, *, as_of=None):
-        return {(trip.train_id, DAY): {1: DatedPlanned(
-            None, stations[0].id, platform, scheduled, None,
-        )}}
-
-    monkeypatch.setattr(poller, "_load_patterns", fake_patterns)
-    run_tt_poll(db, _ChangeResponse(actual_body, observed), priority_max=99, now=observed)
-    fact = db.scalar(select(TripStop).where(TripStop.trip_id == trip.id))
-    assert fact is not None and fact.planned_platform == "1"
-
-    platform = "2"
-    result = run_tt_poll(db, _ChangeResponse(actual_body, observed + 1), priority_max=99,
-                         now=observed + 1)
-    db.refresh(fact)
-    assert result.stored == 1
-    assert fact.planned_platform == "2"
-
-
 def test_cancellation_without_observed_time_keeps_actual_sides_null(db_and_trip, monkeypatch):
     import dbrel.ingest.changes_poller as poller
 

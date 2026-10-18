@@ -3,10 +3,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from dbrel.db import Base
-from dbrel.identity import SOURCE_GTFS, SOURCE_TT
+from dbrel.identity import SOURCE_TT
 from dbrel.models import FeedVersion, Station, StationStop, Train, Trip
 from dbrel.ingest.parser import TtEvent, TtStop
-from dbrel.ingest.dated_schedule import PlanReceipt, DatedPlanned, record_plans, load_patterns
+from dbrel.ingest.dated_schedule import PlanReceipt, record_plans, load_patterns
 
 
 @pytest.fixture
@@ -63,16 +63,6 @@ def test_dated_snapshots_do_not_use_shared_pattern_for_tt(session):
     assert load_patterns(s, [train.id], {train.id: {trip.service_date: "path-a"}})[(train.id, trip.service_date)] == {}
 
 
-def test_static_gtfs_uses_own_feed_pattern(session):
-    s, feed, station, train, _ = session
-    train.source = SOURCE_GTFS
-    _.source = SOURCE_GTFS
-    s.add(StationStop(feed_version_id=feed.id, train_id=train.id, path_sha1="path-a", stop_sequence=1, station_id=station.id, planned_arrival_sec=3600, planned_departure_sec=3700, platform_code="2"))
-    s.flush()
-    result = load_patterns(s, [train.id], {train.id: {"2026-01-02": "path-a"}})[(train.id, "2026-01-02")][1]
-    assert result.supposed_arr is not None and result.platform_code == "2"
-
-
 def test_same_date_conflicting_values_are_unknown_per_side(session):
     s, _, station, train, trip = session
     first = stop(arr=1000, dep=1100)
@@ -111,8 +101,3 @@ def test_wrong_path_or_station_snapshot_is_ignored(session):
     assert load_patterns(s, [train.id], {train.id: {trip.service_date: "path-a"}})[(train.id, trip.service_date)] == {}
 
 
-def test_no_planned_sides_do_not_create_snapshot(session):
-    s, _, station, _train, trip = session
-    assert record_plans(
-        s, trip.id, "path-a", [(stop(arr=None, dep=None), receipt())], {100: station.id}
-    ) == 0

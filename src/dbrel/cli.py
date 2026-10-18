@@ -579,6 +579,56 @@ def archive_fetch(
         typer.echo(f"  ! {err}")
 
 
+def _backfill_resume_path(root: Path, done_file: Path | None) -> Path:
+    """Reject database aliases before opening a session or reading resume JSON."""
+    from dbrel import config
+    from dbrel.collect import writer_lock_path
+
+    destination = done_file if done_file is not None else root / "replayed.json"
+    protected = {TT_SWEEP_LOCK, writer_lock_path(DB_PATH),
+                 writer_lock_path(config.DATA_DIR / "dbrel.sqlite")}
+    for database in (DB_PATH, config.DATA_DIR / "dbrel.sqlite"):
+        for spelling in (database, database.resolve()):
+            protected.update(Path(str(spelling) + suffix) for suffix in ("", "-wal", "-shm"))
+    for path in protected:
+        if destination.resolve() == path.resolve() or (
+            destination.exists() and path.exists() and destination.samefile(path)
+        ):
+            raise ValueError(f"resume file must not replace a database, its companion files, or a lock file: {destination}")
+    return destination
+
+
+@app.command("migrate-backfill-indexes")
+def migrate_backfill_indexes() -> None:
+    """Add replay indexes and statistics; live use requires a separate backup decision."""
+    import time
+
+    from dbrel.collect import AlreadyRunning, exclusive_lock, writer_lock_path
+    from dbrel.db import get_engine
+
+    names = {"ix_trip_src_date", "ix_trip_unfinalized",
+             "ix_ttpoll_ok_time", "ix_ttpoll_ok_station_time"}
+    try:
+        with exclusive_lock(writer_lock_path(DB_PATH), label="migrate-backfill-indexes"):
+            with get_engine().begin() as connection:
+                connection.exec_driver_sql("PRAGMA temp_store=FILE")
+                try:
+                    for table in (Trip.__table__, TtPoll.__table__):
+                        for index in sorted(table.indexes, key=lambda item: item.name):
+                            if index.name in names:
+                                started = time.perf_counter()
+                                index.create(connection, checkfirst=True)
+                                typer.echo(f"{index.name}: {time.perf_counter() - started:.3f}s")
+                    started = time.perf_counter()
+                    connection.exec_driver_sql("ANALYZE")
+                    typer.echo(f"ANALYZE: {time.perf_counter() - started:.3f}s")
+                finally:
+                    connection.exec_driver_sql("PRAGMA temp_store=MEMORY")
+    except AlreadyRunning as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+
+
 @app.command("backfill")
 def backfill(
     date_from: str = typer.Option(None, "--from", help="YYYY-MM-DD; default is --days back from --to"),
@@ -586,7 +636,12 @@ def backfill(
     days: int = typer.Option(30, help="window length when --from is omitted"),
     root: Path = typer.Option(ARCHIVE_DIR, help="where partitions are stored"),
     dry_run: bool = typer.Option(False, help="grade and report, write nothing"),
+    done_file: Path | None = typer.Option(None, help="separate resume record; defaults to ROOT/replayed.json"),
+    timings: bool = typer.Option(False, help="report elapsed seconds for each replay phase"),
     restart: bool = typer.Option(False, help="ignore the resume point and redo every day"),
+    bulk_pragmas: bool = typer.Option(True, "--bulk-pragmas/--no-bulk-pragmas", help="use bounded backfill cache and mmap settings"),
+    merge_plan_hours: bool = typer.Option(False, "--merge-plan-hours/--no-merge-plan-hours", help="import each partition's plan hours in one pass (changes train.n_runs_seen/n_stops_tracked counters)"),
+    plan_writer: str = typer.Option("per_run", "--plan-writer", help="plan write path: per_run or batch"),
 ) -> None:
     """Replay archived IRIS responses into the database.
 
@@ -599,91 +654,118 @@ def backfill(
     stops were never reported at all. That is the honest figure. The mirror's own
     processed parquet publishes those same stops as '0 minutes late'.
     """
+    if plan_writer not in ("per_run", "batch"):
+        raise typer.BadParameter("expected per_run or batch", param_hint="--plan-writer")
+
+    from contextlib import ExitStack
+    from dbrel import config
+    from dbrel.db import enable_bulk_load
+    from dbrel.collect import AlreadyRunning, exclusive_lock, writer_lock_path
     from dbrel.ingest.archive import ArchiveStore, resolve_window
     from dbrel.ingest.replay import replay_day
     from dbrel.ingest.timeutil import date_range
 
     try:
         start, end = resolve_window(date_from, date_to, days)
+        done_path = _backfill_resume_path(root, done_file)
     except ValueError as exc:
-        typer.echo(f"bad window: {exc}")
+        typer.echo(f"cannot backfill: {exc}")
         raise typer.Exit(1) from exc
 
-    store = ArchiveStore(root)
-    done_path = root / "replayed.json"
-    done: set[str] = set()
-    if done_path.exists() and not restart:
-        try:
-            done = set(json.loads(done_path.read_text()))
-        except (OSError, ValueError):
-            done = set()
+    try:
+        with ExitStack() as locks:
+            locks.enter_context(exclusive_lock(writer_lock_path(DB_PATH), label="backfill"))
+            if DB_PATH.resolve() == (config.DATA_DIR / "dbrel.sqlite").resolve():
+                locks.enter_context(exclusive_lock(TT_SWEEP_LOCK, label="backfill"))
+            previous_bulk_mode = enable_bulk_load(bulk_pragmas)
+            locks.callback(enable_bulk_load, previous_bulk_mode)
+            store = ArchiveStore(root)
+            done: set[str] = set()
+            if done_path.exists() and not restart:
+                try:
+                    done = set(json.loads(done_path.read_text()))
+                except (OSError, ValueError):
+                    done = set()
 
-    totals: dict[str, int] = {}
-    stored = sweeps = plan_buckets = gaps = 0
-    skipped: list[str] = []
-    untracked: set[int] = set()
-    uncovered: set[int] = set()
-    all_missing: list = []
+            totals: dict[str, int] = {}
+            stored = sweeps = plan_buckets = gaps = 0
+            skipped: list[str] = []
+            untracked: set[int] = set()
+            uncovered: set[int] = set()
+            all_missing: list = []
 
-    with session_scope() as session:
-        _require_schema(session)
-        tracked = set(
-            session.execute(
-                select(Station.eva).where(Station.tracked == 1, Station.eva.isnot(None))
-            ).scalars()
-        )
-    if not tracked:
-        typer.echo("no tracked stations — run 'dbrel tt-map-stations' or seed them first")
-        raise typer.Exit(1)
-    typer.echo(f"backfill {start} .. {end} over {len(tracked):,} tracked stations")
+            with session_scope() as session:
+                _require_schema(session)
+                tracked = set(
+                    session.execute(
+                        select(Station.eva).where(Station.tracked == 1, Station.eva.isnot(None))
+                    ).scalars()
+                )
+            if not tracked:
+                typer.echo("no tracked stations — run 'dbrel tt-map-stations' or seed them first")
+                raise typer.Exit(1)
+            typer.echo(f"backfill {start} .. {end} over {len(tracked):,} tracked stations")
 
-    for day in date_range(start, end):
-        key = day.isoformat()
-        if key in done:
-            skipped.append(key)
-            continue
-        typer.echo(f"{key}:")
-        with session_scope() as session:
-            result = replay_day(
-                session, store, day, tracked_evas=tracked, dry_run=dry_run, progress=typer.echo
-            )
-        if result.errors and not result.sweeps:
-            for err in result.errors[:3]:
-                typer.echo(f"  ! {err}")
-            continue
-        stored += result.stops_stored
-        sweeps += result.sweeps
-        plan_buckets += result.plan_buckets
-        gaps += result.gaps_written
-        untracked |= result.untracked_evas
-        uncovered |= result.uncovered_tracked
-        all_missing.extend(result.missing_hours)
-        for quality, count in result.by_quality.items():
-            totals[quality] = totals.get(quality, 0) + count
-        for err in result.errors[:2]:
-            typer.echo(f"  ! {err}")
-        if not dry_run:
-            # Recorded per day, so an interrupted run resumes rather than restarts.
-            done.add(key)
-            root.mkdir(parents=True, exist_ok=True)
-            done_path.write_text(json.dumps(sorted(done)))
+            for day in date_range(start, end):
+                key = day.isoformat()
+                if key in done:
+                    skipped.append(key)
+                    continue
+                typer.echo(f"{key}:")
+                with session_scope() as session:
+                    result = replay_day(
+                        session, store, day, tracked_evas=tracked, dry_run=dry_run,
+                        merge_plan_hours=merge_plan_hours, plan_writer=plan_writer,
+                        progress=typer.echo
+                    )
+                if timings:
+                    typer.echo(
+                        f"timings {key} plan_s={result.plan_s:.6f} sweeps_s={result.sweeps_s:.6f} "
+                        f"finalize_s={result.finalize_s:.6f} total_s={result.total_s:.6f} "
+                        f"upsert_calls={result.upsert_calls} refs_refreshed={result.refs_refreshed} "
+                        f"batch_epochs={result.batch_epochs}"
+                    )
+                if result.errors and not result.sweeps:
+                    for err in result.errors[:3]:
+                        typer.echo(f"  ! {err}")
+                    continue
+                stored += result.stops_stored
+                sweeps += result.sweeps
+                plan_buckets += result.plan_buckets
+                gaps += result.gaps_written
+                untracked |= result.untracked_evas
+                uncovered |= result.uncovered_tracked
+                all_missing.extend(result.missing_hours)
+                for quality, count in result.by_quality.items():
+                    totals[quality] = totals.get(quality, 0) + count
+                for err in result.errors[:2]:
+                    typer.echo(f"  ! {err}")
+                if not dry_run:
+                    # Recorded per day, so an interrupted run resumes rather than restarts.
+                    done.add(key)
+                    done_path.parent.mkdir(parents=True, exist_ok=True)
+                    done_path.write_text(json.dumps(sorted(done)))
 
-    typer.echo("")
-    typer.echo(f"  {sweeps} sweep(s), {plan_buckets} plan bucket(s), {stored:,} stops stored")
-    if skipped:
-        typer.echo(f"  {len(skipped)} day(s) already replayed, skipped (--restart to redo)")
-    if totals:
-        typer.echo(f"  finalize wrote {gaps:,} gap row(s):")
-        for quality, count in sorted(totals.items(), key=lambda kv: -kv[1]):
-            typer.echo(f"      {quality:16} {count:>9,}")
-    if untracked:
-        typer.echo(f"  {len(untracked):,} archived station(s) skipped as untracked")
-    if uncovered:
-        typer.echo(f"  {len(uncovered):,} tracked station(s) the archive never covered")
-    if all_missing:
-        typer.echo(f"  {len(all_missing)} hour(s) the archive never captured")
-    if dry_run:
-        typer.echo("  --dry-run: nothing was written")
+            typer.echo("")
+            typer.echo(f"  {sweeps} sweep(s), {plan_buckets} plan bucket(s), {stored:,} stops stored")
+            if skipped:
+                typer.echo(f"  {len(skipped)} day(s) already replayed, skipped (--restart to redo)")
+            if totals:
+                typer.echo(f"  finalize wrote {gaps:,} gap row(s):")
+                for quality, count in sorted(totals.items(), key=lambda kv: -kv[1]):
+                    typer.echo(f"      {quality:16} {count:>9,}")
+            if untracked:
+                typer.echo(f"  {len(untracked):,} archived station(s) skipped as untracked")
+            if uncovered:
+                typer.echo(f"  {len(uncovered):,} tracked station(s) the archive never covered")
+            if all_missing:
+                typer.echo(f"  {len(all_missing)} hour(s) the archive never captured")
+            if dry_run:
+                typer.echo("  --dry-run: nothing was written")
+
+    except AlreadyRunning as exc:
+        typer.echo(f"! {exc}")
+        raise typer.Exit(1) from None
 
 
 @app.command("tt-poll")

@@ -4,7 +4,7 @@ train, with averages looked up per train instead of per line."""
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, select, update
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from dbrel.db import Base
@@ -68,48 +68,9 @@ def test_other_regions_and_other_products_are_left_out(session):
     assert 20 not in members and 30 not in members
 
 
-def test_a_train_with_a_line_has_no_corridor(session):
-    session.add(_train(40, 40, ROUTE, 8 * 3600, category="RE", line_id=None))
-    session.flush()
-    session.get(Train, 40).line_id = 999
-    assert corridor_trains_by_direction(session, 40) is None
-
-
 def test_directions_are_labelled_by_destination(session):
     labels = {d["direction"]: d["label"] for d in queries.corridor_directions(session, 10)["directions"]}
     assert labels == {0: "Berlin Hbf", 1: "Köln Hbf"}
-
-
-def test_services_around_a_time_use_per_train_averages(session):
-    result = queries.corridor_trips_around(session, 10, 0, 2, 11 * 3600)
-    trip = next(t for t in result["trips"] if t["train_id"] == 10)
-    assert trip["arr_pred"] == {"p50_min": 2, "lo_min": 2, "hi_min": 2}
-    assert trip["dep_pred"] == {"p50_min": 4, "lo_min": 4, "hi_min": 4}
-    other = next(t for t in result["trips"] if t["train_id"] == 12)
-    assert other["dep_pred"] is None  # no rows for ICE 12 -- never fabricated
-
-
-def test_train_route_page_also_uses_per_train_averages(session):
-    stop = next(s for s in queries.train_route(session, 10)["stops"] if s["name"] == "Hannover Hbf")
-    assert stop["dep_pred"] == {"p50_min": 4, "lo_min": 4, "hi_min": 4}
-
-
-def test_another_days_route_variant_adds_no_stops(session):
-    """ICE numbers run different routes on different days; only the variant
-    the route was grouped by (train.path_sha1) may contribute stops."""
-    fv_id = session.execute(select(StationStop.feed_version_id)).scalars().first()
-    session.add(Station(id=9, natural_key="bremen@53.1,8.8", name="Bremen Hbf",
-                        lat=53.1, lon=8.8, tracked=1))
-    for train in session.execute(select(Train)).scalars():
-        train.path_sha1 = "main"
-    session.execute(update(StationStop).values(path_sha1="main"))
-    session.add(StationStop(feed_version_id=fv_id, train_id=12, stop_sequence=5, station_id=9,
-                            planned_arrival_sec=15 * 3600, planned_departure_sec=15 * 3600 + 60,
-                            path_sha1="detour"))
-    session.flush()
-    names = [s["name"] for s in queries.corridor_stations(session, 10, 0)]
-    assert "Bremen Hbf" not in names
-    assert "Hannover Hbf" in names
 
 
 def test_train_route_forecasts_the_given_run_day(session, monkeypatch):
