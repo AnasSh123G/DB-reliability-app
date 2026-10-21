@@ -367,9 +367,15 @@ class Budget:   # shared by every search of one request
     def request_exhausted(self) -> bool: ...   # the request's seconds only
 ```
 
-Heuristic: `h[si] = int(haversine_m(lat[si], lon[si], lat[target], lon[target]) / V_MAX_M_S)`,
-computed once per search as a numpy array over all stations. Use the standard haversine with
-R = 6,371,000 m.
+Heuristic: `h[si]` is the least number of seconds any scheduled ride could take from station `si`
+to the target (`PlannerTimetable.travel_floor`). It is a shortest path over a graph of the
+fastest scheduled hop between each pair of stations that a variant running on some day connects
+(a hop is the time from leaving one timed stop to reaching the next, never negative), built once
+per timetable and searched backwards from the target once per search. A station no chain of hops
+leads from to the target gets `UNREACHABLE_S`: a search from there answers at once with nothing
+found, and states at such a station are never pushed. It replaced the straight-line distance
+divided by 300 km/h, which let a search from a small station forecast far more runs than needed
+and hit its limit in one direction of a pair while the other direction finished.
 
 **Station states.** Key labels by `(si, legs, arrival, first_departure)`, retaining every
  distinct state within the existing budgets. Do not discard a later arrival merely because an
@@ -467,9 +473,9 @@ earliest_arrival(tt, fc, source, target, depart_epoch, bans, budget, cache):
 Why this is correct: a STATION item's key is exact (`arrival + h`). A RUN item's key is no
 greater than the key of every station label it can produce, because each delay is ≥ 0. Keep
 all states needed by the waiting and leg limits, and consider all remaining equal-arrival
-lower bounds before choosing the target tie winner. The heuristic may be slightly inconsistent
-on faulty data (a train faster than 300 km/h straight line). The accepted limitation on such
-data remains unchanged. Existing work and time budgets bound the larger state set.
+lower bounds before choosing the target tie winner. The heuristic is a lower bound built from the
+timetable's own hops, so it holds on faulty data too (faulty steps are cut, D5). Existing work and
+time budgets bound the larger state set.
 
 ### D8. Change rule and change risk
 
@@ -602,10 +608,13 @@ journey as found. Sort the 3 final journeys by `sort_key` again.
 | `MAX_DEP_DELAY_S` | 1800 | maximum carried arrival delay for a connecting departure; also the departure-window lookback |
 | `MAX_LEGS` | 5 | trains per journey |
 | `MAX_STEP_S` | 21600 | faulty-step threshold (D5) |
-| `V_MAX_M_S` | 83.333 | 300 km/h |
+| `UNREACHABLE_S` | 10**9 | travel floor of a station no ride leads from to the target |
 | `PROFILE_DAYS` | 28 | profile window |
 | `PROFILE_MIN_RUNS` | 2 | runs on a weekday to count as running |
-| `ROUTES_K` | 3 | routes returned |
+| `ROUTES_K` | 3 | distinct routes one search returns |
+| `CONNECTIONS` | 4 | connections a plan lists, in the order they leave |
+| `CHAIN_MAX` | 12 | most connections walked to find the last ones before a time |
+| `BEFORE_WINDOWS_S` | (3600, 14400, 21600) | how far back a search for earlier connections reaches |
 | `MAX_SEARCHES` | 10 | A\* runs per plan |
 | `MAX_RUNS_PER_SEARCH` | 25000 | forecast runs per A\* run |
 | `SEARCH_SECONDS` | 8.0 | per A\* run |
@@ -1007,8 +1016,6 @@ The expected results for these fixtures are listed in task groups 5 and 6.
   → Labelled "Tight change", not a percentage.
 - **[Departures assumed on time]** A delayed connecting train would in reality make a change
   easier. → This is the conservative choice, documented in the spec.
-- **[Heuristic inconsistency on bad data]** → At worst slightly suboptimal results. Faulty steps
-  are cut (D5).
 - **[Same station, different ids]** Without walking links, Hbf and "Hbf (tief)" are not
   connected. → Listed as a non-goal; a follow-up change can add walking links.
 - **[Two code paths for the profile]** → One shared SQL string, and the build compares the

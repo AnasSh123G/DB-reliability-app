@@ -55,11 +55,15 @@ uses the model for the decision that matters most: whether a connection will be 
   change is possible only if the forecast arrival plus a 5-minute change time is no later than
   the next train's expected departure: scheduled departure plus its own nonnegative forecast
   arrival delay at the change station, capped at 30 minutes (zero for a train starting there
-  or without a forecast). Arrival forecasts remain uncapped. The heuristic is the straight-line distance to the
-  destination divided by 300 km/h.
-- **Three distinct routes.** Routes are told apart by their sequence of (line, boarding station,
-  alighting station). The 2nd and 3rd routes are found by searching again with one leg of an
-  earlier result forbidden, in the manner of Yen's algorithm.
+  or without a forecast). Arrival forecasts remain uncapped. The heuristic is the shortest path to the
+  destination over the fastest scheduled hop between each pair of stations.
+- **Connections in the order they leave.** A plan lists up to 4 connections: the one that arrives
+  soonest of those leaving at or after the chosen time, then the soonest of those leaving a
+  minute after it, and so on, so Earlier and Later can page through them. Earlier asks for the
+  last connections leaving before a time (`before=1`). The one-search machinery that finds
+  distinct routes (the 2nd and 3rd found by searching again with one leg of an earlier result
+  forbidden, in the manner of Yen's algorithm) is kept, and each link of the chain is one such
+  search for a single route.
 - **Running-day profile.** A new table stores, per train and route variant, how often it ran on
   each weekday over the newest 28 days of data. On a public holiday, a train counts as running
   if it runs on Sundays. The planner uses only trains whose profile says they run on the chosen

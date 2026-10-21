@@ -4,6 +4,8 @@ from test_planner_search import epoch
 from dbrel.planner.forecast import FixedForecaster
 from dbrel.planner.search import Budget
 from dbrel.planner.routes import (
+    plan_chain,
+    plan_chain_before,
     plan_routes,
     route_key,
     route_instances,
@@ -89,3 +91,68 @@ def test_late_instance(delay, count):
         len(route_instances(tt, fc, spec, epoch(clock="06:00"), epoch(clock="10:00")))
         == count
     )
+
+
+def departure_times(tt, accepted):
+    return [
+        epoch_clock(int(tt.stop_dep[int(tt.var_first[legs[0].variant]) + legs[0].board_pos]))
+        for legs, _ in accepted
+    ]
+
+
+def epoch_clock(seconds):
+    return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}"
+
+
+def test_chain_lists_connections_in_the_order_they_leave():
+    tt = make_timetable()
+    fc = FixedForecaster(tt, {})
+    accepted, limited, searches = plan_chain(
+        tt, fc, 0, 3, epoch(clock="07:00"), Budget(), cache={}
+    )
+    # 102 (07:30) is beaten by 100 (08:00), which arrives no later; then the ICE; then nothing
+    # else leaves in time to arrive within the search horizon.
+    assert departure_times(tt, accepted) == ["08:00", "08:10"]
+    assert [k for _, k in accepted] == ["pl100@1>2~pl200@2>4", "cICE@1>4"]
+    assert not limited and searches >= 2
+
+
+def test_chain_stops_at_the_departure_cap_and_keeps_the_limit():
+    tt = make_timetable()
+    fc = FixedForecaster(tt, {})
+    accepted, _, _ = plan_chain(
+        tt, fc, 0, 3, epoch(clock="07:00"), Budget(), cache={}, depart_until=epoch(clock="08:05")
+    )
+    assert departure_times(tt, accepted) == ["08:00"]
+    accepted, _, _ = plan_chain(
+        tt, fc, 0, 3, epoch(clock="07:00"), Budget(), cache={}, limit=1
+    )
+    assert departure_times(tt, accepted) == ["08:00"]
+
+
+def test_chain_before_keeps_the_last_connections_before_the_time():
+    tt = make_timetable()
+    fc = FixedForecaster(tt, {})
+    accepted, _, _ = plan_chain_before(
+        tt, fc, 0, 3, epoch(clock="08:10"), Budget(), cache={}
+    )
+    assert departure_times(tt, accepted) == ["08:00"]
+    accepted, _, _ = plan_chain_before(
+        tt, fc, 0, 3, epoch(clock="08:11"), Budget(), cache={}, limit=5
+    )
+    assert departure_times(tt, accepted) == ["08:00", "08:10"]
+    nothing, _, _ = plan_chain_before(
+        tt, fc, 0, 3, epoch(clock="07:30"), Budget(), cache={}
+    )
+    assert nothing == []
+
+
+def test_chain_before_leaves_out_what_the_connection_after_it_beats():
+    tt = make_timetable()
+    fc = FixedForecaster(tt, {})
+    # Before 08:10 there are 102 (07:30, via B) and 100 (08:00, via B): 100 arrives as soon and
+    # leaves later, so only it is kept; the ICE at 08:10 itself is the one after.
+    accepted, _, _ = plan_chain_before(
+        tt, fc, 0, 3, epoch(clock="08:10"), Budget(), cache={}, limit=5
+    )
+    assert departure_times(tt, accepted) == ["08:00"]

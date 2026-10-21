@@ -178,3 +178,14 @@ def test_weekly_calls_count_each_stop_once_per_running_weekday():
     # Station 2 sees six daily trains; station 3's calls include train 500's, cut for its
     # faulty step but still a train calling there.
     assert make_timetable().weekly_calls() == {1: 34, 2: 42, 3: 28, 4: 34, 9: 0}
+
+
+def test_travel_floor_is_the_least_scheduled_ride_time_whatever_the_day():
+    from dbrel.planner.constants import UNREACHABLE_S
+
+    tt = make_timetable()
+    floor = tt.travel_floor(tt.si_of_id[4])
+    seconds = {sid: int(floor[tt.si_of_id[sid]]) for sid in (1, 2, 3, 4, 9)}
+    # D itself; C-D by train 400; B-D by the night train 600 (39 minutes, the quickest); A-D by
+    # train 700, which runs only on Saturdays; Z has no trains at all.
+    assert seconds == {4: 0, 3: 1800, 2: 2340, 1: 3300, 9: UNREACHABLE_S}

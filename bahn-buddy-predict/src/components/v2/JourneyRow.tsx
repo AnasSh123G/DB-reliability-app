@@ -100,27 +100,21 @@ export function ChangeStations({
 /**
  * Args:
  *   journey: the journey shown.
- *   chosen: whether it is the journey shown in full below the list.
- *   marked: whether it is the journey the list is about (a teal bar at its side).
+ *   chosen: whether it is the journey shown in full beside the list (a teal bar at its side).
  *   onSelect: choose it.
- *   day: the run's day, already formatted, shown in place of its trains (other times).
  *   focusable: false for an entry that is only there as a stand-in while the list loads.
  */
 export function JourneyRow({
   journey,
   chosen,
-  marked,
   onSelect,
-  day,
   focusable = true,
   locale,
   t,
 }: {
   journey: Journey;
   chosen: boolean;
-  marked: boolean;
   onSelect: () => void;
-  day?: string | undefined;
   focusable?: boolean;
   locale: Locale;
   t: Copy;
@@ -128,7 +122,7 @@ export function JourneyRow({
   const duration = formatDuration(journey.duration_min, locale);
   return (
     <div
-      className={`relative h-full border-l-2 ${marked ? "border-teal" : "border-transparent"} ${chosen ? "bg-ink" : ""}`}
+      className={`relative h-full border-l-2 ${chosen ? "border-teal bg-ink" : "border-transparent"}`}
     >
       <button
         type="button"
@@ -162,25 +156,19 @@ export function JourneyRow({
         </span>
         <ChevronRight className="row-span-2 size-4 self-center text-fog" aria-hidden="true" />
         <span className="flex min-w-0 items-baseline gap-1.5 truncate text-[12.67px] text-fog">
-          {day ? (
-            <span className="truncate">{`${day} · ${duration}`}</span>
-          ) : (
-            <>
-              {journey.legs.map((leg, index) => (
-                <Fragment key={`${leg.train_id}-${leg.departure.epoch}`}>
-                  {index > 0 && <span>›</span>}
-                  <Link
-                    {...v2Paths.train(leg.train_id, leg.from.id)}
-                    tabIndex={focusable ? undefined : -1}
-                    className={`${INNER_LINK} shrink-0 font-semibold text-paper`}
-                  >
-                    {leg.name}
-                  </Link>
-                </Fragment>
-              ))}
-              <span className="truncate">· {duration}</span>
-            </>
-          )}
+          {journey.legs.map((leg, index) => (
+            <Fragment key={`${leg.train_id}-${leg.departure.epoch}`}>
+              {index > 0 && <span>›</span>}
+              <Link
+                {...v2Paths.train(leg.train_id, leg.from.id)}
+                tabIndex={focusable ? undefined : -1}
+                className={`${INNER_LINK} shrink-0 font-semibold text-paper`}
+              >
+                {leg.name}
+              </Link>
+            </Fragment>
+          ))}
+          <span className="truncate">· {duration}</span>
         </span>
         <span className="min-w-0 truncate text-[12.67px] text-fog">
           {journey.forecast

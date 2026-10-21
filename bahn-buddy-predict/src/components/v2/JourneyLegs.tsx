@@ -34,7 +34,7 @@ function Stop({
 }) {
   const Icon = icons[kind];
   return (
-    <div className="grid grid-cols-[3.25rem_minmax(0,1fr)] items-baseline gap-x-3 sm:grid-cols-[3.25rem_minmax(0,1fr)_auto]">
+    <div className="grid grid-cols-[3.25rem_minmax(0,1fr)] items-baseline gap-x-3 sm:grid-cols-[3.25rem_minmax(0,1fr)_auto] lg:grid-cols-[3.25rem_minmax(0,1fr)]">
       <span className="font-mono text-base text-paper">{time}</span>
       <span className="flex min-w-0 items-center gap-1.5 truncate text-sm">
         <Icon className="size-3.5 shrink-0 text-fog" aria-hidden="true" />
@@ -43,7 +43,7 @@ function Stop({
         </Link>
       </span>
       {forecast ? (
-        <span className="col-start-2 text-xs text-fog sm:col-start-auto sm:text-right">
+        <span className="col-start-2 text-xs text-fog sm:col-start-auto sm:text-right lg:col-start-2 lg:text-left">
           {t.forecastShort}{" "}
           <PlannerExpected
             forecast={forecast.leg.forecast}
@@ -67,13 +67,13 @@ export function JourneyLegs({ journey, locale, t }: { journey: Journey; locale: 
   const last = journey.legs[journey.legs.length - 1];
   return (
     <Card
-      className="rise rounded-lg border border-line bg-panel p-5 text-paper shadow-none sm:p-7"
+      className="rise rounded-lg border border-line bg-panel p-5 text-paper shadow-none"
       role="region"
       aria-labelledby="legs-heading"
     >
       <div className="border-b border-line pb-5">
         <p className="text-xs text-fog">{t.legsTitle}</p>
-        <h2 id="legs-heading" className="mt-1 font-display text-2xl font-semibold text-paper">
+        <h2 id="legs-heading" className="mt-1 font-display text-xl font-semibold text-paper">
           {first?.from.name} → {last?.to.name}
         </h2>
         <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-fog">
@@ -147,7 +147,7 @@ export function JourneyLegs({ journey, locale, t }: { journey: Journey; locale: 
                 </div>
               </li>
               {change && (
-                <li className="flex flex-col gap-1 rounded-md border border-dashed border-line px-3 py-2.5 text-[13px] sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <li className="flex flex-col gap-1 rounded-md border border-dashed border-line px-3 py-2.5 text-[13px] sm:flex-row sm:items-center sm:justify-between sm:gap-4 lg:flex-col lg:items-start lg:justify-start lg:gap-1">
                   <span className="flex min-w-0 items-center gap-2 text-fog">
                     <Change className="size-4 shrink-0" aria-hidden="true" />
                     <span className="min-w-0">
@@ -166,7 +166,7 @@ export function JourneyLegs({ journey, locale, t }: { journey: Journey; locale: 
                       </span>
                     </span>
                   </span>
-                  <span className="shrink-0 pl-6 sm:pl-0 sm:text-right">
+                  <span className="shrink-0 pl-6 sm:pl-0 sm:text-right lg:pl-6 lg:text-left">
                     <span className="block text-[11px] uppercase text-fog">
                       {t.missChanceLabel}
                     </span>

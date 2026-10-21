@@ -2125,11 +2125,12 @@ def _planner_budget():
     return Budget()
 
 
-def _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, route, slot):
+def _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, route, slot, before=False):
     from contextlib import nullcontext
     from dbrel.planner.constants import TIMINGS_HALF_WINDOW_S
     from dbrel.planner.respond import journey_json, moment
-    from dbrel.planner.routes import parse_route_key, plan_routes, route_instances, tighten
+    from dbrel.planner.routes import (
+        parse_route_key, plan_chain, plan_chain_before, route_instances)
 
     tt = planner_timetable.get_timetable(session)
     spec = None
@@ -2157,8 +2158,14 @@ def _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, route,
         names = _planner_names(session)
         searches = 0
         if route is None:
-            accepted, hit_limit, searches = plan_routes(tt, fc, source, target, at_epoch, budget=budget, cache=cache)
-            accepted = tighten(tt, fc, accepted, cache, budget=budget)
+            # The connections leaving at the chosen time or later, one after the other -- or,
+            # when `before`, the last ones that leave earlier.
+            if before:
+                accepted, hit_limit, searches = plan_chain_before(
+                    tt, fc, source, target, at_epoch, budget, cache=cache)
+            else:
+                accepted, hit_limit, searches = plan_chain(
+                    tt, fc, source, target, at_epoch, budget, cache=cache)
             journeys = [journey_json(tt, cache, legs, names) for legs, _ in accepted]
             reason = None
             if not journeys:
@@ -2168,7 +2175,7 @@ def _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, route,
                     reason = 'to_unserved'
                 else:
                     reason = 'search_limit' if hit_limit else 'no_connection'
-            base.update(journeys=journeys, reason=reason)
+            base.update(journeys=journeys, reason=reason, before=before)
         else:
             lo, hi = at_epoch - TIMINGS_HALF_WINDOW_S, at_epoch + TIMINGS_HALF_WINDOW_S
             instances = route_instances(tt, fc, spec, lo, hi, cache=cache, budget=budget)
@@ -2179,8 +2186,8 @@ def _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, route,
         return 200, base
 
 
-def plan(session, from_id, to_id, at_epoch, date_str, time_str, *, slot=None):
-    result = _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, None, slot)
+def plan(session, from_id, to_id, at_epoch, date_str, time_str, *, slot=None, before=False):
+    result = _planner_query(session, from_id, to_id, at_epoch, date_str, time_str, None, slot, before)
     if result[0] == 200:
         from dbrel.ml.memory import release_memory
 

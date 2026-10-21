@@ -400,12 +400,8 @@ export type PlanReason = "from_unserved" | "to_unserved" | "search_limit" | "no_
 export interface PlanResponse extends PlanContext {
   journeys: Journey[];
   reason: PlanReason | null;
-}
-
-export interface TimingsResponse extends PlanContext {
-  route_key: string;
-  window: { from: Moment; to: Moment };
-  instances: Journey[];
+  /** True when these are the connections leaving before `date` and `time`, not from them on. */
+  before: boolean;
 }
 
 export interface PlanParams {
@@ -413,16 +409,16 @@ export interface PlanParams {
   to: number;
   date: string;
   time: string;
+  /** Ask for the connections leaving before the chosen time instead of from it on. */
+  before?: boolean | undefined;
 }
 
-export interface PlanTimingsParams extends PlanParams {
-  route: string;
-}
-
-export function plan(from: number, to: number, date: string, time: string) {
-  return apiFetch<PlanResponse>("/api/plan", { from, to, date, time });
-}
-
-export function planTimings(from: number, to: number, date: string, time: string, route: string) {
-  return apiFetch<TimingsResponse>("/api/plan/timings", { from, to, date, time, route });
+export function plan(from: number, to: number, date: string, time: string, before = false) {
+  return apiFetch<PlanResponse>("/api/plan", {
+    from,
+    to,
+    date,
+    time,
+    ...(before ? { before: 1 } : {}),
+  });
 }

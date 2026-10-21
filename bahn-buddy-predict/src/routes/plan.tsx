@@ -8,6 +8,8 @@ export interface PlanSearch {
   date?: string | undefined;
   time?: string | undefined;
   option?: number | undefined;
+  /** Show the connections leaving before `time` instead of from it on. */
+  before?: boolean | undefined;
 }
 export const Route = createFileRoute("/plan")({
   validateSearch: (search: Record<string, unknown>): PlanSearch => {
@@ -21,10 +23,12 @@ export const Route = createFileRoute("/plan")({
       result.date = search["date"];
     if (typeof search["time"] === "string" && /^\d{2}:\d{2}$/.test(search["time"]))
       result.time = search["time"];
+    if (search["before"] === true || search["before"] === 1 || search["before"] === "1")
+      result.before = true;
     const rawOption = search["option"];
     const option =
       typeof rawOption === "string" || typeof rawOption === "number" ? Number(rawOption) : NaN;
-    if (Number.isInteger(option) && option >= 0 && option <= 2) result.option = option;
+    if (Number.isInteger(option) && option >= 0 && option <= 9) result.option = option;
     return result;
   },
   head: () => ({ meta: [{ title: "Reiseplaner – BahnPredict" }] }),

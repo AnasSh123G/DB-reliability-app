@@ -76,9 +76,14 @@ def test_journey():
         "data_until",
         "journeys",
         "reason",
+        "before",
         "stats",
     }
-    assert len(body["journeys"]) == 3
+    # Each connection leaves after the one before and arrives no sooner.
+    assert [j["route_key"] for j in body["journeys"]] == ["pl100@1>2~pl200@2>4", "cICE@1>4"]
+    departures = [j["departure"]["epoch"] for j in body["journeys"]]
+    arrivals = [j["arrival"]["epoch"] for j in body["journeys"]]
+    assert departures == sorted(set(departures)) and arrivals == sorted(arrivals)
     first = body["journeys"][0]
     assert first["legs"][0]["departure"] == {
         "epoch": int(datetime(2026, 10, 19, 8, tzinfo=TZ).timestamp()),
@@ -87,6 +92,34 @@ def test_journey():
     }
     assert first["n_changes"] == 1
     assert first["changes"][0]["planned_min"] == first["changes"][0]["left_min"] == 6
+
+
+def test_before_lists_only_connections_leaving_earlier(monkeypatch):
+    # Train 100 (08:00) runs 4 minutes late at B and misses its change, so the 07:30 train 102,
+    # which does not, is worth showing among the connections before 08:00.
+    monkeypatch.setattr(
+        queries,
+        "_planner_forecaster",
+        lambda session, tt: FixedForecaster(tt, {(100, 2): (4, 4, 4)}),
+    )
+    status, body = request(before="1")
+    assert status == 200 and body["before"] is True
+    cutoff = int(datetime(2026, 10, 19, 8, tzinfo=TZ).timestamp())
+    assert body["journeys"]
+    assert all(j["departure"]["epoch"] < cutoff for j in body["journeys"])
+    assert body["journeys"][0]["departure"]["time"] == "07:30"
+
+
+def test_before_leaves_out_what_a_later_connection_beats():
+    # Without delays train 100 (08:00) arrives as soon as 102 (07:30) and leaves later.
+    status, body = request(before="1")
+    assert status == 200 and body["journeys"] == [] and body["reason"] == "no_connection"
+
+
+def test_before_with_nothing_earlier_says_no_connection():
+    status, body = request(time="07:30", before="1")
+    assert status == 200
+    assert body["journeys"] == [] and body["reason"] == "no_connection"
 
 
 def test_change_risk(monkeypatch):

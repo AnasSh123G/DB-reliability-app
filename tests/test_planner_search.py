@@ -70,6 +70,33 @@ def test_sunday_and_ban():
     assert trains(tt, res) == [300]
 
 
+def test_unreachable_target_is_settled_without_forecasting_anything():
+    tt, res, cache = run(target=9)
+    assert res.legs is None and not res.hit_limit
+    assert res.runs_forecast == 0 and cache == {}
+
+
+def test_departure_cap_keeps_the_first_train_before_it():
+    tt = make_timetable()
+    fc = FixedForecaster(tt, {})
+    found = {}
+    for until in ("08:09", "07:59"):
+        result = earliest_arrival(
+            tt,
+            fc,
+            tt.si_of_id[1],
+            tt.si_of_id[4],
+            epoch(clock="06:00"),
+            frozenset(),
+            Budget(),
+            {},
+            depart_until=epoch(clock=until),
+        )
+        found[until] = trains(tt, result)
+    # Until 08:09 the 08:00 train 100 still leaves in time; until 07:59 only 102 (07:30) does.
+    assert found == {"08:09": [100, 200], "07:59": [102, 200]}
+
+
 def test_budget():
     _, res, _ = run(budget=Budget(max_runs_per_search=1))
     assert res.hit_limit and res.legs is None

@@ -69,9 +69,19 @@ a phone, it SHALL show the icon only, with the label as its accessible name.
 
 #### Scenario: Opening the planner from a train page
 - **WHEN** a user on `/train/2259` presses the planner link
-- **THEN** `/plan` opens with empty inputs
+- **THEN** `/plan` opens with empty stations and the date and time set to now
 
 #### Scenario: Phone width
 - **WHEN** the header is shown at 360 px width
 - **THEN** the logo, the planner icon and both toggles stay on one row, and the planner link's
   accessible name is "Reiseplaner" or "Journey planner"
+
+### Requirement: The train and station search opens on the current date and time
+The date and time fields of the train and station search SHALL show the browser's current date and
+time when the page opens, and keep a value already chosen in the same visit. They SHALL be filled
+in after the page has loaded in the browser, not in the server-rendered page. A date and time in the
+address of a station board SHALL win.
+
+#### Scenario: Opening the search
+- **WHEN** a user opens `/` at 16:44 on 2026-10-21
+- **THEN** the date field shows 2026-10-21 and the time field 16:44

@@ -158,6 +158,12 @@ export function SearchV2({ locale, initialStation }: Props) {
   const [stationId, setStationId] = useState<number | undefined>(savedSearch?.stationId);
   const [date, setDate] = useState(savedSearch?.date ?? "");
   const [time, setTime] = useState(savedSearch?.time ?? "");
+  // Date and time open on now; filled in after the first render, since the server renders them
+  // empty too and hydration must never mismatch. An address with a date and time wins (below).
+  useEffect(() => {
+    setDate((current) => current || todayDate());
+    setTime((current) => current || nowTime());
+  }, []);
   // The prediction request only ever fires from the Prognose button, never
   // just because every field happens to be filled in -- and any further edit
   // invalidates a result that no longer matches what's on screen, so it's

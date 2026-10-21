@@ -52,7 +52,7 @@ departure.
 #### Scenario: The forecast reverses the timetable's order
 - **WHEN** route X is scheduled to arrive at 10:00 but is forecast at 10:12, and route Y is
   scheduled at 10:05 and forecast at 10:06
-- **THEN** route Y is listed before route X
+- **THEN** route Y is the first connection listed
 
 ### Requirement: A change needs time between the forecast arrival and the next departure
 A change from one train to another at a station SHALL be possible only when the forecast arrival
@@ -135,31 +135,48 @@ after the requested time.
 - **WHEN** the first train from the start station leaves 7 hours after the requested time
 - **THEN** no connection is found, and the reason says that there is no connection
 
-### Requirement: Up to three connections with different routes are returned
-The response SHALL list at most 3 connections. A route is the ordered list of its legs, each
-leg being (line, boarding station, alighting station). A line is the passenger line, else the
-service line, else the train category. No two listed connections SHALL have the same route.
-Fewer than 3 SHALL be listed when no further distinct route is found.
+### Requirement: Connections are listed in the order they leave
+The response SHALL list at most 4 connections, in the order they leave. The first is the one
+that arrives soonest of those leaving at or after the requested time; each next one is the
+soonest-arriving of those leaving at least a minute after the one before. So no listed connection
+is beaten by a later-leaving one that arrives earlier, and no two leave at the same time.
+Fewer than 4 SHALL be listed when no further connection is found within the bounds.
 
-#### Scenario: Three different routes
-- **WHEN** a user plans Köln Hbf to Berlin Hbf on a weekday morning
-- **THEN** up to 3 connections are listed, and no two have the same lines boarded and left at
-  the same stations
+#### Scenario: Connections in order
+- **WHEN** a user plans München Hbf to Stuttgart Hbf at 12:00 on a weekday
+- **THEN** up to 4 connections are listed, each leaving later than the one before and arriving
+  no sooner
 
-#### Scenario: Same route, different train
-- **WHEN** the second-best connection takes the same lines at the same stations as the best one,
-  just one hour later
-- **THEN** it is not listed as a separate connection, and appears only among the best one's
-  other times
+#### Scenario: A slower train that leaves earlier is not listed
+- **WHEN** a train leaves at 12:07 and arrives at 13:18, and another leaves at 12:12 and arrives
+  at 13:15
+- **THEN** only the one leaving at 12:12 is listed
 
 #### Scenario: Only one way exists
-- **WHEN** only one route connects the two stations within the bounds
+- **WHEN** only one connection exists within the bounds
 - **THEN** exactly one connection is listed
 
+### Requirement: Earlier connections can be asked for
+`GET /api/plan` SHALL accept `before=1`. The date and time then name the moment the connections
+must leave before, and the response SHALL list, in the order they leave, the last (up to 4)
+connections that leave before it, and set `before` to true. A connection SHALL be left out when it
+arrives no sooner than the first connection leaving at or after that moment, since that one
+leaves later and arrives as soon. The search SHALL look back one hour, then four, then six,
+stopping as soon as it holds 4 connections.
+
+#### Scenario: Stepping back
+- **WHEN** a client asks for the connections before 17:28 and the page after them starts at 17:28
+- **THEN** the connections listed leave before 17:28, and none arrives later than the first
+  connection leaving at 17:28 does
+
+#### Scenario: Nothing earlier
+- **WHEN** every connection leaving before the moment is beaten by one leaving at or after it
+- **THEN** no connection is listed and the reason is `no_connection`
+
 ### Requirement: Each listed connection leaves as late as possible
-For each listed route, the system SHALL list the instance with the earliest forecast arrival.
-Among instances that arrive equally early, it SHALL list the one that leaves the start station
-latest.
+For each listed connection, the system SHALL list the instance of its route that arrives soonest
+by the forecast. Among instances that arrive equally early, it SHALL list the one that leaves the
+start station latest.
 
 #### Scenario: An unneeded early start
 - **WHEN** the best route can be started at 08:00 or at 08:30 with the same forecast arrival
@@ -301,7 +318,7 @@ before, with no list.
 - **THEN** the results disappear until the button is pressed again
 
 ### Requirement: The planner page lists the connections
-After the button is pressed, the page SHALL show up to 3 connections, in the response's order.
+After the button is pressed, the page SHALL show up to 4 connections, in the response's order.
 Each entry SHALL show, in three columns: the scheduled departure → arrival with its trains and
 duration under it; the forecast arrival with its delay ("+22 Min.", or "pünktlich" / "on time")
 under it; and the connection's miss-chance band with the change stations under it, or "kein
@@ -320,74 +337,50 @@ Umstieg" / "no change" for a direct connection.
 - **THEN** the page says that no connection was found within the search limits
 
 ### Requirement: Journey lists name their columns
-The connections and other-times lists SHALL each have a header naming the three columns: the
-trip by the timetable, the forecast arrival, and the risk of missing a change. Below tablet width
-the headers SHALL use short names: Fahrplan / Prognose / Risiko, Timetable / Forecast / Risk.
+The connections list SHALL have a header naming its three columns: the trip by the timetable, the
+forecast arrival, and the risk of missing a change. Below tablet width the header SHALL use short
+names: Fahrplan / Prognose / Risiko, Timetable / Forecast / Risk.
 
 #### Scenario: Headers on a phone
 - **WHEN** the connections list is shown at 390 px width in German
 - **THEN** its header reads Fahrplan, Prognose, Risiko, and no header or band is cut off
 
-### Requirement: Clicking a connection shows its other times
-Clicking a connection SHALL mark it as chosen. Below the list, it SHALL show the route's other
-times from the timings endpoint, with a line saying these are the same trains at other times and
-that the right-hand column is the chance of missing the connection. The entries SHALL use the
-connections list's columns, with the run's day and duration in place of the trains. The instance
-equal to the clicked connection SHALL be highlighted.
+### Requirement: Choosing a connection shows its journey beside the list
+The planner results SHALL be laid out like the train page: the connections card on the left, the
+chosen connection's journey details on the right, from desktop width up; under the card on a
+phone and tablet. The first connection SHALL be chosen when the results appear. Clicking another
+connection SHALL mark it as chosen and swap the details beside the list, and SHALL NOT scroll the
+page. No card for the same route at other times SHALL be shown.
 
 #### Scenario: Choosing a connection
 - **WHEN** a user clicks the second connection
-- **THEN** it is marked as chosen, and below the list its route is shown at other times, with the
-  same trains and departure as the clicked one highlighted
+- **THEN** it is marked as chosen, and the card on the right shows that connection's trains and
+  changes
 
-### Requirement: The other-times list shows 5 entries at a time
-The list SHALL show exactly 5 entries at a time, starting with the 2 runs before the clicked
-connection where they exist. Earlier and Later SHALL move by 5 entries, and SHALL be disabled
-while no further run is loaded in that direction.
+### Requirement: Earlier and Later page through the connections
+The connections card SHALL have Earlier and Later buttons on its left from tablet width up and
+below its list on a phone, as the train page's Prognose card has. Later SHALL show the
+connections leaving from a minute after the last one listed; Earlier SHALL show those leaving
+before the first one listed, by asking with `before=1`. With no connection listed, Earlier and
+Later SHALL move the search by the length of its reach (6 hours) from where it stood. Pressing
+either SHALL put the new moment, and `before` for Earlier, in the page address, and SHALL reset
+the chosen connection to the first.
 
-#### Scenario: Later times
-- **WHEN** the user presses Later in the timings list
-- **THEN** the 5 runs after the last one shown are shown
+#### Scenario: Later
+- **WHEN** the list ends with a connection leaving at 14:20 and the user presses Later
+- **THEN** the address holds the time 14:21 and the list shows the connections leaving from then
 
-### Requirement: The other-times list loads in place
-The other-times card SHALL stay on the page when another connection is chosen and reload its
-entries, not disappear and reappear. Choosing a connection SHALL NOT scroll the page. The list
-SHALL keep the height of 5 entries whatever it shows: placeholders while loading, empty space
-when fewer than 5 runs exist, and any error or empty message inside that same space.
+#### Scenario: Earlier
+- **WHEN** the list starts with a connection leaving at 17:28 and the user presses Earlier
+- **THEN** the address holds the time 17:28 with `before`, the heading reads "vor 17:28" /
+  "before 17:28", and the list shows the last connections leaving before 17:28
 
-#### Scenario: Choosing another connection keeps the page still
-- **WHEN** a user scrolled so the list is in view and clicks another connection
-- **THEN** the page does not scroll, and the other-times card keeps its position and height while
-  its entries reload
-
-#### Scenario: A route with few runs
-- **WHEN** a route has only 3 runs within 24 hours of the clicked one
-- **THEN** the list shows those 3 entries and empty space for 2 more, at the same height
-
-### Requirement: Other times are fetched ahead of the entries shown
-Runs SHALL be fetched in windows of 2 hours either side of a moment, one window at a time, ahead
-of the entries shown, until 5 runs are loaded on each side of them or the windows reach 24 hours
-from the clicked connection.
-
-#### Scenario: Paging without waiting
-- **WHEN** the first window has loaded and fewer than 5 runs lie after the entries shown
-- **THEN** the next window, centred 4 hours later, is requested before the user presses Later
-
-### Requirement: Every listed connection's other times load before it is clicked
-As soon as the connections are shown, the page SHALL request the first other-times window of each
-of them, one after another and the chosen one first, so that clicking any of them shows its
-entries without waiting.
-
-#### Scenario: Opening another connection
-- **WHEN** the plan has answered and the user, after the requests finished, clicks the third
-  connection
-- **THEN** its other times appear at once, with no new request for that window
-
-### Requirement: Opening a time shows its legs and changes
-Choosing one time in the timings list SHALL show its journey details below the list. The header
-SHALL name the start and destination stations, then the day, the timetabled departure → arrival,
-the forecast arrival, the duration, the number of changes, and a line saying how to read the
-card. A leg's train SHALL link to its train page, highlighting the boarding station.
+### Requirement: Journey details show the legs and changes
+The details card SHALL show, in its header, the start and destination stations, then the day,
+the timetabled departure → arrival, the forecast arrival, the duration, the number of changes, and
+a line saying how to read the card. A leg's train SHALL link to its train page, highlighting the
+boarding station. It SHALL stay in view while the page scrolls past a long connections card, from
+desktop width up.
 
 #### Scenario: Following a leg's train
 - **WHEN** a user clicks the train of a leg that boards at Hamm (Westf) Hbf
@@ -405,26 +398,35 @@ change by the timetable and by the forecast, and the miss-chance band.
 - **THEN** its block reads "Umstiegszeit: 9 Min. laut Fahrplan, ca. 6 Min. laut Prognose" and,
   under "Risiko, den Anschluss zu verpassen", "25–50 %"
 
-### Requirement: Every timings entry keeps one fixed height
-Every entry in the connections and timings lists SHALL have the same height in every case: the
-chosen one, another one, one with a risky change, one whose arrival falls on the next day. This SHALL hold at
+### Requirement: Every connection entry keeps one fixed height
+Every entry in the connections list SHALL have the same height in every case: the chosen one,
+another one, one with a risky change, one whose arrival falls on the next day. This SHALL hold at
 desktop and phone width. An entry SHALL NOT grow to show its legs. The legs are shown in their
-own panel.
+own card.
 
 #### Scenario: Heights are equal
-- **WHEN** the timings list shows a normal entry, a risky entry and an after-midnight entry, at
+- **WHEN** the list shows a normal entry, a risky entry and an after-midnight entry, at
   1280 px and at 390 px width
 - **THEN** all entries have the same height
 
 ### Requirement: The planner keeps its inputs in the address
-After the button is pressed, the page address SHALL hold the start, destination, date, time and
-chosen connection. Opening that address SHALL show the same inputs and results. Going back from
-a train page SHALL return to the same results.
+After the button is pressed, the page address SHALL hold the start, destination, date, time,
+`before` when Earlier was pressed, and the chosen connection. Opening that address SHALL show the
+same inputs and results. Going back from a train page SHALL return to the same results.
 
 #### Scenario: Reloading the page
 - **WHEN** a user reloads `/plan?from=269&to=501&date=2026-10-20&time=08:00&option=1`
 - **THEN** the same inputs are filled in, the plan is requested, and the second connection is
   shown as chosen
+
+### Requirement: The planner opens on the current date and time
+When the address holds no date or time, the planner's date and time fields SHALL show the current
+Berlin date and time. They SHALL be filled in after the page has loaded in the browser, not in
+the server-rendered page. A date or time in the address SHALL win.
+
+#### Scenario: Opening the planner
+- **WHEN** a user opens `/plan` at 16:44 on 2026-10-21
+- **THEN** the date field shows 2026-10-21 and the time field 16:44
 
 ### Requirement: The planner shows progress and failures plainly
 While a plan is loading, the page SHALL show placeholder entries and say that the search can

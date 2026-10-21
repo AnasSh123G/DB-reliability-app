@@ -5,6 +5,7 @@ from __future__ import annotations
 from array import array
 from dataclasses import dataclass
 from datetime import date, timedelta
+from heapq import heappop, heappush
 import logging
 from threading import Lock
 from time import monotonic
@@ -14,10 +15,11 @@ from sqlalchemy import text
 
 from dbrel.holidays_de import load_holiday_dates
 from dbrel.ingest.timeutil import local_date, service_date_anchor
-from dbrel.planner.constants import MAX_STEP_S, NO_TIME
+from dbrel.planner.constants import MAX_STEP_S, NO_TIME, UNREACHABLE_S
 from dbrel.planner.profile import chosen_variants, day_key, load_run_profile
 
 log = logging.getLogger(__name__)
+_FLOOR_LOCK = Lock()
 RunKey = tuple[int, date]
 
 
@@ -151,6 +153,75 @@ class PlannerTimetable:
                 int(sid): int(n) for sid, n in zip(self.station_id, calls, strict=True)
             }
         return self._weekly_calls
+
+    def _hop_graph(self):
+        """Fastest scheduled hop between stations, as a graph indexed by the hop's far end.
+
+        A hop joins two consecutive timed stops of a variant that runs on some day; its weight is
+        the time from leaving the first to reaching the second, never negative. Any ride is a
+        chain of hops (plus waiting), so shortest paths over the hops, whatever the day or hour,
+        are lower bounds on the time a ride takes. Built once and shared by every search.
+        """
+        with _FLOOR_LOCK:
+            graph = getattr(self, "_floor_graph", None)
+            if graph is not None:
+                return graph
+            n_stations = len(self.station_id)
+            position = np.arange(len(self.stop_si)) - self.var_first[self.stop_variant]
+            t_in = np.where(self.stop_arr != NO_TIME, self.stop_arr, self.stop_dep)
+            t_out = np.where(self.stop_dep != NO_TIME, self.stop_dep, self.stop_arr)
+            keep = (
+                (position < self.var_cut[self.stop_variant])
+                & (t_in != NO_TIME)
+                & (self.var_days[self.stop_variant] != 0)
+            )
+            rows = np.nonzero(keep)[0]
+            before, after = rows[:-1], rows[1:]
+            pair = (self.stop_variant[before] == self.stop_variant[after]) & (
+                self.stop_si[before] != self.stop_si[after]
+            )
+            before, after = before[pair], after[pair]
+            origin = self.stop_si[before].astype(np.int64)
+            far = self.stop_si[after].astype(np.int64)
+            weight = np.maximum(
+                t_in[after].astype(np.int64) - t_out[before].astype(np.int64), 0
+            )
+            key = origin * n_stations + far
+            order = np.lexsort((weight, key))
+            key, origin, far, weight = key[order], origin[order], far[order], weight[order]
+            first = np.ones(len(key), dtype=bool)
+            first[1:] = key[1:] != key[:-1]
+            origin, far, weight = origin[first], far[first], weight[first]
+            by_far = np.argsort(far, kind="stable")
+            start = np.searchsorted(far[by_far], np.arange(n_stations + 1))
+            graph = (
+                start.tolist(),
+                origin[by_far].tolist(),
+                weight[by_far].tolist(),
+            )
+            self._floor_graph = graph
+            return graph
+
+    def travel_floor(self, target_si):
+        """Least seconds any ride could take from each station to the target.
+
+        Index by compact station index; `UNREACHABLE_S` where no chain of scheduled hops leads
+        there. Never more than the real ride time, so it is a safe A* heuristic.
+        """
+        start, origin, weight = self._hop_graph()
+        floor = [UNREACHABLE_S] * len(self.station_id)
+        floor[target_si] = 0
+        heap = [(0, target_si)]
+        while heap:
+            seconds, si = heappop(heap)
+            if seconds > floor[si]:
+                continue
+            for edge in range(start[si], start[si + 1]):
+                u, total = origin[edge], seconds + weight[edge]
+                if total < floor[u]:
+                    floor[u] = total
+                    heappush(heap, (total, u))
+        return np.array(floor, dtype=np.int64)
 
     def departures(self, si, lo_epoch, hi_epoch):
         a, b = self.dep_start[si : si + 2]

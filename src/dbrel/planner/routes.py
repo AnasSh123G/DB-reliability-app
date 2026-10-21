@@ -4,6 +4,9 @@ from __future__ import annotations
 import re
 from dbrel.ingest.timeutil import service_date_anchor
 from .constants import (
+    BEFORE_WINDOWS_S,
+    CHAIN_MAX,
+    CONNECTIONS,
     MAX_SEARCHES,
     ROUTES_K,
     NO_TIME,
@@ -76,6 +79,7 @@ def plan_routes(
     cache=None,
     k=ROUTES_K,
     max_searches=MAX_SEARCHES,
+    depart_until=None,
 ):
     budget = budget or Budget()
     cache = {} if cache is None else cache
@@ -93,7 +97,7 @@ def plan_routes(
             searched.add(bans)
             n += 1
             res = earliest_arrival(
-                tt, fc, source, target, depart_epoch, bans, budget, cache
+                tt, fc, source, target, depart_epoch, bans, budget, cache, depart_until
             )
             hit |= res.hit_limit
             if res.legs is None:
@@ -224,7 +228,7 @@ def route_instances(
     ]
 
 
-def tighten(tt, fc, accepted, cache, budget=None):
+def tighten(tt, fc, accepted, cache, budget=None, depart_until=None):
     result = []
     for legs, key in accepted:
         spec = [
@@ -237,9 +241,10 @@ def tighten(tt, fc, accepted, cache, budget=None):
         ]
         dep = departure_epoch(tt, legs[0])
         end = arrival_epoch(tt, cache, legs[-1])
-        options = route_instances(
-            tt, fc, spec, dep, dep + TIMINGS_HALF_WINDOW_S, cache=cache, budget=budget
-        )
+        hi = dep + TIMINGS_HALF_WINDOW_S
+        if depart_until is not None:
+            hi = min(hi, depart_until)
+        options = route_instances(tt, fc, spec, dep, hi, cache=cache, budget=budget)
         options = [ls for ls in options if arrival_epoch(tt, cache, ls[-1]) <= end]
         result.append(
             (
@@ -250,3 +255,88 @@ def tighten(tt, fc, accepted, cache, budget=None):
             )
         )
     return sorted(result, key=lambda item: sort_key(tt, cache, item[0]))
+
+
+def plan_chain(
+    tt,
+    fc,
+    source,
+    target,
+    depart_epoch,
+    budget,
+    *,
+    cache,
+    depart_until=None,
+    limit=CONNECTIONS,
+):
+    """Connections in the order they leave, each the best one leaving after the one before.
+
+    The first is the connection that arrives soonest of those leaving at or after `depart_epoch`
+    (as late as it can leave and still arrive then); the next is the best of those leaving a
+    minute after it, and so on, so no connection is beaten by one that leaves later and arrives
+    earlier. `depart_until` stops the chain at that departure.
+
+    Returns:
+        (accepted, hit_limit, searches): `accepted` as `plan_routes` gives it.
+    """
+    chain, start, hit, searches = [], depart_epoch, False, 0
+    while len(chain) < limit and not budget.request_exhausted():
+        found, limited, used = plan_routes(
+            tt,
+            fc,
+            source,
+            target,
+            start,
+            budget,
+            cache=cache,
+            k=1,
+            depart_until=depart_until,
+        )
+        hit |= limited
+        searches += used
+        if not found:
+            break
+        best = tighten(tt, fc, found, cache, budget=budget, depart_until=depart_until)[0]
+        chain.append(best)
+        start = departure_epoch(tt, best[0][0]) + 60
+    return chain, hit, searches
+
+
+def plan_chain_before(
+    tt, fc, source, target, until_epoch, budget, *, cache, limit=CONNECTIONS
+):
+    """The last connections leaving before `until_epoch`, in the order they leave.
+
+    Walks a chain forward through windows that end there, growing from one hour back until it
+    holds `limit` links, and keeps its last ones. A connection that arrives no sooner than the
+    first one leaving at or after `until_epoch` is left out: that one leaves later and arrives
+    as soon, so a page of earlier connections never repeats what the page after it showed.
+    """
+    later, hit, searches = plan_chain(
+        tt, fc, source, target, until_epoch, budget, cache=cache, limit=1
+    )
+    ceiling = arrival_epoch(tt, cache, later[0][0][-1]) if later else None
+    best = []
+    for lead in BEFORE_WINDOWS_S:
+        chain, limited, used = plan_chain(
+            tt,
+            fc,
+            source,
+            target,
+            until_epoch - lead,
+            budget,
+            cache=cache,
+            depart_until=until_epoch - 1,
+            limit=CHAIN_MAX,
+        )
+        hit |= limited
+        searches += used
+        chain = [
+            link
+            for link in chain
+            if ceiling is None or arrival_epoch(tt, cache, link[0][-1]) < ceiling
+        ]
+        best = max(best, chain, key=len)
+        if len(best) >= limit or budget.request_exhausted():
+            break
+    return best[-limit:], hit, searches

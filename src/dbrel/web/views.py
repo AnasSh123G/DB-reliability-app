@@ -391,7 +391,8 @@ def _plan_response(request, timings=False):
         if timings:
             status, body = queries.plan_timings(*args, request.GET.get('route', ''), slot=_planner_slot)
         else:
-            status, body = queries.plan(*args, slot=_planner_slot)
+            status, body = queries.plan(
+                *args, slot=_planner_slot, before=request.GET.get('before') in ('1', 'true'))
     return JsonResponse(body, status=status)
 
 

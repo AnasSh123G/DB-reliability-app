@@ -16,7 +16,7 @@ from .constants import (
     MAX_DEP_DELAY_S,
     MAX_JOURNEY_S,
     MAX_LEGS,
-    V_MAX_M_S,
+    UNREACHABLE_S,
     MAX_RUNS_PER_SEARCH,
     SEARCH_SECONDS,
     REQUEST_SECONDS,
@@ -107,25 +107,9 @@ class Budget:
         return monotonic() - self.request_start >= self.request_seconds
 
 
-def haversine_m(lat, lon, target_lat, target_lon):
-    lat, lon, target_lat, target_lon = map(
-        np.radians, (lat, lon, target_lat, target_lon)
-    )
-    a = (
-        np.sin((target_lat - lat) / 2) ** 2
-        + np.cos(lat) * np.cos(target_lat) * np.sin((target_lon - lon) / 2) ** 2
-    )
-    return 6371000 * 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
-
-
 def heuristic(tt, target_si):
-    values = haversine_m(
-        tt.station_lat,
-        tt.station_lon,
-        tt.station_lat[target_si],
-        tt.station_lon[target_si],
-    )
-    return np.nan_to_num(values / V_MAX_M_S, nan=0).astype(np.int64)
+    """Seconds each station is from the target at the very least, by the scheduled hops."""
+    return tt.travel_floor(target_si)
 
 
 def lower_bound(tt, departure, end, h):
@@ -134,7 +118,7 @@ def lower_bound(tt, departure, end, h):
     values = [
         anchor + int(tt.stop_arr[base + j]) + int(h[tt.stop_si[base + j]])
         for j in range(departure.position + 1, int(end))
-        if tt.stop_arr[base + j] != NO_TIME
+        if tt.stop_arr[base + j] != NO_TIME and h[tt.stop_si[base + j]] < UNREACHABLE_S
     ]
     return min(values) if values else None
 
@@ -176,7 +160,7 @@ class _SearchCache:
             arr = self.tt.stop_arr[base : base + end]
             stations = self.tt.stop_si[base : base + end]
             values = np.where(
-                arr != NO_TIME,
+                (arr != NO_TIME) & (self.h[stations] < UNREACHABLE_S),
                 arr.astype(np.int64) + self.h[stations],
                 _NO_BOUND,
             )
@@ -269,9 +253,14 @@ def _frontier_rank(state):
     return state[1], -(state[3] if state[3] is not None else state[2])
 
 
-def earliest_arrival(tt, fc, source_si, target_si, depart_epoch, bans, budget, cache):
+def earliest_arrival(
+    tt, fc, source_si, target_si, depart_epoch, bans, budget, cache, depart_until=None
+):
+    """Earliest forecast arrival; `depart_until` caps the first train's scheduled departure."""
     budget.start_search()
     h = heuristic(tt, target_si)
+    if h[source_si] >= UNREACHABLE_S:
+        return SearchResult(None, False, 0)
     schedule = _SearchCache(tt, h)
     seq = count()
     # Later arrivals have later wait windows; fewer-leg arrivals retain more rides.
@@ -323,6 +312,8 @@ def earliest_arrival(tt, fc, source_si, target_si, depart_epoch, bans, budget, c
             at_source = lab.legs == 0
             lo = arrival if at_source else arrival + MIN_TRANSFER_S - MAX_DEP_DELAY_S
             hi = arrival + (MAX_WAIT_START_S if at_source else MAX_WAIT_TRANSFER_S)
+            if at_source and depart_until is not None:
+                hi = min(hi, depart_until)
             banned_here = banned_lines.get(si, ())
             for dep in schedule.departures(si, lo, hi):
                 if tt.var_line_key[dep.variant] in banned_here:
@@ -409,7 +400,7 @@ def earliest_arrival(tt, fc, source_si, target_si, depart_epoch, bans, budget, c
                     continue
                 t = anchor + int(a) + delays[j]
                 sj = int(tt.stop_si[base + j])
-                if t > horizon:
+                if t > horizon or h[sj] >= UNREACHABLE_S:
                     continue
                 n = scan.legs_before + 1
                 state = (sj, n, t, scan.first_departure)
