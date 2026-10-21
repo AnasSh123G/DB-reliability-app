@@ -1,10 +1,37 @@
 """Refresh derived delay fields when append-only schedule evidence changes."""
 
+from dataclasses import dataclass, field
+from collections.abc import Collection
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dbrel.models import Trip, TripStop, TripScheduleSnapshot
 from dbrel.ingest.timeutil import local_hour
+
+
+@dataclass
+class PendingSettle:
+    """Coalesce derived work until the current import epoch finishes."""
+
+    dirty: dict[int, set[int]] = field(default_factory=dict)
+
+    def add(self, trip_id: int, sequences: set[int]) -> None:
+        self.dirty[trip_id] = self.dirty.get(trip_id, set()) | sequences
+
+    def settle(self, session: Session, trip_ids: Collection[int] | None = None) -> None:
+        selected = list(self.dirty) if trip_ids is None else list(trip_ids)
+        for trip_id in selected:
+            if trip_id not in self.dirty:
+                continue
+            trip = session.get(Trip, trip_id)
+            if trip is None:
+                raise ValueError(f"cannot settle missing trip {trip_id}")
+            refresh_run_bounds(session, trip)
+            sequences = self.dirty[trip_id]
+            if sequences:
+                reconcile_facts(session, trip, sequences)
+            del self.dirty[trip_id]
 
 
 def reconcile_facts(session: Session, trip: Trip, sequences: set[int], *,

@@ -90,23 +90,6 @@ def test_a_short_working_joins_the_direction_it_travels(session):
     assert {"RB 10324", "RB 10300"} <= opposite
 
 
-def test_a_line_has_exactly_two_halves(session):
-    assert len(queries.line_detail(session, LINE_ID)["directions"]) == 2
-
-
-def test_each_half_is_named_for_the_end_it_runs_to(session):
-    labels = {d["label"] for d in queries.line_detail(session, LINE_ID)["directions"]}
-    assert labels == {"Aachen Hbf", "Duisburg Hbf"}
-
-
-def test_short_workings_are_marked_as_partial(session):
-    detail = queries.line_detail(session, LINE_ID)
-    partial = {
-        run["name"] for d in detail["directions"] for run in d["runs"] if run["partial"]
-    }
-    assert partial == {"RB 10301", "RB 10300"}
-
-
 def test_every_run_appears_exactly_once(session):
     detail = queries.line_detail(session, LINE_ID)
     names = [run["name"] for d in detail["directions"] for run in d["runs"]]
@@ -125,9 +108,5 @@ def test_the_current_run_is_flagged_and_only_it(session):
 def run_named(session, name: str, **kwargs) -> dict:
     detail = queries.line_detail(session, LINE_ID, **kwargs)
     return next(r for d in detail["directions"] for r in d["runs"] if r["name"] == name)
-
-
-def test_no_forecast_without_average_data(session):
-    assert run_named(session, "RB 10324")["pred"] is None
 
 

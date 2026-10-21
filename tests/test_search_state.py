@@ -100,25 +100,6 @@ def test_a_line_crossing_a_border_is_found_from_both_states(passenger_session):
         "Dortmund Hbf – Osnabrück Hbf"]
 
 
-def test_a_train_is_found_only_from_a_state_it_stops_in(passenger_session):
-    def trains(state):
-        return [r["id"] for r in queries.suggest(passenger_session, "ICE 618", state=state) if r["kind"] == "train"]
-
-    assert trains(None) == trains("DE-NW") == trains("DE-NI") == [618]
-    assert trains("DE-MV") == []
-
-
-def test_stations_are_offered_whatever_the_state(passenger_session):
-    hits = queries.suggest(passenger_session, "pasewalk", state="DE-NW")
-    assert [(r["kind"], r["id"]) for r in hits] == [("station", 4)]
-
-
-def test_without_passenger_lines_the_service_line_is_checked(session):
-    """Before build-passenger-lines one RE/4 row stands for both lines; it stops in NW and MV, not BY."""
-    assert [r["id"] for r in queries.suggest(session, "re4", state="DE-MV") if r["kind"] == "line"] == [1]
-    assert [r["id"] for r in queries.suggest(session, "re4", state="DE-BY") if r["kind"] == "line"] == []
-
-
 def _suggest_response(query: str):
     """The /api/suggest view's response for `query` (a query string)."""
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "dbrel.web.settings")

@@ -26,6 +26,10 @@ import hashlib
 import time
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbrel.ingest.replay import ReplayDayContext
 
 from sqlalchemy import case, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -89,6 +93,8 @@ VALUE_FIELDS = (
 
 @dataclass(slots=True)
 class PollResult:
+    upsert_calls: int = 0
+    refs_refreshed: int = 0
     sweep_id: int = 0
     stations_polled: int = 0
     stations_failed: int = 0
@@ -234,6 +240,7 @@ def run_tt_poll(
     dry_run: bool = False,
     now: int | None = None,
     progress=lambda msg: None,
+    day_ctx: ReplayDayContext | None = None,
 ) -> PollResult:
     require_dated_schedule_schema(session)
     started = time.monotonic()
@@ -243,15 +250,14 @@ def run_tt_poll(
     now = read_clock(frozen)
     result = PollResult(sweep_id=now)
 
-    tracked = (
-        session.execute(
+    if day_ctx is not None:
+        tracked = sorted(day_ctx.tracked_stations, key=lambda st: (st.poll_priority, st.id))
+    else:
+        tracked = list(session.scalars(
             select(Station)
             .where(Station.tracked == 1, Station.eva.isnot(None))
             .order_by(Station.poll_priority, Station.id)
-        )
-        .scalars()
-        .all()
-    )
+        ))
     # Priority tiering: a station with priority N is polled every Nth sweep, so a
     # large set can keep high resolution where it matters within the request
     # budget. The actual rate is not a fixed number -- see config.py (TT_RPS_FAST /
@@ -267,19 +273,32 @@ def run_tt_poll(
 
     service_dates = _candidate_service_dates(now)
     trip_by_run = _load_trip_index(session, service_dates)
+    run_keys_by_trip: dict[int, set[str]] = {}
+    for run_key, ref in trip_by_run.items():
+        run_keys_by_trip.setdefault(ref.trip_id, set()).add(run_key)
+
+    def _refresh_refs(trip_id: int) -> None:
+        """An alias upsert can repoint the physical trip shared by many keys."""
+        trip = session.get(Trip, trip_id)
+        current = _TripRef(trip_id, trip.train_id, trip.service_date, trip.path_sha1)
+        for run_key in run_keys_by_trip.get(trip_id, ()):
+            if trip_by_run[run_key] != current:
+                trip_by_run[run_key] = current
+                result.refs_refreshed += 1
 
     # Shared with the /plan importer so both mint identities the same way.
     run_ctx = RunContext(
-        fv_id=tt_feed_version(session),
+        fv_id=day_ctx.fv_id if day_ctx is not None else tt_feed_version(session),
         station_id_by_eva={st.eva: st.id for st in tracked},
         station_name_by_eva={st.eva: st.name for st in tracked},
-        train_by_key=dict(
+        train_by_key=day_ctx.train_by_key if day_ctx is not None else dict(
             session.execute(
                 # Only tts: keys can match; the 87k GTFS trains never will.
                 select(Train.identity_key, Train.id).where(Train.source == SOURCE_TT)
             ).all()
         ),
         now=now,
+        line_cache=day_ctx.line_cache if day_ctx is not None else {},
     )
     run_counters = RunCounters()
 
@@ -339,18 +358,23 @@ def run_tt_poll(
             if _is_full_record(stop):
                 # Additions need a trip; known runs need only this stop's receipt.
                 receipt = PlanReceipt(observed_at=received_at,
-                                      content_sha256=hashlib.sha256(resp.body).hexdigest(),
+                                      content_sha256=poll.content_sha256,
                                       source_kind="fchg", eva=station.eva)
                 was_known = ref is not None
                 if ref is not None:
                     # A full station response still describes only one stop.
                     # Keep the established route, endpoints and stop count.
+                    if session.get(Trip, ref.trip_id).path_sha1 != ref.path_sha1:
+                        _refresh_refs(ref.trip_id)
+                        ref = trip_by_run[stop.run_key]
                     record_plans(session, ref.trip_id, ref.path_sha1, [(stop, receipt)],
                                  run_ctx.station_id_by_eva)
                     trip_id = ref.trip_id
                 else:
                     trip_id = upsert_run(session, run_ctx, run_counters, stop.run_key, [stop],
                                          schedule_observations=[(stop, receipt)])
+                    if trip_id is not None:
+                        _refresh_refs(trip_id)
                 if trip_id is not None:
                     trip = session.get(Trip, trip_id)
                     ref = _TripRef(
@@ -360,6 +384,7 @@ def run_tt_poll(
                         path_sha1=trip.path_sha1,
                     )
                     trip_by_run[stop.run_key] = ref
+                    run_keys_by_trip.setdefault(trip_id, set()).add(stop.run_key)
                     station_created += not was_known
             if ref is None:
                 # A delta for a run we have no /plan row for. Recorded rather than
@@ -399,6 +424,11 @@ def run_tt_poll(
             realized.append((ref, stop, ar, dp))
 
         # The planned side, for exactly the runs this station just yielded.
+        # Earlier observations may precede an alias that repointed their trip.
+        for trip_id in {ref.trip_id for ref, *_ in realized}:
+            _refresh_refs(trip_id)
+        realized = [(trip_by_run[stop.run_key], stop, ar, dp)
+                    for _, stop, ar, dp in realized]
         dates_by_train: dict[int, dict[str, str | None]] = {}
         for ref, *_ in realized:
             dates_by_train.setdefault(ref.train_id, {})[ref.service_date] = ref.path_sha1
@@ -518,13 +548,17 @@ def run_tt_poll(
 
         if seen_trip_ids and not dry_run:
             session.execute(
-                update(Trip)
+                update(Trip.__table__)
                 .where(Trip.id.in_(list(seen_trip_ids)))
                 .values(
                     status=case((Trip.status == "SCHEDULED", "RUNNING"), else_=Trip.status),
                     n_polls_seen=Trip.n_polls_seen + 1,
                 )
             )
+            for trip_id in seen_trip_ids:
+                loaded = session.identity_map.get(session.identity_key(Trip, (trip_id,)))
+                if loaded is not None:
+                    session.expire(loaded, ["status", "n_polls_seen"])
 
         result.matched += station_matched
         result.unmatched += station_unmatched
@@ -546,6 +580,7 @@ def run_tt_poll(
         )
 
     session.flush()
+    result.upsert_calls = run_counters.upsert_calls
     result.elapsed_s = time.monotonic() - started
     return result
 

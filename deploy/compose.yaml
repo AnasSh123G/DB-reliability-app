@@ -1,0 +1,33 @@
+# Home-server deployment. Run from this directory on the server:
+#   docker compose up -d --build --wait
+# Secrets and host names live in /srv/bahnpredict/.env, the database in /srv/bahnpredict/data.
+# The fixed name makes a manual run and the GitHub runner's checkout manage the same containers.
+name: bahnpredict
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: bahnpredict:latest
+    restart: unless-stopped
+    env_file: /srv/bahnpredict/.env
+    volumes:
+      - /srv/bahnpredict/data:/data
+    mem_limit: 1g
+    # No "ports:": only cloudflared reaches the app, over the compose network as app:8080.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/suggest?q=ber', timeout=10)"]
+      interval: 30s
+      timeout: 15s
+      start_period: 60s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file: /srv/bahnpredict/.env   # TUNNEL_TOKEN
+    depends_on:
+      app:
+        condition: service_healthy

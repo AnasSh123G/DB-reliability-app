@@ -95,7 +95,11 @@ export function AppShell({ locale, isDark, setLocale, setIsDark, children }: Pro
               <Moon className="size-4" />
             </Button>
           </div>
-          <div className="inline-flex rounded-xl border border-line bg-panel p-1" role="group" aria-label="Language">
+          <div
+            className="inline-flex rounded-xl border border-line bg-panel p-1"
+            role="group"
+            aria-label="Language"
+          >
             <Button
               variant="ghost"
               size="sm"
@@ -130,7 +134,9 @@ export function AppShell({ locale, isDark, setLocale, setIsDark, children }: Pro
               H
             </span>
             <div className="leading-none">
-              <p className="font-display font-semibold text-[17.67px] tracking-tight">BahnPredict</p>
+              <p className="font-display font-semibold text-[17.67px] tracking-tight">
+                BahnPredict
+              </p>
               <p className="text-[13.67px] text-fog mt-0.5">{t.subtitle}</p>
             </div>
           </Link>

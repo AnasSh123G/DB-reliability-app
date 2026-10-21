@@ -43,6 +43,8 @@ CACHE_DIR = DATA_DIR / "feeds"
 # and is safe to delete: a re-fetch restores it.
 ARCHIVE_DIR = DATA_DIR / "archive"
 DB_PATH = Path(os.environ.get("DBREL_DB", DATA_DIR / "dbrel.sqlite"))
+BACKFILL_CACHE_MIB = int(os.environ.get("DBREL_BACKFILL_CACHE_MIB", "2048"))
+BACKFILL_MMAP_MIB = int(os.environ.get("DBREL_BACKFILL_MMAP_MIB", "8192"))
 
 TZ = ZoneInfo("Europe/Berlin")
 

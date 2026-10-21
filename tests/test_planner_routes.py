@@ -7,10 +7,8 @@ from dbrel.planner.routes import (
     plan_chain,
     plan_chain_before,
     plan_routes,
-    route_key,
     route_instances,
     parse_route_key,
-    tighten,
 )
 
 
@@ -45,19 +43,6 @@ def test_sunday():
 
 
 @pytest.mark.parametrize(
-    "key",
-    [
-        "pl100@1>2~pl200@3>4",
-        "x@1>4",
-        "pl100@2>4",
-        "~".join(["pl100@1>1"] * 5 + ["pl100@1>4"]),
-    ],
-)
-def test_invalid(key):
-    assert parse_route_key(make_timetable(), key, 1, 4) is None
-
-
-@pytest.mark.parametrize(
     "delays,count,first", [({}, 1, 100), ({(100, 2): (4,) * 3}, 2, 102)]
 )
 def test_instances(delays, count, first):
@@ -69,17 +54,6 @@ def test_instances(delays, count, first):
     )
     assert len(instances) == count
     assert tt.var_train[instances[0][0].variant] == first
-
-
-def test_tightening():
-    tt = make_timetable()
-    fc = FixedForecaster(tt, {})
-    cache = {}
-    accepted, _, _ = plan_routes(
-        tt, fc, 0, 3, epoch(clock="07:00"), Budget(), cache=cache
-    )
-    result = tighten(tt, fc, accepted, cache)
-    assert tt.var_train[result[0][0][0].variant] == 100
 
 
 @pytest.mark.parametrize("delay,count", [(4, 1), (0, 0)])

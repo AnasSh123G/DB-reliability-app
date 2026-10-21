@@ -13,7 +13,7 @@
         "path": "bahnpredict-feedback",
         "responseMode": "responseNode",
         "options": {
-          "allowedOrigins": "https://bahnpredict.fly.dev,http://localhost:8000,http://127.0.0.1:8000"
+          "allowedOrigins": "https://bahnpredict.de,https://www.bahnpredict.de,http://localhost:8000,http://127.0.0.1:8000"
         }
       }
     },

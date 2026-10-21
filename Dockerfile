@@ -1,5 +1,5 @@
 # One image: the Django API, the built frontend (a small Node server) and the served model.
-# The database is NOT in the image: it lives on a volume mounted at /data (see fly.toml).
+# The database is NOT in the image: it lives on a volume mounted at /data (see deploy/compose.yaml).
 
 FROM node:24-slim AS frontend
 WORKDIR /app/bahn-buddy-predict

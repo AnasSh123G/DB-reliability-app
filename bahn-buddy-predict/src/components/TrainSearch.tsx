@@ -2,7 +2,12 @@ import { ArrowRight, Clock3, MapPin, Route, Search, TrainFront } from "lucide-re
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
-import { useRouteDirections, useRouteStations, useRouteTripsAround, useSuggest } from "@/hooks/use-dbrel";
+import {
+  useRouteDirections,
+  useRouteStations,
+  useRouteTripsAround,
+  useSuggest,
+} from "@/hooks/use-dbrel";
 import { delayColor, expectedTime } from "@/lib/delay";
 import { copy, type Locale } from "@/lib/i18n";
 import { trainRoute, type RouteRef, type SuggestResult } from "@/lib/api";
@@ -39,7 +44,9 @@ export function TrainSearch({ locale }: Props) {
   const searchFieldRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState(savedSearch?.query ?? "");
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const [selectedLine, setSelectedLine] = useState<RouteRef | null>(savedSearch?.selectedLine ?? null);
+  const [selectedLine, setSelectedLine] = useState<RouteRef | null>(
+    savedSearch?.selectedLine ?? null,
+  );
   const [direction, setDirection] = useState<number | undefined>(savedSearch?.direction);
   const [stationId, setStationId] = useState<number | undefined>(savedSearch?.stationId);
   const [date, setDate] = useState(savedSearch?.date ?? "");
@@ -75,7 +82,11 @@ export function TrainSearch({ locale }: Props) {
   const trips = aroundData?.trips ?? [];
 
   const canSubmit =
-    selectedLine !== null && direction !== undefined && stationId !== undefined && Boolean(date) && Boolean(time);
+    selectedLine !== null &&
+    direction !== undefined &&
+    stationId !== undefined &&
+    Boolean(date) &&
+    Boolean(time);
 
   useEffect(() => {
     if (!suggestionsOpen) return;
@@ -132,7 +143,10 @@ export function TrainSearch({ locale }: Props) {
       <section className="rounded-2xl border border-line bg-panel p-4 sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="relative" ref={searchFieldRef}>
-            <label htmlFor="train-search" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+            <label
+              htmlFor="train-search"
+              className="mb-1.5 block text-[13.67px] uppercase text-fog"
+            >
               {t.trainLabel}
             </label>
             <div className="flex h-[46px] items-center gap-2 rounded-xl border border-line bg-ink px-3 focus-within:border-teal">
@@ -176,9 +190,13 @@ export function TrainSearch({ locale }: Props) {
                       <span className="flex min-w-0 items-start gap-2">
                         <span className="mt-0.5">{kindIcon(result.kind)}</span>
                         <span className="flex min-w-0 flex-col">
-                          <span className="font-display font-semibold text-paper">{result.name}</span>
+                          <span className="font-display font-semibold text-paper">
+                            {result.name}
+                          </span>
                           {result.stops && (
-                            <span className="whitespace-normal text-[13.67px] font-normal text-fog">{result.stops}</span>
+                            <span className="whitespace-normal text-[13.67px] font-normal text-fog">
+                              {result.stops}
+                            </span>
                           )}
                         </span>
                       </span>
@@ -191,7 +209,10 @@ export function TrainSearch({ locale }: Props) {
             )}
           </div>
           <div>
-            <label htmlFor="train-direction" className="mb-1.5 block text-[13.67px] uppercase text-fog">
+            <label
+              htmlFor="train-direction"
+              className="mb-1.5 block text-[13.67px] uppercase text-fog"
+            >
               {t.direction}
             </label>
             <select
@@ -278,11 +299,16 @@ export function TrainSearch({ locale }: Props) {
       </section>
 
       {!submitted && selectedLine && (
-        <p className="mx-auto mt-4 max-w-3xl px-1 text-center text-xs text-fog">{t.pickAllFields}</p>
+        <p className="mx-auto mt-4 max-w-3xl px-1 text-center text-xs text-fog">
+          {t.pickAllFields}
+        </p>
       )}
 
       {submitted && (
-        <section className="mx-auto mt-6 max-w-3xl rounded-2xl border border-line bg-panel p-5 sm:p-7" aria-live="polite">
+        <section
+          className="mx-auto mt-6 max-w-3xl rounded-2xl border border-line bg-panel p-5 sm:p-7"
+          aria-live="polite"
+        >
           <div className="flex items-center gap-3 border-b border-line pb-4">
             <span className="grid size-9 place-items-center rounded-xl bg-ink text-teal">
               <MapPin className="size-4" />
@@ -305,7 +331,12 @@ export function TrainSearch({ locale }: Props) {
                   <Button
                     key={`${trip.train_id}-${trip.sched_dep ?? trip.sched_arr}`}
                     variant="ghost"
-                    onClick={() => void navigate({ to: "/train/$trainId", params: { trainId: String(trip.train_id) } })}
+                    onClick={() =>
+                      void navigate({
+                        to: "/train/$trainId",
+                        params: { trainId: String(trip.train_id) },
+                      })
+                    }
                     className="h-auto w-full items-start justify-between gap-4 rounded-none px-1 py-4 text-left hover:bg-ink sm:px-3"
                   >
                     <span className="flex min-w-0 items-start gap-3">
@@ -313,20 +344,32 @@ export function TrainSearch({ locale }: Props) {
                         <TrainFront className="size-4" />
                       </span>
                       <span className="min-w-0">
-                        <span className="flex items-center gap-1 text-[12.67px] uppercase text-fog">{label}</span>
-                        <span className="mt-1 block font-display font-semibold text-paper">{trip.name}</span>
+                        <span className="flex items-center gap-1 text-[12.67px] uppercase text-fog">
+                          {label}
+                        </span>
+                        <span className="mt-1 block font-display font-semibold text-paper">
+                          {trip.name}
+                        </span>
                       </span>
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1 text-right">
                       <span>
-                        <span className="block text-[12.67px] uppercase font-normal text-fog">{t.arrival}</span>
-                        <span className="mt-1 block font-display text-sm text-mist">{trip.sched_arr ?? "—"}</span>
+                        <span className="block text-[12.67px] uppercase font-normal text-fog">
+                          {t.arrival}
+                        </span>
+                        <span className="mt-1 block font-display text-sm text-mist">
+                          {trip.sched_arr ?? "—"}
+                        </span>
                         {expectedArr && trip.arr_pred ? (
-                          <span className={`block text-[12.67px] font-semibold ${delayColor(trip.arr_pred.p50_min)}`}>
+                          <span
+                            className={`block text-[12.67px] font-semibold ${delayColor(trip.arr_pred.p50_min)}`}
+                          >
                             {expectedArr} · +{trip.arr_pred.p50_min}
                           </span>
                         ) : (
-                          <span className="block text-[12.67px] text-fog">{trip.sched_arr ? t.noAverage : "—"}</span>
+                          <span className="block text-[12.67px] text-fog">
+                            {trip.sched_arr ? t.noAverage : "—"}
+                          </span>
                         )}
                       </span>
                       <span className="mt-2 flex items-center justify-end gap-1 text-[12.67px] font-normal text-fog">

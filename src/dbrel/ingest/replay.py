@@ -16,7 +16,12 @@ as `now`. See timeutil.read_clock.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dbrel.models import Station
 
 from dbrel.ingest.archive import ArchivedResponse
 from dbrel.ingest.client import Response
@@ -24,6 +29,16 @@ from dbrel.ingest.client import Response
 # What the live gateway returns for a station with no data in the requested hour,
 # and what plan_import already treats as routine rather than as an error.
 _ABSENT = 404
+
+
+@dataclass(slots=True)
+class ReplayDayContext:
+    """Identity lookups shared only within one replay day's session."""
+
+    fv_id: int
+    train_by_key: dict[str, int]
+    line_cache: dict[str, int]
+    tracked_stations: list[Station]
 
 
 @dataclass(slots=True)
@@ -140,6 +155,13 @@ def _plan_key(response: ArchivedResponse) -> tuple[int, str, int] | None:
 
 @dataclass(slots=True)
 class ReplayResult:
+    plan_s: float = 0.0
+    sweeps_s: float = 0.0
+    finalize_s: float = 0.0
+    total_s: float = 0.0
+    upsert_calls: int = 0
+    refs_refreshed: int = 0
+    batch_epochs: int = 0
     days: int = 0
     sweeps: int = 0
     plan_buckets: int = 0
@@ -171,6 +193,8 @@ def replay_day(
     *,
     tracked_evas: set[int],
     dry_run: bool = False,
+    merge_plan_hours: bool = False,
+    plan_writer: str = "per_run",
     progress=lambda msg: None,
 ) -> ReplayResult:
     """Replay one archived day into the database, one upstream job at a time.
@@ -199,14 +223,30 @@ def replay_day(
     from dbrel.ingest.changes_poller import run_tt_poll
     from dbrel.ingest.finalize_tt import run_finalize_tt
     from dbrel.ingest.plan_import import import_plan
+    from sqlalchemy import select
+    from dbrel.identity import SOURCE_TT
+    from dbrel.models import Station, Train
+    from dbrel.ingest.runs import tt_feed_version
 
+    started = time.perf_counter()
     result = ReplayResult(days=1)
     paths = files_for_date(store, day)
     if not paths:
         result.errors.append(f"{day}: no partitions on disk; run archive-fetch first")
+        result.total_s = time.perf_counter() - started
         return result
 
     result.missing_hours = missing_hours(paths, day, day)
+    day_ctx = ReplayDayContext(
+        fv_id=tt_feed_version(session),
+        train_by_key=dict(session.execute(
+            select(Train.identity_key, Train.id).where(Train.source == SOURCE_TT)
+        ).all()),
+        line_cache={},
+        tracked_stations=list(session.scalars(
+            select(Station).where(Station.tracked == 1, Station.eva.isnot(None))
+        )),
+    )
     counters = ReplayCounters()
     yymmdd = day.strftime("%y%m%d")
     last_instant: int | None = None
@@ -231,20 +271,34 @@ def replay_day(
                 changes.append(response)
                 covered_evas.add(response.eva)
 
-        for hour in sorted(plan_by_hour):
-            responses = plan_by_hour[hour]
+        if merge_plan_hours:
+            # One import for the whole partition (opt-in: it groups stops into
+            # runs differently than per-hour imports, see the D6.2 rule).
+            batches = (
+                [(sorted(plan_by_hour), [r for h in sorted(plan_by_hour) for r in plan_by_hour[h]])]
+                if plan_by_hour else []
+            )
+        else:
+            batches = [([hour], plan_by_hour[hour]) for hour in sorted(plan_by_hour)]
+        for hours, responses in batches:
             source = ArchiveReplaySource(responses, tracked_evas=tracked_evas, counters=counters)
             # Stamped with when the archive read this bucket, not when we replayed.
             recorded = max(r.recorded_at for r in responses)
+            phase_started = time.perf_counter()
             plan_result = import_plan(
                 session,
                 source,
                 date=day.isoformat(),
-                hours=[hour],
+                hours=hours,
                 force=True,
                 now=recorded,
                 progress=lambda _msg: None,
+                day_ctx=day_ctx,
+                writer=plan_writer,
             )
+            result.plan_s += time.perf_counter() - phase_started
+            result.upsert_calls += plan_result.upsert_calls
+            result.batch_epochs += getattr(plan_result, "batch_epochs", 0)
             result.plan_buckets += plan_result.buckets_fetched
             result.plan_stops += plan_result.stops_seen
             result.trips_created += plan_result.trips_created
@@ -255,9 +309,11 @@ def replay_day(
             instant = sweep_instant(sweep)
             last_instant = max(last_instant or instant, instant)
             source = ArchiveReplaySource(sweep, tracked_evas=tracked_evas, counters=counters)
+            phase_started = time.perf_counter()
             poll = run_tt_poll(
                 session,
                 source,
+                day_ctx=day_ctx,
                 # Every tracked station, every sweep: the archive's own cadence is
                 # the only tiering there is, and it already applied it upstream.
                 priority_max=99,
@@ -266,6 +322,9 @@ def replay_day(
                 now=instant,
                 progress=lambda _msg: None,
             )
+            result.sweeps_s += time.perf_counter() - phase_started
+            result.upsert_calls += poll.upsert_calls
+            result.refs_refreshed += poll.refs_refreshed
             sweep_index += 1
             result.sweeps += 1
             result.stops_stored += poll.stored
@@ -289,7 +348,12 @@ def replay_day(
     # window is still open is left for the following day's replay rather than
     # written off on the strength of polls that had not happened yet.
     if last_instant is not None and not dry_run:
-        finalized = run_finalize_tt(session, now=last_instant, progress=lambda _m: None)
+        phase_started = time.perf_counter()
+        finalized = run_finalize_tt(
+            session, now=last_instant,
+            progress=lambda _m: None,
+        )
+        result.finalize_s += time.perf_counter() - phase_started
         result.trips_finalized = finalized.trips_finalized
         result.gaps_written = finalized.gaps_written
         for quality, count in finalized.by_quality.items():
@@ -298,4 +362,5 @@ def replay_day(
 
     result.untracked_evas |= counters.untracked_evas
     result.uncovered_tracked = tracked_evas - covered_evas
+    result.total_s = time.perf_counter() - started
     return result

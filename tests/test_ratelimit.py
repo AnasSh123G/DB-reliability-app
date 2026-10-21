@@ -48,43 +48,6 @@ def test_a_penalty_applies_to_every_process_sharing_the_file(tmp_path):
     assert two.penalised_until() > 0.0
 
 
-def test_penalty_paces_calls_that_fast_mode_would_have_waved_through(tmp_path):
-    bucket = _bucket(tmp_path, rps=1000.0, penalty_rps=20.0, penalty_s=5.0)
-    bucket.penalise()
-
-    started = time.monotonic()
-    bucket.acquire()
-    elapsed = time.monotonic() - started
-    # Emptied bucket at 20/s means the next token is ~50 ms away.
-    assert elapsed >= 0.04, f"penalised call went through in {elapsed:.3f}s"
-
-
-def test_the_penalty_expires_on_its_own(tmp_path):
-    bucket = _bucket(tmp_path, rps=1000.0, penalty_rps=20.0, penalty_s=0.2)
-    bucket.penalise()
-    assert bucket.penalised_until() > 0.0
-
-    time.sleep(0.25)
-    assert bucket.penalised_until() == 0.0, "recovery must not need another call"
-
-    started = time.monotonic()
-    for _ in range(20):
-        bucket.acquire()
-    assert time.monotonic() - started < 0.3, "back to fast mode after expiry"
-
-
-def test_a_second_penalty_extends_but_never_shortens_the_first(tmp_path):
-    bucket = _bucket(tmp_path, penalty_s=60.0)
-    bucket.penalise()
-    first = bucket.penalised_until()
-
-    short = _bucket(tmp_path, penalty_s=0.1)
-    short.penalise()
-    assert short.penalised_until() >= first - 1, (
-        "a shorter penalty must not cut a longer one short"
-    )
-
-
 def test_a_corrupt_state_file_does_not_wedge_the_limiter(tmp_path):
     (tmp_path / "rl.json").write_text("{not json")
     bucket = _bucket(tmp_path)

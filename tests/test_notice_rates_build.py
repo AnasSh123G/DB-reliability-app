@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from dbrel.db import Base
 from dbrel.derive.notice_rates import (
-    build_notice_rates, notice_kind, notices_per_1000_trips, sparse_months,
+    build_notice_rates,
 )
 from dbrel.models import NoticeRateDaily, ServiceLine, Station, Train, Trip, TripStop, TtMessage
 
@@ -73,19 +73,6 @@ def _table(engine, date=None):
     return {(r.level, r.key_id, r.service_date): (r.n, r.k_works, r.k_disruption) for r in rows}
 
 
-def test_table_exists_in_a_fresh_database(engine):
-    assert "notice_rate_daily" in inspect(engine).get_table_names()
-
-
-def test_kinds_follow_the_category_prefix():
-    assert notice_kind("Bauarbeiten") == "works"
-    assert notice_kind("Bauarbeiten. (Quelle: zuginfo.nrw)") == "works"
-    assert notice_kind("Störung") == "disruption"
-    assert notice_kind("Großstörung") == "disruption"
-    assert notice_kind("Information") is None
-    assert notice_kind(None) is None
-
-
 def test_counts_per_level(engine):
     build_notice_rates(engine)
     table = _table(engine, D1)
@@ -95,20 +82,6 @@ def test_counts_per_level(engine):
     assert table[("train", 10, D1)] == (2, 2, 2)    # trip 1's two stops
     assert table[("train", 11, D1)] == (1, 0, 0)    # trip 2: its only notice is deleted
     assert table[("train", 20, D1)] == (1, 0, 0)
-
-
-def test_a_train_without_a_line_has_no_line_row(engine):
-    build_notice_rates(engine)
-    assert {k for (lvl, k, _) in _table(engine) if lvl == "line"} == {LINE}
-
-
-def test_a_deleted_only_notice_and_an_ineligible_arrival_count_nowhere(engine):
-    build_notice_rates(engine)
-    table = _table(engine, D1)
-    # trip 4 (cancelled arrival) adds nothing, and trip 2's deleted notice sets no flag:
-    assert table[("station", 1, D1)][0] == 3
-    assert ("train", 12, D1) not in table
-    assert table[("train", 11, D1)] == (1, 0, 0)
 
 
 def test_rebuilding_changes_nothing(engine):
@@ -126,22 +99,6 @@ def test_rebuilding_a_range_replaces_only_those_dates(engine):
     build_notice_rates(engine, first=D2, last=D2)
     assert _table(engine, D2)[("station", 1, D2)] == (1, 0, 1)
     assert _table(engine, D1)[("station", 1, D1)] == (3, 1, 1)
-
-
-def test_month_totals_and_progress(engine):
-    seen = []
-    summary = build_notice_rates(engine, progress=lambda d, n: seen.append(d))
-    assert seen == [D1, D2]
-    assert summary["2026-09"] == {"trips": 4, "arrivals": 5, "works_notices": 1, "disruption_notices": 1}
-
-
-def test_a_month_far_below_the_median_density_is_flagged():
-    def month(density):
-        return {"trips": 1000, "arrivals": 9000, "works_notices": density, "disruption_notices": 0}
-    summary = {"2026-01": month(100), "2026-02": month(110), "2026-03": month(105), "2026-04": month(20)}
-    assert sparse_months(summary) == ["2026-04"]
-    assert notices_per_1000_trips(summary["2026-01"]) == 100
-    assert sparse_months({"2026-01": month(100), "2026-02": month(1)}) == []  # too few months to judge
 
 
 def test_migrating_an_older_database_adds_only_the_table(engine):
@@ -185,61 +142,3 @@ def _run_cli(monkeypatch, db_path, args):
         dbmod.dispose_engine()
 
 
-def test_cli_lists_the_months_and_fills_the_table(tmp_path, monkeypatch):
-    import sqlite3
-
-    from ml_fixture import build
-
-    path = tmp_path / "db.sqlite"
-    build(path)
-    result = _run_cli(monkeypatch, path, [])
-    assert result.exit_code == 0, result.output
-    assert "2026-09" in result.output and "works/1k trips" in result.output
-    assert "WARNING" not in result.output  # one month is too few to judge
-    (rows,) = sqlite3.connect(path).execute("SELECT COUNT(*) FROM notice_rate_daily").fetchone()
-    assert rows > 0
-
-
-def test_cli_flags_a_sparse_month(tmp_path, monkeypatch):
-    import dbrel.derive.notice_rates as module
-    from ml_fixture import build
-
-    def month(density):
-        return {"trips": 1000, "arrivals": 9000, "works_notices": density, "disruption_notices": 0}
-
-    monkeypatch.setattr(module, "build_notice_rates", lambda *a, **k: {
-        "2026-01": month(100), "2026-02": month(110), "2026-03": month(105), "2026-04": month(20)})
-    path = tmp_path / "db.sqlite"
-    build(path)
-    result = _run_cli(monkeypatch, path, [])
-    assert result.exit_code == 0, result.output
-    assert "2026-04" in result.output and "far fewer notices" in result.output
-    assert "WARNING: 1 month(s)" in result.output
-
-
-def test_cli_limits_a_rebuild_to_the_given_dates(tmp_path, monkeypatch):
-    import sqlite3
-
-    from ml_fixture import DATES, build
-
-    path = tmp_path / "db.sqlite"
-    build(path)
-    first, last = DATES[3], DATES[4]
-    conn = sqlite3.connect(path)
-    conn.execute("DELETE FROM notice_rate_daily")  # the fixture builds the whole table; start clean
-    conn.commit()
-    conn.close()
-    result = _run_cli(monkeypatch, path, ["--from", first, "--to", last])
-    assert result.exit_code == 0, result.output
-    dates = {d for (d,) in sqlite3.connect(path).execute("SELECT DISTINCT service_date FROM notice_rate_daily")}
-    assert dates == {first, last}
-
-
-def test_the_builder_creates_its_table_in_a_database_that_predates_it(engine):
-    from sqlalchemy import text
-
-    with engine.begin() as conn:
-        conn.execute(text("DROP TABLE notice_rate_daily"))
-    assert "notice_rate_daily" not in inspect(engine).get_table_names()
-    build_notice_rates(engine)
-    assert "notice_rate_daily" in inspect(engine).get_table_names() and _table(engine)

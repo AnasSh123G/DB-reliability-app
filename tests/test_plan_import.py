@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from dbrel.db import Base
-from dbrel.models import Station, TtPlanFetch
+from dbrel.models import Station, Trip, TripScheduleSnapshot, TtPlanFetch
 from dbrel.ingest.client import Response
 from dbrel.ingest.plan_import import import_plan
 
@@ -89,3 +89,22 @@ def test_a_200_bucket_is_never_refetched(session):
     result = import_plan(session, client, date="2026-09-16", hours=[9])
     assert result.buckets_skipped == 1
     assert result.buckets_fetched == 0
+
+
+def test_default_writer_batches_runs_and_records_schedule(session):
+    body = (
+        f'<timetable station="Bochum Hbf" eva="{EVA}">'
+        '<s id="123456789-2609160900-1">'
+        '<tl t="p" o="DB" c="RE" n="42"/>'
+        '<dp pt="2609160900" pp="1" l="RE42" ppth="Essen Hbf"/>'
+        '</s></timetable>'
+    ).encode()
+    client = _FakeClient([Response(status=200, body=body, elapsed_ms=1)])
+
+    result = import_plan(session, client, date="2026-09-16", hours=[9])
+
+    assert result.batch_epochs == 1
+    assert result.upsert_calls == 1
+    assert result.trips_created == 1
+    assert session.scalar(select(func.count()).select_from(Trip)) == 1
+    assert session.scalar(select(func.count()).select_from(TripScheduleSnapshot)) == 1

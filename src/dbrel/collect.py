@@ -16,10 +16,12 @@ running for a week.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
 import signal
+import stat
 import time
 import tomllib
 from collections.abc import Callable, Iterator
@@ -358,20 +360,35 @@ class AlreadyRunning(RuntimeError):
     """Another `dbrel collect` (or similar) holds the sweep lock."""
 
 
+def writer_lock_path(database: Path) -> Path:
+    """Give every spelling of a database path the same writer lock."""
+    return Path(str(database.resolve()) + ".writer.lock")
+
+
 @contextmanager
 def exclusive_lock(path: Path = TT_SWEEP_LOCK, *, label: str = "collect") -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise AlreadyRunning(f"unsafe lock file {path}: symlinks are not allowed") from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise AlreadyRunning(f"unsafe lock file {path}: expected a regular file with no hard links")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raw = os.read(fd, 4096).decode("utf-8", "replace")
             try:
                 holder = json.loads(raw)
-                detail = f"pid {holder.get('pid')} ({holder.get('label')}, started {holder.get('started_at')})"
             except json.JSONDecodeError:
-                detail = "an unknown process"
+                holder = None
+            detail = "an unknown process"
+            if isinstance(holder, dict):
+                detail = f"pid {holder.get('pid')} ({holder.get('label')}, started {holder.get('started_at')})"
             raise AlreadyRunning(f"{path} is held by {detail}") from None
 
         os.ftruncate(fd, 0)
@@ -805,7 +822,7 @@ def run_collect(
     second SIGINT restores the default handler, so it raises immediately --
     a hard abort is always two keystrokes away.
     """
-    from dbrel.db import create_all, session_scope
+    from dbrel.db import DB_PATH, create_all, session_scope
 
     overall_started = time.monotonic()
     out = CollectResult()
@@ -823,7 +840,10 @@ def run_collect(
     previous_term = signal.signal(signal.SIGTERM, handler)
 
     try:
-        with exclusive_lock(TT_SWEEP_LOCK, label="collect"):
+        with (
+            exclusive_lock(writer_lock_path(DB_PATH), label="collect"),
+            exclusive_lock(TT_SWEEP_LOCK, label="collect"),
+        ):
             if start_at_midnight:
                 now = datetime.now(TZ)
                 next_midnight = next_midnight_after(now)

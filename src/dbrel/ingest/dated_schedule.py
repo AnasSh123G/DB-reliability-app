@@ -8,7 +8,10 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping
+
+if TYPE_CHECKING:
+    from dbrel.ingest.schedule_reconcile import PendingSettle
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -19,6 +22,12 @@ from dbrel.models import (
     StationStop, Trip, TripScheduleSnapshot,
 )
 from dbrel.ingest.parser import TtStop
+
+
+_SNAPSHOT_INSERT = sqlite_insert(TripScheduleSnapshot).on_conflict_do_nothing(
+    index_elements=['trip_id', 'stop_sequence', 'observed_at',
+                    'source_content_sha256', 'value_fingerprint'],
+).returning(TripScheduleSnapshot.stop_sequence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,20 +68,22 @@ def _valid_receipt(receipt: PlanReceipt) -> None:
         date.fromisoformat(receipt.plan_date)
 
 
-def record_plans(
-    session: Session,
-    trip_id: int,
+def snapshot_rows(
+    trip,
     path_sha1: str,
     observations: Iterable[tuple[TtStop, PlanReceipt]],
     station_id_by_eva: Mapping[int, int],
-) -> int:
-    """Store validated observations, skipping exact receipt/value replays."""
-    trip = session.get(Trip, trip_id)
+) -> list[dict]:
+    """Validate observations against a trip and build their snapshot rows.
+
+    `trip` needs only `id`, `source`, `path_sha1` and `service_date`, so the
+    batched writer can validate against its in-memory trips with the same code.
+    """
     if trip is None or trip.source != SOURCE_TT:
         raise ValueError("dated plans require an existing TT trip")
     if not path_sha1 or trip.path_sha1 != path_sha1:
         raise ValueError("path does not match trip")
-    batch: list[TripScheduleSnapshot] = []
+    batch: list[dict] = []
     for stop, receipt in observations:
         if not isinstance(stop, TtStop):
             raise TypeError("observations must contain TtStop values")
@@ -96,16 +107,9 @@ def record_plans(
         platform = next(iter(platform_values)) if len(platform_values) == 1 else None
         values = (stop.stop_index, station_id, arr, dep, platform)
         fingerprint = hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
-        station_stop_id = session.scalar(select(StationStop.id).where(
-            StationStop.train_id == trip.train_id,
-            StationStop.feed_version_id == trip.feed_version_id,
-            StationStop.path_sha1 == path_sha1,
-            StationStop.stop_sequence == stop.stop_index,
-            StationStop.station_id == station_id,
-        )) if trip.feed_version_id is not None else None
-        batch.append(TripScheduleSnapshot(
+        batch.append(dict(
             trip_id=trip.id, stop_sequence=stop.stop_index, station_id=station_id,
-            station_stop_id=station_stop_id, path_sha1=path_sha1,
+            path_sha1=path_sha1,
             supposed_arrival_utc=arr, supposed_departure_utc=dep,
             platform_code=platform, observed_at=receipt.observed_at,
             source_kind=receipt.source_kind, source_content_sha256=receipt.content_sha256.lower(),
@@ -113,25 +117,54 @@ def record_plans(
             source_plan_date=receipt.plan_date, source_plan_hour=receipt.plan_hour,
             value_fingerprint=fingerprint,
         ))
+    return batch
+
+
+def record_plans(
+    session: Session,
+    trip_id: int,
+    path_sha1: str,
+    observations: Iterable[tuple[TtStop, PlanReceipt]],
+    station_id_by_eva: Mapping[int, int],
+    *,
+    pending: PendingSettle | None = None,
+    trip: Trip | None = None,
+) -> int:
+    """Store validated observations, skipping exact receipt/value replays."""
+    trip = trip if trip is not None else session.get(Trip, trip_id)
+    if trip is not None and trip.id != trip_id:
+        raise ValueError("dated plans require an existing TT trip")
+    batch = snapshot_rows(trip, path_sha1, observations, station_id_by_eva)
     if not batch:
         return 0
-    # The existing unique index handles duplicates, including concurrent replay.
-    # Bound each statement below SQLite's traditional 999-parameter ceiling;
-    # never load a trip's entire receipt history to append one observation.
-    columns = [column.name for column in TripScheduleSnapshot.__table__.columns if column.name != 'id']
-    inserted_sequences = []
-    identity = ['trip_id', 'stop_sequence', 'observed_at',
-                'source_content_sha256', 'value_fingerprint']
-    for rows in _chunks(batch, 40):
-        statement = sqlite_insert(TripScheduleSnapshot).values([
-            {name: getattr(row, name) for name in columns} for row in rows
-        ]).on_conflict_do_nothing(index_elements=identity).returning(TripScheduleSnapshot.stop_sequence)
-        inserted_sequences.extend(session.scalars(statement))
+    station_stops = {}
+    if trip.feed_version_id is not None:
+        station_stops = {
+            (sequence, station_id): row_id
+            for row_id, sequence, station_id in session.execute(select(
+                StationStop.id, StationStop.stop_sequence, StationStop.station_id,
+            ).where(
+                StationStop.train_id == trip.train_id,
+                StationStop.feed_version_id == trip.feed_version_id,
+                StationStop.path_sha1 == path_sha1,
+            ))
+        }
+    rows = [{**row, 'station_stop_id': station_stops.get(
+        (row['stop_sequence'], row['station_id'])
+    )} for row in batch]
+    # ORM insertmanyvalues supports executemany RETURNING on SQLite and splits
+    # batches at the engine's parameter limit. Explicit NULLs keep row shapes equal.
+    inserted_sequences = list(session.scalars(
+        _SNAPSHOT_INSERT, rows, execution_options={'render_nulls': True},
+    ))
     session.flush()
-    from dbrel.ingest.schedule_reconcile import reconcile_facts, refresh_run_bounds
-    refresh_run_bounds(session, trip)
-    if inserted_sequences:
-        reconcile_facts(session, trip, set(inserted_sequences))
+    if pending is not None:
+        pending.add(trip.id, set(inserted_sequences))
+    else:
+        from dbrel.ingest.schedule_reconcile import reconcile_facts, refresh_run_bounds
+        refresh_run_bounds(session, trip)
+        if inserted_sequences:
+            reconcile_facts(session, trip, set(inserted_sequences))
     return len(inserted_sequences)
 
 

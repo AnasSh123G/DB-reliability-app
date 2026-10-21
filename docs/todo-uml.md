@@ -4,7 +4,7 @@
 flowchart LR
   subgraph NOW["Already in the project"]
     APP["Web app<br/>React"]
-    API["Web API<br/>Django on Fly.io, 1 machine"]
+    API["Web API<br/>Django on the home server"]
     DDB[("Deployed database")]
     STUDY["Live accuracy study"]
     CI["Tests on every push<br/>GitHub Actions"]
